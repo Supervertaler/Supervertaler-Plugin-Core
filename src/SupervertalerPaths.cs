@@ -56,6 +56,20 @@ namespace Supervertaler.Core
             }
         }
 
+        /// <summary>
+        /// Prompt library: <c>.md</c> files with YAML frontmatter, one per prompt,
+        /// under the shared root.
+        ///
+        /// Shared deliberately and from the start — Workbench and the Trados
+        /// plugin already read the same folder, and the memoQ plugin now makes
+        /// three. A plain folder of Markdown is also why a prompt picker can be
+        /// written in something other than C# without agreeing a format first.
+        /// </summary>
+        public static string PromptLibraryDir => Path.Combine(Root, "prompt_library");
+
+        /// <summary>Shared resources folder (the Supervertaler database lives here).</summary>
+        public static string ResourcesDir => Path.Combine(Root, "resources");
+
         /// <summary>Forgets the cached root. For code that has just relocated the folder.</summary>
         public static void Reset()
         {
