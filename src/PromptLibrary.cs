@@ -359,7 +359,13 @@ namespace Supervertaler.Core
 
             var sb = new StringBuilder();
             sb.AppendLine("---");
-            sb.AppendLine("type: prompt");
+
+            // The prompt's own type, not a hardcoded "prompt". A transform is a
+            // find/replace rule rather than something sent to a model, and
+            // writing "type: prompt" over "type: transform" turned one into the
+            // other — Strip U+2028 stopped being a transform the first time it
+            // was saved.
+            sb.AppendLine("type: " + (string.IsNullOrWhiteSpace(prompt.Type) ? "prompt" : prompt.Type.Trim()));
             // `name:` is deliberately omitted — the filename is the
             // authoritative display name.  Writing it would re-introduce
             // the YAML-vs-filename drift the loader now prevents.
@@ -389,6 +395,30 @@ namespace Supervertaler.Core
                     sb.AppendLine("default_mode: " + prompt.DefaultMode);
                 }
             }
+
+            // QuickLauncher membership, when it is not already implied by the
+            // category. The loader infers it from a "QuickLauncher/…" category,
+            // and re-stating it there would add a key the file never had; but a
+            // prompt filed elsewhere carries it as a flag, and until now the
+            // writer emitted nothing for it — so saving such a prompt quietly
+            // removed it from the QuickLauncher menu.
+            //
+            // Written as "quickmenu", the unified spelling the loader documents.
+            // The legacy spellings (sv_quickmenu, quick_run) still load, and are
+            // normalised to this one on the next save.
+            if (prompt.IsQuickLauncher && !CategoryImpliesQuickLauncher(prompt.Category))
+                sb.AppendLine("quickmenu: true");
+
+            if (!string.IsNullOrEmpty(prompt.QuickLauncherLabel))
+                sb.AppendLine("quicklauncher_label: \"" + EscapeYamlString(prompt.QuickLauncherLabel) + "\"");
+
+            // Everything the parser did not recognise, back where it was found.
+            if (prompt.UnrecognizedFrontmatter != null)
+            {
+                foreach (var line in prompt.UnrecognizedFrontmatter)
+                    sb.AppendLine(line);
+            }
+
             sb.AppendLine("---");
             sb.AppendLine();
             sb.Append(prompt.Content ?? "");
@@ -975,25 +1005,61 @@ namespace Supervertaler.Core
 
             // Mark as QuickLauncher if the domain is "QuickLauncher" or starts with "QuickLauncher/"
             // (e.g. "QuickLauncher/Default")
-            if (prompt.Category.Equals("QuickLauncher", StringComparison.OrdinalIgnoreCase) ||
-                prompt.Category.StartsWith("QuickLauncher/", StringComparison.OrdinalIgnoreCase) ||
-                prompt.Category.StartsWith("QuickLauncher\\", StringComparison.OrdinalIgnoreCase))
+            if (CategoryImpliesQuickLauncher(prompt.Category))
                 prompt.IsQuickLauncher = true;
+        }
+
+        /// <summary>
+        /// Whether a category puts a prompt in the QuickLauncher on its own.
+        ///
+        /// Shared by the loader and by SavePrompt: the writer emits an explicit
+        /// "quickmenu: true" only when the category does not already say so, and
+        /// if the two ever disagreed about that, a save would either add a
+        /// redundant key or drop a needed one.
+        /// </summary>
+        private static bool CategoryImpliesQuickLauncher(string category)
+        {
+            if (string.IsNullOrEmpty(category)) return false;
+
+            return category.Equals("QuickLauncher", StringComparison.OrdinalIgnoreCase)
+                || category.StartsWith("QuickLauncher/", StringComparison.OrdinalIgnoreCase)
+                || category.StartsWith("QuickLauncher\\", StringComparison.OrdinalIgnoreCase);
         }
 
         private void ParseYamlFrontmatter(PromptTemplate prompt, string yaml)
         {
             var lines = yaml.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
+            // Anything this parser has no case for is kept verbatim so SavePrompt
+            // can put it back. See PromptTemplate.UnrecognizedFrontmatter.
+            var unrecognized = new List<string>();
+            var lastWasUnrecognized = false;
+
             foreach (var line in lines)
             {
                 var trimmed = line.Trim();
-                if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#"))
+                if (string.IsNullOrEmpty(trimmed))
                     continue;
+
+                if (trimmed.StartsWith("#"))
+                {
+                    unrecognized.Add(line.TrimEnd());
+                    lastWasUnrecognized = true;
+                    continue;
+                }
 
                 var colonIdx = trimmed.IndexOf(':');
                 if (colonIdx <= 0)
+                {
+                    // A continuation line of a block value ("  - item"). Keep it
+                    // only when the key it belongs to is itself being kept —
+                    // re-emitting an orphaned list item under a key the writer
+                    // rebuilt from the model would corrupt the file rather than
+                    // preserve it.
+                    if (lastWasUnrecognized)
+                        unrecognized.Add(line.TrimEnd());
                     continue;
+                }
 
                 var key = trimmed.Substring(0, colonIdx).Trim().ToLowerInvariant();
                 var value = trimmed.Substring(colonIdx + 1).Trim();
@@ -1005,6 +1071,8 @@ namespace Supervertaler.Core
                 {
                     value = value.Substring(1, value.Length - 2);
                 }
+
+                lastWasUnrecognized = false;
 
                 switch (key)
                 {
@@ -1079,8 +1147,15 @@ namespace Supervertaler.Core
                         if (dm == "assistant" || dm == "clipboard")
                             prompt.DefaultMode = dm;
                         break;
+
+                    default:
+                        unrecognized.Add(line.TrimEnd());
+                        lastWasUnrecognized = true;
+                        break;
                 }
             }
+
+            prompt.UnrecognizedFrontmatter = unrecognized;
         }
 
         /// <summary>

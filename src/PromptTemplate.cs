@@ -71,6 +71,25 @@ namespace Supervertaler.Core.Models
         public int SortOrder { get; set; } = 100;
 
         /// <summary>
+        /// Frontmatter lines the parser did not recognise, kept verbatim and in
+        /// order so that saving a prompt cannot silently delete them.
+        ///
+        /// The library is edited by more than one thing — two plugins, a text
+        /// editor, whatever comes next — and the writer only knows how to emit
+        /// the fields this class models. Without this, every save rewrote the
+        /// frontmatter block from those fields alone and dropped the rest:
+        /// re-ordering two prompts in the manager panel was enough to strip
+        /// <c>read_only</c>, <c>quicklauncher_grid</c>, <c>tags</c> and
+        /// <c>favorite</c> off the pair that moved, with nothing shown to the
+        /// user and no way to get them back.
+        ///
+        /// Deliberately raw strings rather than a parsed map: the point is to
+        /// hand back exactly what was there, including a key this version has
+        /// never heard of and a future version might.
+        /// </summary>
+        public List<string> UnrecognizedFrontmatter { get; set; } = new List<string>();
+
+        /// <summary>
         /// When true, the prompt is hidden from the QuickLauncher right-click menu
         /// but still visible in the Prompt Manager tree (shown with a "(hidden)" suffix).
         /// From YAML 'hidden:' field.
