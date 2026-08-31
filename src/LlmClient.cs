@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -1270,15 +1270,56 @@ namespace Supervertaler.Core
             if (textMatch.Success)
                 return UnescapeJson(textMatch.Groups[1].Value);
 
-            // No text at all: a safety refusal returns stop_reason "refusal"
-            // with an empty content array – surface that instead of a generic
-            // parse error so the user knows what happened.
-            if (Regex.IsMatch(json, @"""stop_reason""\s*:\s*""refusal"""))
+            // No text block. Work out WHY and say so: nothing about LLM calls is
+            // logged, so by the time anyone asks about a failure the response is
+            // gone. A bare "could not parse" is then a dead end for the user and
+            // for us. Everything below reports block TYPE names and stop_reason
+            // only - never block content, which is the user's own work and can
+            // end up in a screenshot or a bug report.
+            var stopMatch = Regex.Match(json, @"""stop_reason""\s*:\s*""([^""]*)""");
+            var stopReason = stopMatch.Success ? stopMatch.Groups[1].Value : null;
+
+            // A safety refusal returns stop_reason "refusal" with no text.
+            if (stopReason == "refusal")
                 throw new InvalidOperationException(
                     "Claude declined this request (safety refusal) – no text was returned. " +
                     "If this is legitimate translation content, try a different Claude model.");
 
-            throw new InvalidOperationException("Could not parse Claude response");
+            // An API-level error object carries a far better message than any we
+            // could write: pass it through rather than paraphrasing it.
+            var apiError = Regex.Match(json,
+                @"""error""\s*:\s*\{[^}]*?""message""\s*:\s*""((?:[^""\\]|\\.)*)""",
+                RegexOptions.Singleline);
+            if (apiError.Success)
+                throw new InvalidOperationException(
+                    "Claude returned an error: " + UnescapeJson(apiError.Groups[1].Value));
+
+            var blockTypes = new List<string>();
+            foreach (Match bt in Regex.Matches(json, @"""type""\s*:\s*""([a-z_]+)"""))
+            {
+                var name = bt.Groups[1].Value;
+                if (!blockTypes.Contains(name)) blockTypes.Add(name);
+            }
+
+            // The reply ran out of room before emitting any text. With a
+            // reasoning model that usually means the whole output budget went on
+            // thinking - which is a setting problem, not a fault, and the user
+            // can act on it.
+            if (stopReason == "max_tokens")
+                throw new InvalidOperationException(
+                    "Claude reached its output limit before writing any text"
+                    + (blockTypes.Contains("thinking")
+                        ? " – the entire output budget went on reasoning"
+                        : "")
+                    + ". Raise the output-token limit in AI Settings, ask something "
+                    + "narrower, or use a model without extended reasoning.");
+
+            throw new InvalidOperationException(
+                "Could not read Claude's reply: it contained no text block. "
+                + "stop_reason: " + (stopReason ?? "(none given)")
+                + "; blocks returned: "
+                + (blockTypes.Count > 0 ? string.Join(", ", blockTypes) : "(none)")
+                + ". Please report this if it happens again.");
         }
 
         private static string ExtractGeminiContent(string json)
