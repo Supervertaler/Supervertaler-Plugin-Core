@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -838,7 +838,7 @@ namespace Supervertaler.Core
                     try
                     {
                         var prompt = ParsePromptFile(file, rootDir);
-                        if (prompt != null && !IsWorkbenchOnly(prompt))
+                        if (prompt != null)
                         {
                             prompt.IsReadOnly = isReadOnly;
                             _cache.Add(prompt);
@@ -857,7 +857,7 @@ namespace Supervertaler.Core
                     try
                     {
                         var prompt = ParsePromptFile(file, rootDir);
-                        if (prompt != null && !seenNames.Contains(prompt.Name) && !IsWorkbenchOnly(prompt))
+                        if (prompt != null && !seenNames.Contains(prompt.Name))
                         {
                             prompt.IsReadOnly = isReadOnly;
                             _cache.Add(prompt);
@@ -978,14 +978,14 @@ namespace Supervertaler.Core
             }
         }
 
-        /// <summary>
-        /// Returns true if the prompt is targeted exclusively at Supervertaler Workbench
-        /// and should not appear in the Trados plugin.
-        /// </summary>
-        private static bool IsWorkbenchOnly(PromptTemplate prompt)
-        {
-            return string.Equals(prompt.App, "workbench", StringComparison.OrdinalIgnoreCase);
-        }
+        // IsWorkbenchOnly used to drop prompts whose `app:` was "workbench" from
+        // the cache entirely - invisible in Trados and, once Core was shared, in
+        // memoQ too. Nothing said so; the prompt was simply absent from every
+        // list while sitting in the folder in plain sight.
+        //
+        // Removed with Workbench's retirement. `PromptTemplate.App` is still read
+        // and written so existing files round-trip unchanged, but nothing acts on
+        // it any more: a prompt in the library belongs to whoever opens it.
 
         /// <summary>
         /// Applies canonical normalisation to prompt.Category and sets IsQuickLauncher.
