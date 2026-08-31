@@ -403,11 +403,17 @@ namespace Supervertaler.Core
             // writer emitted nothing for it — so saving such a prompt quietly
             // removed it from the QuickLauncher menu.
             //
-            // Written as "quickmenu", the unified spelling the loader documents.
-            // The legacy spellings (sv_quickmenu, quick_run) still load, and are
-            // normalised to this one on the next save.
+            // Written as "quicklauncher", matching what the feature is actually
+            // called - 224 user-facing mentions of QuickLauncher against three
+            // surviving legacy ones of QuickMenu. It also agrees with
+            // quicklauncher_label, which was already the primary spelling of its
+            // own sibling: the file format used to name one concept in two
+            // vocabularies, and the older one had won for the more important half.
+            //
+            // quickmenu, sv_quickmenu and quick_run still load, and normalise to
+            // this on the next save.
             if (prompt.IsQuickLauncher && !CategoryImpliesQuickLauncher(prompt.Category))
-                sb.AppendLine("quickmenu: true");
+                sb.AppendLine("quicklauncher: true");
 
             if (!string.IsNullOrEmpty(prompt.QuickLauncherLabel))
                 sb.AppendLine("quicklauncher_label: \"" + EscapeYamlString(prompt.QuickLauncherLabel) + "\"");
@@ -1103,7 +1109,8 @@ namespace Supervertaler.Core
                     case "built_in":   // backward compat (pre-v4.18.4)
                         prompt.IsDefault = value.Equals("true", StringComparison.OrdinalIgnoreCase);
                         break;
-                    case "quickmenu":       // unified schema
+                    case "quicklauncher":   // canonical - matches the feature's name
+                    case "quickmenu":       // former canonical spelling
                     case "sv_quickmenu":    // backward compatibility (Workbench legacy)
                     case "quick_run":       // backward compatibility (Workbench legacy)
                         if (value.Equals("true", StringComparison.OrdinalIgnoreCase))
