@@ -90,6 +90,16 @@ namespace Supervertaler.Core.Models
         public List<string> UnrecognizedFrontmatter { get; set; } = new List<string>();
 
         /// <summary>
+        /// True when the file carried an explicit QuickLauncher key, rather than
+        /// the membership being inferred from a "QuickLauncher/…" category.
+        ///
+        /// Exists so the writer can put back a line the file already had without
+        /// adding one to files that never had it. Not frontmatter itself, and
+        /// never written on its own.
+        /// </summary>
+        public bool QuickLauncherFlagWasExplicit { get; set; }
+
+        /// <summary>
         /// When true, the prompt is hidden from the QuickLauncher right-click menu
         /// but still visible in the Prompt Manager tree (shown with a "(hidden)" suffix).
         /// From YAML 'hidden:' field.

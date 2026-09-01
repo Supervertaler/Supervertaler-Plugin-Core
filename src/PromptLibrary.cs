@@ -413,7 +413,17 @@ namespace Supervertaler.Core
             //
             // quickmenu, sv_quickmenu and quick_run still load, and normalise to
             // this on the next save.
-            if (prompt.IsQuickLauncher && !CategoryImpliesQuickLauncher(prompt.Category))
+            // Emitted when the flag carries the membership, and also whenever the
+            // file already said so.
+            //
+            // Suppressing it under a QuickLauncher/… category avoids adding a key
+            // that was never there — but on a file that did carry one it is not a
+            // tidy-up, it is a deletion. Once "quicklauncher" became a key the
+            // parser understands, it stopped being covered by the
+            // unrecognised-key rule that had been protecting it, and saving any
+            // QuickLauncher prompt silently dropped the line.
+            if (prompt.IsQuickLauncher
+                && (prompt.QuickLauncherFlagWasExplicit || !CategoryImpliesQuickLauncher(prompt.Category)))
                 sb.AppendLine("quicklauncher: true");
 
             if (!string.IsNullOrEmpty(prompt.QuickLauncherLabel))
@@ -798,7 +808,16 @@ namespace Supervertaler.Core
 
                 var probe = new PromptTemplate();
                 ParseYamlFrontmatter(probe, match.Groups[1].Value);
-                return probe.UnrecognizedFrontmatter ?? new List<string>();
+
+                var kept = probe.UnrecognizedFrontmatter ?? new List<string>();
+
+                // Same rule as SavePrompt: an explicit QuickLauncher line the
+                // file carried goes back, even though the parser understands it
+                // and it is therefore not in the unrecognised list.
+                if (probe.QuickLauncherFlagWasExplicit)
+                    kept.Insert(0, "quicklauncher: true");
+
+                return kept;
             }
             catch
             {
@@ -1163,7 +1182,10 @@ namespace Supervertaler.Core
                     case "sv_quickmenu":    // backward compatibility (Workbench legacy)
                     case "quick_run":       // backward compatibility (Workbench legacy)
                         if (value.Equals("true", StringComparison.OrdinalIgnoreCase))
+                        {
                             prompt.IsQuickLauncher = true;
+                            prompt.QuickLauncherFlagWasExplicit = true;
+                        }
                         break;
                     case "quicklauncher_label":
                     case "quickmenu_label": // backward compatibility
