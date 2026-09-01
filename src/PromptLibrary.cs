@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using Supervertaler.Core.Models;
 using Supervertaler.Core;
 
@@ -779,6 +780,35 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
+        /// The frontmatter lines an existing file carries that this parser does
+        /// not model, or an empty list when there is no such file.
+        ///
+        /// Lets a writer that rebuilds a file from a definition still hand back
+        /// whatever the user had put in it.
+        /// </summary>
+        private List<string> ReadUnrecognizedFrontmatter(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath)) return new List<string>();
+
+                var text = File.ReadAllText(filePath);
+                var match = Regex.Match(text, @"\A﻿?---\r?\n(.*?)\r?\n---", RegexOptions.Singleline);
+                if (!match.Success) return new List<string>();
+
+                var probe = new PromptTemplate();
+                ParseYamlFrontmatter(probe, match.Groups[1].Value);
+                return probe.UnrecognizedFrontmatter ?? new List<string>();
+            }
+            catch
+            {
+                // An unreadable file is about to be overwritten anyway; losing
+                // the keys is bad but failing the restore is worse.
+                return new List<string>();
+            }
+        }
+
+        /// <summary>
         /// Restores all default prompts (overwrites any user edits).
         /// </summary>
         public void RestoreDefaultPrompts()
@@ -801,15 +831,34 @@ namespace Supervertaler.Core
 
                 var filePath = Path.Combine(folder, sanitisedName + ".md");
 
+                // Restoring a default resets its *content*. It should not also
+                // throw away flags the user set on the file — favourites, tags,
+                // QuickLauncher grid placement — which is what this did: it
+                // rebuilt the frontmatter from the definition alone, and running
+                // it once stripped quicklauncher_grid off five prompts in a real
+                // library with nothing said and no way back.
+                //
+                // Same rule as SavePrompt: keys the parser does not model are
+                // the user's, not ours.
+                var keep = ReadUnrecognizedFrontmatter(filePath);
+
                 var sb = new StringBuilder();
                 sb.AppendLine("---");
-                sb.AppendLine("type: prompt");
+                sb.AppendLine("type: " + (def.IsTransform ? "transform" : "prompt"));
                 sb.AppendLine("name: \"" + EscapeYamlString(def.Name) + "\"");
                 if (!string.IsNullOrEmpty(def.Description))
                     sb.AppendLine("description: \"" + EscapeYamlString(def.Description) + "\"");
                 if (!string.IsNullOrEmpty(def.Category))
                     sb.AppendLine("category: \"" + EscapeYamlString(def.Category) + "\"");
+                // Same condition EnsureDefaultPrompts uses, so creating a default
+                // and restoring one produce the same file. Without it, restoring
+                // dropped sort_order and the prompt jumped to the end of its
+                // folder.
+                if (def.SortOrder != 100)
+                    sb.AppendLine("sort_order: " + def.SortOrder);
                 sb.AppendLine("default: true");
+                foreach (var line in keep)
+                    sb.AppendLine(line);
                 sb.AppendLine("---");
                 sb.AppendLine();
                 sb.Append(def.Content);
