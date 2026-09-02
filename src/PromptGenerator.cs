@@ -622,6 +622,16 @@ namespace Supervertaler.Core
             sb.AppendLine("This section is marked \"FOR MODEL UNDERSTANDING ONLY – DO NOT OUTPUT\" in the final prompt.");
             sb.AppendLine();
 
+            // Host constraints: how the prompt will actually be delivered and
+            // consumed. Placed after every default so that, where the two
+            // disagree, the host wins.
+            if (!string.IsNullOrWhiteSpace(ctx.HostConstraints))
+            {
+                sb.AppendLine("=== HOST CONSTRAINTS (THESE OVERRIDE ANYTHING ABOVE THAT CONFLICTS) ===");
+                sb.AppendLine(ctx.HostConstraints.Trim());
+                sb.AppendLine();
+            }
+
             // Output instructions
             sb.AppendLine("=== OUTPUT INSTRUCTIONS ===");
             sb.AppendLine("1. The prompt content must be ready to use – NO placeholders like [Translation] or [Source Language]");
@@ -1027,5 +1037,21 @@ namespace Supervertaler.Core
         /// overrides the inferred domain where they conflict.
         /// </summary>
         public string UserContextHint { get; set; }
+
+        /// <summary>
+        /// Optional block describing how the HOST delivers text to the model and
+        /// what it does with the reply — injected into the meta-prompt as an
+        /// overriding section, so the generated prompt is written for the
+        /// runtime it will actually run in.
+        ///
+        /// Added for memoQ. The meta-prompt's defaults describe the Trados
+        /// plugin: numbered batches, an inline ⟦TC:⟧ comment channel that
+        /// downstream tooling extracts, TM matches supplied per request. None
+        /// of that is true in memoQ, where every character the model returns
+        /// lands verbatim in the target cell and the plugin re-sends the whole
+        /// prompt with every ten-segment request. Null keeps Trados behaviour
+        /// exactly as it was.
+        /// </summary>
+        public string HostConstraints { get; set; }
     }
 }
