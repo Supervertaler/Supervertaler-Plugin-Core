@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using Supervertaler.Core.Models;
@@ -234,6 +235,30 @@ namespace Supervertaler.Core
         {
             var sb = new StringBuilder(segments.Count * 200);
 
+            var withMemory = segments
+                .Where(s => !string.IsNullOrWhiteSpace(s.FuzzySourceText)
+                            && !string.IsNullOrWhiteSpace(s.FuzzyTargetText))
+                .ToList();
+
+            if (withMemory.Count > 0)
+            {
+                sb.AppendLine("**CLOSEST APPROVED TRANSLATIONS FROM THE TRANSLATION MEMORY**");
+                sb.AppendLine();
+                sb.AppendLine("A human wrote and approved each of these for a nearly identical source. "
+                    + "For the segments named below, follow them: keep their wording and terminology "
+                    + "wherever the source agrees, and change only what that segment actually differs "
+                    + "in. These are reference only – do not return a translation for them.");
+                sb.AppendLine();
+
+                foreach (var seg in withMemory)
+                {
+                    sb.AppendLine("Segment " + seg.Number + ", source in memory: " + seg.FuzzySourceText);
+                    sb.AppendLine("Segment " + seg.Number + ", approved translation: " + seg.FuzzyTargetText);
+                }
+
+                sb.AppendLine();
+            }
+
             sb.AppendLine("**SEGMENTS TO TRANSLATE (" + segments.Count + " segments):**");
             sb.AppendLine();
             sb.AppendLine("\u26A0\uFE0F CRITICAL INSTRUCTIONS:");
@@ -323,6 +348,16 @@ namespace Supervertaler.Core
     {
         public int Number { get; set; }
         public string SourceText { get; set; }
+
+        /// <summary>
+        /// The closest approved translation memory match for this segment, source
+        /// and target, or null when there is none. memoQ forwards the best fuzzy
+        /// hit per row when the user routes it to the plugin; Trados leaves these
+        /// unset and the batch prompt then looks exactly as it did before.
+        /// </summary>
+        public string FuzzySourceText { get; set; }
+
+        public string FuzzyTargetText { get; set; }
     }
 
     /// <summary>
