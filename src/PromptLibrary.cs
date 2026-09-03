@@ -460,6 +460,49 @@ namespace Supervertaler.Core
             Refresh();
         }
 
+        /// <summary>
+        /// Writes an app key into a built-in prompt that predates having one.
+        ///
+        /// Only touches a file still flagged as built-in: once the user has taken
+        /// a copy over, its frontmatter is theirs. Everything else in the block is
+        /// preserved, including the keys the parser does not model - read_only and
+        /// the QuickLauncher flags live there, and rebuilding the block from the
+        /// definition once stripped five of them from a real library.
+        /// </summary>
+        private static void AddAppKeyIfMissing(string filePath, string app)
+        {
+            if (string.IsNullOrEmpty(AppTag(app)) || !File.Exists(filePath)) return;
+
+            try
+            {
+                var text = File.ReadAllText(filePath);
+                if (!IsDefaultPromptFile(text)) return;
+
+                var lines = new List<string>(text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None));
+
+                // Frontmatter is the block between the first two "---" lines. No
+                // opening marker means no frontmatter to add a key to.
+                var open = lines.FindIndex(l => l.Trim() == "---");
+                if (open < 0) return;
+
+                var close = lines.FindIndex(open + 1, l => l.Trim() == "---");
+                if (close < 0) return;
+
+                for (var i = open + 1; i < close; i++)
+                {
+                    if (lines[i].TrimStart().StartsWith("app:", StringComparison.OrdinalIgnoreCase)) return;
+                }
+
+                lines.Insert(close, "app: \"" + app.Trim().ToLowerInvariant() + "\"");
+                File.WriteAllText(filePath, string.Join("\r\n", lines.ToArray()), Encoding.UTF8);
+            }
+            catch
+            {
+                // A prompt that keeps working without the key is better than one
+                // that stops the library loading because of it.
+            }
+        }
+
         /// <summary>One file whose name changed, so a caller can repair a stored path.</summary>
         public sealed class Retagged
         {
@@ -680,7 +723,33 @@ namespace Supervertaler.Core
                     catch { /* ignore – file locked or permissions */ }
                 }
 
-                var filePath = Path.Combine(folder, sanitisedName + ".md");
+                // The product marker belongs on a built-in filename as much as on a
+                // user's, but RetagFiles cannot put it there: it skips defaults
+                // precisely because this method owns their names. So the rename
+                // happens here, and only for a file still flagged as built-in.
+                var taggedName = sanitisedName + AppTag(def.App);
+                var untaggedPath = Path.Combine(folder, sanitisedName + ".md");
+                var filePath = Path.Combine(folder, taggedName + ".md");
+
+                if (!string.Equals(taggedName, sanitisedName, StringComparison.Ordinal))
+                {
+                    if (!File.Exists(filePath) && File.Exists(untaggedPath))
+                    {
+                        try
+                        {
+                            if (IsDefaultPromptFile(File.ReadAllText(untaggedPath)))
+                                File.Move(untaggedPath, filePath);
+                        }
+                        catch { /* ignore - locked, or the user has taken it over */ }
+                    }
+
+                    // The file below is only written when it does not exist, so a
+                    // library installed before this prompt declared its app would
+                    // otherwise keep a filename saying one thing and a frontmatter
+                    // saying another - the drift the marker is derived to avoid.
+                    AddAppKeyIfMissing(filePath, def.App);
+                }
+
                 if (!File.Exists(filePath))
                 {
                     var sb = new StringBuilder();
@@ -691,6 +760,8 @@ namespace Supervertaler.Core
                         sb.AppendLine("description: \"" + EscapeYamlString(def.Description) + "\"");
                     if (!string.IsNullOrEmpty(def.Category))
                         sb.AppendLine("category: \"" + EscapeYamlString(def.Category) + "\"");
+                    if (!string.IsNullOrEmpty(AppTag(def.App)))
+                        sb.AppendLine("app: \"" + def.App.Trim().ToLowerInvariant() + "\"");
                     if (def.SortOrder != 100)
                         sb.AppendLine("sort_order: " + def.SortOrder);
                     sb.AppendLine("default: true");
@@ -909,7 +980,7 @@ namespace Supervertaler.Core
                     try { File.Delete(oldSvpromptPath); } catch { }
                 }
 
-                var filePath = Path.Combine(folder, sanitisedName + ".md");
+                var filePath = Path.Combine(folder, sanitisedName + AppTag(def.App) + ".md");
 
                 // Restoring a default resets its *content*. It should not also
                 // throw away flags the user set on the file — favourites, tags,
@@ -930,6 +1001,8 @@ namespace Supervertaler.Core
                     sb.AppendLine("description: \"" + EscapeYamlString(def.Description) + "\"");
                 if (!string.IsNullOrEmpty(def.Category))
                     sb.AppendLine("category: \"" + EscapeYamlString(def.Category) + "\"");
+                if (!string.IsNullOrEmpty(AppTag(def.App)))
+                    sb.AppendLine("app: \"" + def.App.Trim().ToLowerInvariant() + "\"");
                 // Same condition EnsureDefaultPrompts uses, so creating a default
                 // and restoring one produce the same file. Without it, restoring
                 // dropped sort_order and the prompt jumped to the end of its
@@ -1623,6 +1696,7 @@ IMPORTANT RULES:
                 new PromptTemplate
                 {
                     Name = "Assess how I translated the current segment",
+                    App = "trados",
                     Description = "Reviews your translation of the active segment and suggests improvements",
                     Category = "QuickLauncher/Default",
                     IsDefault = true,
@@ -1637,6 +1711,7 @@ Assess how I translated the current segment. Point out any inaccuracies, awkward
                 new PromptTemplate
                 {
                     Name = "Define",
+                    App = "trados",
                     Description = "Defines the selected term and provides usage examples",
                     Category = "QuickLauncher/Default",
                     IsDefault = true,
@@ -1645,6 +1720,7 @@ Assess how I translated the current segment. Point out any inaccuracies, awkward
                 new PromptTemplate
                 {
                     Name = "Explain selection (in general)",
+                    App = "trados",
                     Category = "QuickLauncher/Default/Explain",
                     IsDefault = true,
                     Content = @"Explain ""{{SELECTION}}"" in simple, clear language. Include a practical example if helpful."
@@ -1652,6 +1728,7 @@ Assess how I translated the current segment. Point out any inaccuracies, awkward
                 new PromptTemplate
                 {
                     Name = "Explain selection (within context of surrounding segments)",
+                    App = "trados",
                     Description = "This is a much lighter version than the original, which sends the entire document source text.",
                     Category = "QuickLauncher/Default/Explain",
                     IsDefault = true,
@@ -1666,6 +1743,7 @@ Explain ""{{SELECTION}}"" in simple, clear language. If the project context abov
                 new PromptTemplate
                 {
                     Name = "Explain selection (within full project context)",
+                    App = "trados",
                     Description = "Explains the selection using the full document as context",
                     Category = "QuickLauncher/Default/Explain",
                     IsDefault = true,
@@ -1680,6 +1758,7 @@ Explain ""{{SELECTION}}"" in simple, clear language. If the project context abov
                 new PromptTemplate
                 {
                     Name = "Show current filename",
+                    App = "trados",
                     Description = "Displays the filename of the file you are currently translating",
                     Category = "QuickLauncher/Default/Files",
                     IsDefault = true,
@@ -1690,6 +1769,7 @@ Explain ""{{SELECTION}}"" in simple, clear language. If the project context abov
                 new PromptTemplate
                 {
                     Name = "What file is this segment from?",
+                    App = "trados",
                     Description = "Shows the filename and project context for the current segment",
                     Category = "QuickLauncher/Default/Files",
                     IsDefault = true,
@@ -1703,6 +1783,7 @@ What type of file is this, and what can you tell me about it based on the filena
                 new PromptTemplate
                 {
                     Name = "Translate segment using fuzzy matches as reference",
+                    App = "trados",
                     Description = "Translates the active segment, using TM fuzzy matches and surrounding context",
                     Category = "QuickLauncher/Default",
                     IsDefault = true,
@@ -1721,6 +1802,7 @@ Use the fuzzy matches and surrounding context as reference, but produce a fresh,
                 new PromptTemplate
                 {
                     Name = "Translate selection in context of current project",
+                    App = "trados",
                     Description = "Suggests the best translation for a selected term using full document context",
                     Category = "QuickLauncher/Default",
                     IsDefault = true,
@@ -1735,6 +1817,7 @@ Using the project context above, suggest the best translation for ""{{SELECTION}
                 new PromptTemplate
                 {
                     Name = "Generate project brief",
+                    App = "trados",
                     Description = "Generates a comprehensive project summary in Markdown that you can paste into any AI tool for context while translating",
                     Category = "QuickLauncher/Default",
                     IsDefault = true,
