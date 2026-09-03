@@ -461,6 +461,62 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
+        /// Brings the built-in prompts' filenames and app keys up to date, without
+        /// creating anything.
+        ///
+        /// Separate from EnsureDefaultPrompts because that method also writes any
+        /// built-in that is missing, which is right where the defaults come from
+        /// and wrong anywhere else: it would resurrect prompts the user deleted on
+        /// purpose. memoQ's editor wants the marker sync and nothing else.
+        /// </summary>
+        public void SyncDefaultPromptApps()
+        {
+            foreach (var def in GetDefaultPromptDefinitions())
+            {
+                var folder = string.IsNullOrEmpty(def.Category)
+                    ? PromptsDir
+                    : Path.Combine(PromptsDir, def.Category.Replace('/', Path.DirectorySeparatorChar));
+
+                if (!Directory.Exists(folder)) continue;
+
+                SyncDefaultPromptApp(def, folder, SanitizeFileName(def.Name));
+            }
+
+            _cache = null;
+        }
+
+        /// <summary>
+        /// One built-in: give the file the marker its definition calls for, and
+        /// the app key behind it.
+        ///
+        /// A library installed before a prompt declared its app keeps the untagged
+        /// filename, and EnsureDefaultPrompts only writes a file that does not
+        /// exist - so without this the marker would appear with no key behind it,
+        /// which is the filename-versus-frontmatter drift the marker is derived to
+        /// avoid.
+        /// </summary>
+        private static void SyncDefaultPromptApp(PromptTemplate def, string folder, string sanitisedName)
+        {
+            var tag = AppTag(def.App);
+            if (string.IsNullOrEmpty(tag)) return;
+
+            var taggedPath = Path.Combine(folder, sanitisedName + tag + ".md");
+            var untaggedPath = Path.Combine(folder, sanitisedName + ".md");
+
+            if (!File.Exists(taggedPath) && File.Exists(untaggedPath))
+            {
+                try
+                {
+                    if (IsDefaultPromptFile(File.ReadAllText(untaggedPath)))
+                        File.Move(untaggedPath, taggedPath);
+                }
+                catch { /* ignore - locked, or the user has taken it over */ }
+            }
+
+            AddAppKeyIfMissing(taggedPath, def.App);
+        }
+
+        /// <summary>
         /// Writes an app key into a built-in prompt that predates having one.
         ///
         /// Only touches a file still flagged as built-in: once the user has taken
@@ -731,24 +787,7 @@ namespace Supervertaler.Core
                 var untaggedPath = Path.Combine(folder, sanitisedName + ".md");
                 var filePath = Path.Combine(folder, taggedName + ".md");
 
-                if (!string.Equals(taggedName, sanitisedName, StringComparison.Ordinal))
-                {
-                    if (!File.Exists(filePath) && File.Exists(untaggedPath))
-                    {
-                        try
-                        {
-                            if (IsDefaultPromptFile(File.ReadAllText(untaggedPath)))
-                                File.Move(untaggedPath, filePath);
-                        }
-                        catch { /* ignore - locked, or the user has taken it over */ }
-                    }
-
-                    // The file below is only written when it does not exist, so a
-                    // library installed before this prompt declared its app would
-                    // otherwise keep a filename saying one thing and a frontmatter
-                    // saying another - the drift the marker is derived to avoid.
-                    AddAppKeyIfMissing(filePath, def.App);
-                }
+                SyncDefaultPromptApp(def, folder, sanitisedName);
 
                 if (!File.Exists(filePath))
                 {
