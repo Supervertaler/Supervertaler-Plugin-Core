@@ -532,20 +532,22 @@ namespace Supervertaler.Core
             sb.AppendLine("For every silent correction, the translator AI appends ONE concise comment at");
             sb.AppendLine("the very end of the segment, in this exact format:");
             sb.AppendLine();
-            sb.AppendLine("    ⟦TC: short factual description of the fix(es)⟧");
+            sb.AppendLine("    [[TC: short factual description of the fix(es)]]");
             sb.AppendLine();
             sb.AppendLine("- Multiple fixes in one segment are joined with semicolons inside ONE marker.");
-            sb.AppendLine("  Never more than one ⟦TC: ...⟧ per segment.");
-            sb.AppendLine("- Segments with no defects emit NO marker. Do not emit empty ⟦TC: ⟧.");
-            sb.AppendLine("- The opening and closing delimiters MUST be U+27E6 (MATHEMATICAL LEFT WHITE");
-            sb.AppendLine("  SQUARE BRACKET) and U+27E7 (MATHEMATICAL RIGHT WHITE SQUARE BRACKET). These");
-            sb.AppendLine("  characters do not occur in source documents, so they are safe as out-of-band");
-            sb.AppendLine("  markers and can be reliably extracted in post-processing.");
+            sb.AppendLine("  Never more than one [[TC: ...]] per segment.");
+            sb.AppendLine("- Segments with no defects emit NO marker. Do not emit empty [[TC: ]].");
+            sb.AppendLine("- The delimiters MUST be double ASCII square brackets: [[ and ]]. Nothing");
+            sb.AppendLine("  parses these: the translator reads them in the grid while reviewing, and");
+            sb.AppendLine("  decides per segment whether the comment is worth keeping. So the marker");
+            sb.AppendLine("  has to be instantly recognisable at a glance, and above all it has to");
+            sb.AppendLine("  RENDER - the white square brackets used before are missing from the fonts");
+            sb.AppendLine("  CAT grids use and showed up as empty boxes.");
             sb.AppendLine("- Where the silent correction inserts a word or short phrase the translator");
             sb.AppendLine("  supplied to fill a clear gap, that supplied text is wrapped in standard");
             sb.AppendLine("  ASCII square brackets [like this] INSIDE the running translation. The");
-            sb.AppendLine("  trailing ⟦TC: ...⟧ marker then references this, e.g.");
-            sb.AppendLine("  ⟦TC: [bracketed text] supplied to close hanging sentence⟧.");
+            sb.AppendLine("  trailing [[TC: ...]] marker then references this, e.g.");
+            sb.AppendLine("  [[TC: [bracketed text] supplied to close hanging sentence]].");
             sb.AppendLine("- The comment body is concise - typically 5 to 20 words. Noun-phrase /");
             sb.AppendLine("  sentence-fragment style; avoid full sentences, first-person (\"I\",");
             sb.AppendLine("  \"the translator\", \"the LLM\"), or apologetic hedging.");
@@ -568,7 +570,7 @@ namespace Supervertaler.Core
             sb.AppendLine("- Headings, identifiers, proper names, citations - preserve verbatim.");
             sb.AppendLine("- Anything the AI cannot resolve unambiguously from immediate context. In case");
             sb.AppendLine("  of doubt, translate faithfully and use:");
-            sb.AppendLine("  ⟦TC: source ambiguous - possible defect at \"...\" but preserved as written⟧");
+            sb.AppendLine("  [[TC: source ambiguous - possible defect at \"...\" but preserved as written]]");
             sb.AppendLine();
             sb.AppendLine("**How to embed this in the generated prompt:**");
             sb.AppendLine();
@@ -579,29 +581,32 @@ namespace Supervertaler.Core
             sb.AppendLine("   German, accent slips for French, conjugation typos for Spanish/Italian).");
             sb.AppendLine("2. The generated prompt MUST include a dedicated section titled");
             sb.AppendLine("   \"TRANSLATOR COMMENT FORMAT\" (or equivalent) near the end with the exact");
-            sb.AppendLine("   ⟦TC: ...⟧ spec verbatim, plus 4-6 example comment bodies adapted to the");
+            sb.AppendLine("   [[TC: ...]] spec verbatim, plus 4-6 example comment bodies adapted to the");
             sb.AppendLine("   source language and domain. Example bodies for reference (the LLM should");
             sb.AppendLine("   produce equivalents for the actual source language):");
             sb.AppendLine();
-            sb.AppendLine("       ⟦TC: \"verzekerd\" corrected to \"verzekert\"⟧");
-            sb.AppendLine("       ⟦TC: stray space before full stop closed⟧");
-            sb.AppendLine("       ⟦TC: doubled space inside sentence collapsed⟧");
-            sb.AppendLine("       ⟦TC: hanging mid-sentence break reconstructed; [bracketed text] supplied⟧");
-            sb.AppendLine("       ⟦TC: \"achterzijde (6)\" corrected to (5) per antecedent in same paragraph⟧");
-            sb.AppendLine("       ⟦TC: source ambiguous - possible defect at \"...\" but preserved as written⟧");
+            sb.AppendLine("       [[TC: \"verzekerd\" corrected to \"verzekert\"]]");
+            sb.AppendLine("       [[TC: stray space before full stop closed]]");
+            sb.AppendLine("       [[TC: doubled space inside sentence collapsed]]");
+            sb.AppendLine("       [[TC: hanging mid-sentence break reconstructed; [bracketed text] supplied]]");
+            sb.AppendLine("       [[TC: \"achterzijde (6)\" corrected to (5) per antecedent in same paragraph]]");
+            sb.AppendLine("       [[TC: source ambiguous - possible defect at \"...\" but preserved as written]]");
             sb.AppendLine();
             sb.AppendLine("3. The generated prompt's PREFLIGHT SELF-CHECK and POST-TRANSLATION INTEGRITY");
             sb.AppendLine("   sections MUST include a check that any silent correction has its");
-            sb.AppendLine("   corresponding ⟦TC: ...⟧ marker at the segment end, and that segments");
+            sb.AppendLine("   corresponding [[TC: ...]] marker at the segment end, and that segments");
             sb.AppendLine("   without corrections have no marker.");
-            sb.AppendLine("4. The generated prompt's OUTPUT FORMAT section MUST note that ⟦ and ⟧");
-            sb.AppendLine("   (U+27E6 / U+27E7) are the sole exception to the \"ASCII output only\" rule -");
-            sb.AppendLine("   they are the deliberate out-of-band comment delimiter.");
+            sb.AppendLine("4. The generated prompt's OUTPUT FORMAT section MUST name [[TC: ...]] as the");
+            sb.AppendLine("   only permitted non-translation content, so that a rule against commentary");
+            sb.AppendLine("   is not read as a rule against the marker.");
             sb.AppendLine();
-            sb.AppendLine("The translator's comments appear inline in the target text as ⟦TC: ...⟧.");
-            sb.AppendLine("They can be extracted programmatically in downstream tooling (e.g. into Trados");
-            sb.AppendLine("Studio comments) but the prompt itself does not need to address extraction -");
-            sb.AppendLine("it just produces the markers reliably.");
+            sb.AppendLine("The translator's comments appear inline in the target text as [[TC: ...]].");
+            sb.AppendLine("They are for the translator, who is going through the document segment by");
+            sb.AppendLine("segment anyway: they read the comment, judge whether it still matters, and");
+            sb.AppendLine("if it does, turn it into a real CAT tool comment and delete it from the");
+            sb.AppendLine("target text. Nothing automated consumes them. What the prompt owes that");
+            sb.AppendLine("workflow is markers that are consistent, brief, and never emitted without");
+            sb.AppendLine("cause - a marker on every segment is a marker nobody reads.");
             sb.AppendLine();
 
             // Constraint language
@@ -934,7 +939,7 @@ namespace Supervertaler.Core
         {
             // Observed on a real run: given 7 pairs, the model emitted 11 and filed its own
             // renderings under "Additional validated project segments" – one of them carrying
-            // a ⟦TC:⟧ marker, which no human TM contains. This section outranks the glossary
+            // a [[TC:]] marker, which no human TM contains. This section outranks the glossary
             // in the terminology hierarchy, so an invented entry is the most authoritative
             // thing in the prompt while being the least grounded. Saying "include them" was
             // never the same as saying "and no others"; both branches now say the latter.
@@ -1045,7 +1050,7 @@ namespace Supervertaler.Core
         /// runtime it will actually run in.
         ///
         /// Added for memoQ. The meta-prompt's defaults describe the Trados
-        /// plugin: numbered batches, an inline ⟦TC:⟧ comment channel that
+        /// plugin: numbered batches, an inline [[TC:]] comment channel that
         /// downstream tooling extracts, TM matches supplied per request. None
         /// of that is true in memoQ, where every character the model returns
         /// lands verbatim in the target cell and the plugin re-sends the whole
