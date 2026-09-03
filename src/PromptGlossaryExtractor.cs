@@ -111,10 +111,18 @@ namespace Supervertaler.Core
         }
 
         /// <summary>The glossary file text, in the format the memoQ terminology plugin reads.</summary>
-        public static string ToGlossaryText(IEnumerable<Entry> entries, string title)
+        public static string ToGlossaryText(IEnumerable<Entry> entries, string title,
+            string sourceLang = null, string targetLang = null)
         {
             var sb = new StringBuilder();
             sb.AppendLine("# " + (title ?? "Project glossary"));
+
+            // Machine-readable, and deliberately a different marker from the prose
+            // comments below it. Without this the file's direction lived only in
+            // its filename, which nothing read, and pointing a glossary the wrong
+            // way produced no hits and no explanation.
+            if (!string.IsNullOrWhiteSpace(sourceLang) && !string.IsNullOrWhiteSpace(targetLang))
+                sb.AppendLine("#! source=" + sourceLang.Trim() + " target=" + targetLang.Trim());
             sb.AppendLine("# Exported from the prompt library by Supervertaler. Tab-separated: source, target, optional 'forbidden'.");
             sb.AppendLine("# Edit freely; the terminology plugin re-reads the file whenever it changes.");
             sb.AppendLine();
