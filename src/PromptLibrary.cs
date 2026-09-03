@@ -323,7 +323,7 @@ namespace Supervertaler.Core
                 if (!prompt.IsDefault)
                 {
                     var currentFileName = Path.GetFileNameWithoutExtension(filePath);
-                    var expectedFileName = SanitizeFileName(prompt.Name);
+                    var expectedFileName = FileStem(prompt);
                     if (!string.Equals(currentFileName, expectedFileName, StringComparison.OrdinalIgnoreCase))
                     {
                         var dir = Path.GetDirectoryName(filePath);
@@ -355,7 +355,7 @@ namespace Supervertaler.Core
                         folder = Path.Combine(folder, SanitizeFileName(part));
                 }
                 Directory.CreateDirectory(folder);
-                filePath = Path.Combine(folder, SanitizeFileName(prompt.Name) + ".md");
+                filePath = Path.Combine(folder, FileStem(prompt) + ".md");
             }
 
             var sb = new StringBuilder();
@@ -458,6 +458,62 @@ namespace Supervertaler.Core
             prompt.RelativePath = GetRelativePath(filePath, PromptsDir);
 
             Refresh();
+        }
+
+        /// <summary>One file whose name changed, so a caller can repair a stored path.</summary>
+        public sealed class Retagged
+        {
+            public string OldRelativePath;
+            public string NewRelativePath;
+        }
+
+        /// <summary>
+        /// Brings every filename into line with its app field, and reports what
+        /// moved.
+        ///
+        /// Renaming is not free: both plugins remember their selected prompt as a
+        /// relative path, so a file that moves out from under one of them silently
+        /// falls back to the inline instructions mid-job. Hence the report - the
+        /// caller is expected to repair its own stored path. Read-only and built-in
+        /// prompts are left alone; their names are not the user's to change.
+        /// </summary>
+        public List<Retagged> RetagFiles()
+        {
+            var moved = new List<Retagged>();
+
+            foreach (var prompt in GetAllPrompts())
+            {
+                if (prompt == null || prompt.IsReadOnly || prompt.IsDefault) continue;
+                if (string.IsNullOrEmpty(prompt.FilePath) || !File.Exists(prompt.FilePath)) continue;
+
+                var expected = FileStem(prompt);
+                var current = Path.GetFileNameWithoutExtension(prompt.FilePath);
+                if (string.Equals(current, expected, StringComparison.Ordinal)) continue;
+
+                var newPath = Path.Combine(Path.GetDirectoryName(prompt.FilePath), expected + ".md");
+
+                // Never overwrite: two prompts whose names differ only by their
+                // marker would otherwise silently become one.
+                if (File.Exists(newPath)) continue;
+
+                var oldRelative = prompt.RelativePath;
+                try
+                {
+                    File.Move(prompt.FilePath, newPath);
+                }
+                catch (Exception)
+                {
+                    continue;   // locked, read-only on disk, or gone; leave it be
+                }
+
+                prompt.FilePath = newPath;
+                prompt.RelativePath = GetRelativePath(newPath, PromptsDir);
+
+                moved.Add(new Retagged { OldRelativePath = oldRelative, NewRelativePath = prompt.RelativePath });
+            }
+
+            if (moved.Count > 0) Refresh();
+            return moved;
         }
 
         /// <summary>
@@ -1003,7 +1059,7 @@ namespace Supervertaler.Core
             // The on-disk filename is the authoritative display name.
             // Any YAML `name:` field is ignored on read so that renaming a
             // .md file in Explorer immediately changes what the tree shows.
-            prompt.Name = Path.GetFileNameWithoutExtension(filePath);
+            prompt.Name = StripAppTag(Path.GetFileNameWithoutExtension(filePath));
 
             // Fallback: use folder name as domain if not specified in YAML
             if (string.IsNullOrEmpty(prompt.Category))
@@ -1302,6 +1358,66 @@ namespace Supervertaler.Core
                 return fullPath.Substring(root.Length);
 
             return fullPath;
+        }
+
+        /// <summary>
+        /// The product marker a filename carries, or "" for a prompt available to
+        /// both.
+        ///
+        /// The library is one flat set of folders per category, so a client's
+        /// prompts sit together regardless of which product they target - which is
+        /// what you want when comparing them, and useless when you are looking at
+        /// the folder in Explorer trying to work out which of two similarly named
+        /// prompts belongs to which plugin. The editor's tree says so; Explorer
+        /// cannot, and Explorer is where a lot of this work happens.
+        ///
+        /// Square brackets rather than parentheses because the names already use
+        /// parentheses for client and case references, and a marker that reads as
+        /// part of the reference would be worse than none.
+        /// </summary>
+        public static string AppTag(string app)
+        {
+            switch ((app ?? "").Trim().ToLowerInvariant())
+            {
+                case "memoq": return " [memoQ]";
+                case "trados": return " [Trados]";
+                case "workbench": return " [Workbench]";
+                default: return "";   // "both", blank, or anything unrecognised
+            }
+        }
+
+        private static readonly string[] AppTags = { " [memoq]", " [trados]", " [workbench]" };
+
+        /// <summary>
+        /// A filename stem with its product marker removed, so the marker never
+        /// becomes part of the prompt's displayed name.
+        ///
+        /// Only the three known markers are stripped: a prompt genuinely called
+        /// "Claim wording [draft]" keeps its brackets.
+        /// </summary>
+        public static string StripAppTag(string stem)
+        {
+            if (string.IsNullOrEmpty(stem)) return stem;
+
+            foreach (var tag in AppTags)
+            {
+                if (stem.EndsWith(tag, StringComparison.OrdinalIgnoreCase))
+                    return stem.Substring(0, stem.Length - tag.Length).TrimEnd();
+            }
+
+            return stem;
+        }
+
+        /// <summary>
+        /// The filename a prompt should have, marker included. Derived from the
+        /// name and the app field every time it is written, so the two cannot
+        /// drift: edit the marker by hand in Explorer and the next save puts it
+        /// back, exactly as editing the old "name:" key never renamed anything.
+        /// The app dropdown in the editor is what changes a prompt's product.
+        /// </summary>
+        private static string FileStem(PromptTemplate prompt)
+        {
+            return SanitizeFileName(prompt.Name) + AppTag(prompt.App);
         }
 
         private static string SanitizeFileName(string name)
