@@ -377,6 +377,11 @@ namespace Supervertaler.Core
             if (!string.IsNullOrEmpty(prompt.App) &&
                 !prompt.App.Equals("both", StringComparison.OrdinalIgnoreCase))
                 sb.AppendLine("app: \"" + EscapeYamlString(prompt.App) + "\"");
+            if (!string.IsNullOrWhiteSpace(prompt.SourceLang) && !string.IsNullOrWhiteSpace(prompt.TargetLang))
+            {
+                sb.AppendLine("source_lang: \"" + EscapeYamlString(prompt.SourceLang) + "\"");
+                sb.AppendLine("target_lang: \"" + EscapeYamlString(prompt.TargetLang) + "\"");
+            }
             if (prompt.IsDefault)
                 sb.AppendLine("default: true");
             if (prompt.SortOrder != 100)
@@ -1172,6 +1177,12 @@ namespace Supervertaler.Core
                     case "app":
                         // Unified schema: "workbench", "trados", or "both"
                         prompt.App = value.ToLowerInvariant();
+                        break;
+                    case "source_lang":
+                        prompt.SourceLang = value;
+                        break;
+                    case "target_lang":
+                        prompt.TargetLang = value;
                         break;
                     case "default":
                     case "built_in":   // backward compat (pre-v4.18.4)

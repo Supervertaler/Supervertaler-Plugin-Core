@@ -65,6 +65,22 @@ namespace Supervertaler.Core.Models
         public string App { get; set; } = "both";
 
         /// <summary>
+        /// The language pair the prompt was written for, as memoQ or Trados
+        /// language codes, or empty when it does not say.
+        ///
+        /// A prompt is not direction-neutral: it names the source and target
+        /// languages in its role, locks terminology one way round, and carries
+        /// register rules for one target. Selecting a Dutch-to-English prompt in
+        /// an English-to-Dutch project produced a perfectly confident translation
+        /// against instructions written for the opposite job, with nothing
+        /// anywhere saying so. Exported glossaries already declare their pair;
+        /// this is the same declaration for the prompt that produced them.
+        /// </summary>
+        public string SourceLang { get; set; } = "";
+
+        public string TargetLang { get; set; } = "";
+
+        /// <summary>
         /// Sort order within a folder (from YAML 'sort_order:' field).
         /// Lower values appear first. Default 100 for unset (sorts after explicit values).
         /// </summary>
