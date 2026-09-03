@@ -32,7 +32,19 @@ namespace Supervertaler.Core
             public string Note { get; set; }
         }
 
-        private static readonly Regex TableRow = new Regex(@"^\s*\|(.+)\|\s*$", RegexOptions.Compiled);
+        /// <summary>
+        /// A row is any line carrying a pipe. Outer pipes are optional because a
+        /// real generated glossary frequently has none: the prompt this was
+        /// widened for writes
+        /// <c>voederadditief | feed additive | Claim term; never "fodder additive"</c>
+        /// with no leading pipe and no separator row, and the stricter pattern
+        /// rejected the whole table with "no glossary table found".
+        ///
+        /// Prose is kept out by the header test rather than by punctuation: a
+        /// table is only read when its first row names a source and a target
+        /// column.
+        /// </summary>
+        private static readonly Regex TableRow = new Regex(@"^\s*\|?([^|]*\|.*?)\|?\s*$", RegexOptions.Compiled);
         private static readonly Regex SeparatorRow = new Regex(@"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$", RegexOptions.Compiled);
         private static readonly Regex NeverPattern = new Regex(@"\bnever\s+[""“']([^""”']+)[""”']", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex Markup = new Regex(@"[`*_]", RegexOptions.Compiled);
@@ -53,7 +65,7 @@ namespace Supervertaler.Core
             while (i < lines.Length)
             {
                 var header = TableRow.Match(lines[i]);
-                if (!header.Success || i + 1 >= lines.Length || !SeparatorRow.IsMatch(lines[i + 1])) { i++; continue; }
+                if (!header.Success || SeparatorRow.IsMatch(lines[i])) { i++; continue; }
 
                 var columns = SplitCells(header.Groups[1].Value).Select(c => c.ToLowerInvariant()).ToList();
                 var srcCol = columns.FindIndex(c => c.Contains("source"));
@@ -61,13 +73,17 @@ namespace Supervertaler.Core
                 var noteCol = columns.FindIndex(c => c.Contains("note") || c.Contains("comment"));
 
                 // A glossary table names its columns; anything else is not one.
-                if (srcCol < 0 || tgtCol < 0) { i += 2; continue; }
+                if (srcCol < 0 || tgtCol < 0) { i++; continue; }
 
-                i += 2;
+                // The separator is optional. Markdown wants one and the memoQ
+                // generator writes one; a model writing the same table by hand
+                // often does not, and that is not a reason to lose the glossary.
+                i++;
+                if (i < lines.Length && SeparatorRow.IsMatch(lines[i])) i++;
                 while (i < lines.Length)
                 {
                     var row = TableRow.Match(lines[i]);
-                    if (!row.Success) break;
+                    if (!row.Success || SeparatorRow.IsMatch(lines[i])) break;
                     i++;
 
                     var cells = SplitCells(row.Groups[1].Value);
