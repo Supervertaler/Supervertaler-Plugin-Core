@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -326,6 +326,22 @@ namespace Supervertaler.Core
             sb.AppendLine("delivers the source text as NUMBERED BATCHES of segments (typically dozens of segments per request;");
             sb.AppendLine("in some contexts a single segment). The prompt must account for this batched, segment-numbered");
             sb.AppendLine("delivery - do NOT describe delivery as \"one segment at a time\" or \"in isolation\".");
+            sb.AppendLine();
+            // #97: the excerpt below is rendered exactly as the segments will be sent,
+            // inline formatting included. Without this paragraph the generating model
+            // invented a tag inventory - for months it named a notation the batch never
+            // sends. Phrased as "the notation the excerpt shows" rather than naming one,
+            // because this generator is shared across products.
+            sb.AppendLine("INLINE TAGS: the DOCUMENT CONTENT excerpt below is rendered EXACTLY as segments will be");
+            sb.AppendLine("delivered to the translating model, including any inline-formatting tags. If it contains");
+            sb.AppendLine("tags, the prompt you write MUST describe them in THAT notation and no other - never a");
+            sb.AppendLine("notation you assume the CAT tool uses internally. The prompt MUST include these rules:");
+            sb.AppendLine("reproduce every tag verbatim - same tags, same count, same order and nesting - around the");
+            sb.AppendLine("corresponding translated text; never invent, drop, merge or rename a tag; and never replace");
+            sb.AppendLine("a tagged character with a Unicode equivalent or vice versa (a tagged subscript digit stays");
+            sb.AppendLine("tagged even when the same formula appears elsewhere as a Unicode subscript - \"tidying\" it");
+            sb.AppendLine("destroys a tag pair). If the excerpt contains no tags, say only that any tags that do arrive");
+            sb.AppendLine("must be reproduced verbatim, and do not enumerate a notation.");
             sb.AppendLine();
             sb.AppendLine("=== ANALYSIS RESULTS ===");
             sb.AppendLine($"DETECTED DOMAIN: {domain.ToUpperInvariant()}");
