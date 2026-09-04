@@ -68,9 +68,31 @@ namespace Supervertaler.Core
         {
             if (string.IsNullOrWhiteSpace(bankName)) return null;
 
+            var wanted = bankName.Trim();
+
+            // A name that IS one of the folders on disk resolves to that folder,
+            // whatever it is called. This has to come first, because Sanitize
+            // strips leading and trailing underscores, dots and spaces - so a
+            // bank the user called "_archive" was listed by List(), offered in
+            // the picker, and then resolved to "archive", which does not exist.
+            // The selection failed silently and the prompt simply lost its
+            // client rules.
+            //
+            // Matching against the enumerated directories rather than probing a
+            // constructed path is what keeps this safe: the candidate must equal
+            // an entry List() returned, so no traversal survives the comparison.
+            foreach (var name in List())
+            {
+                if (!string.Equals(name, wanted, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var exact = Path.Combine(Root, name);
+                if (Directory.Exists(exact)) return exact;
+            }
+
             // The shared bank is the one name sanitisation must not touch: its
-            // leading underscore is exactly what the rule strips.
-            var safe = IsSharedName(bankName) ? MemoryBankReader.SharedBankName : Sanitize(bankName);
+            // leading underscore is exactly what the rule strips. Kept for the
+            // case where it exists but List() could not enumerate.
+            var safe = IsSharedName(wanted) ? MemoryBankReader.SharedBankName : Sanitize(wanted);
             if (string.IsNullOrEmpty(safe)) return null;
 
             var dir = Path.Combine(Root, safe);
