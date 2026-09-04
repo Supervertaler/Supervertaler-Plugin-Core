@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
 
@@ -118,6 +118,15 @@ namespace Supervertaler.Core.Models
         /// When null, the handler uses its default.
         /// </summary>
         public int? MaxTokens { get; set; }
+
+        /// <summary>
+        /// How this send should be logged, when the caller knows better than the
+        /// default (Chat, or QuickLauncher when a prompt name is set). AutoPrompt
+        /// submits its meta-prompt through the chat pipeline and was therefore
+        /// counted as Chat in the Reports tab and the usage ledger; it passes
+        /// PromptGeneration here. Null keeps the default.
+        /// </summary>
+        public PromptLogFeature? Feature { get; set; }
 
         /// <summary>
         /// When true, the user message bubble is displayed with assistant styling (gray,
