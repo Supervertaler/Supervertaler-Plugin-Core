@@ -231,6 +231,20 @@ namespace Supervertaler.Core
                 ctx.SharedBriefText = ReadBankFile(sharedDir, BriefFile, out _);
                 ctx.SharedTerminologyText = ReadBankFile(sharedDir, TerminologyFile, out _);
                 ctx.SharedStyleText = ReadBankFile(sharedDir, StyleFile, out _);
+
+                // Anything else at the shared root, on the same footing as the
+                // extras of a selected bank. Only the three named files were read
+                // here, so a translator who added _shared/method.md - working
+                // rules, what to verify, what has bitten before - had written a
+                // file that reached no prompt in either product and gave no sign
+                // of it. The selected bank has loaded its extras since the same
+                // reasoning was applied there: someone who adds a file to a bank
+                // means it to be used.
+                foreach (var extra in ReadOtherBankFiles(sharedDir))
+                {
+                    ctx.SharedExtraArticles.Add(extra.Key);
+                    ctx.SharedExtraPaths.Add(SharedBankName + "/" + extra.Value);
+                }
             }
 
             ctx.TrimToTokenBudget(tokenBudget);
@@ -421,7 +435,8 @@ namespace Supervertaler.Core
             bool hasShared =
                 !string.IsNullOrWhiteSpace(ctx.SharedBriefText) ||
                 !string.IsNullOrWhiteSpace(ctx.SharedTerminologyText) ||
-                !string.IsNullOrWhiteSpace(ctx.SharedStyleText);
+                !string.IsNullOrWhiteSpace(ctx.SharedStyleText) ||
+                ctx.SharedExtraArticles.Count > 0;
 
             if (hasShared)
             {
@@ -435,6 +450,19 @@ namespace Supervertaler.Core
                 AppendSection(sb, "General notes", null, ctx.SharedBriefText);
                 AppendSection(sb, "Terminology", null, ctx.SharedTerminologyText);
                 AppendSection(sb, "Style", null, ctx.SharedStyleText);
+
+                // Named after the file, since that is the only name they have -
+                // and a heading of "method.md" is what the translator will
+                // recognise when they go looking for what the model was told.
+                for (var i = 0; i < ctx.SharedExtraArticles.Count; i++)
+                {
+                    var path = i < ctx.SharedExtraPaths.Count ? ctx.SharedExtraPaths[i] : null;
+                    var name = string.IsNullOrWhiteSpace(path)
+                        ? "Notes"
+                        : path.Substring(path.LastIndexOf('/') + 1);
+
+                    AppendSection(sb, name, null, ctx.SharedExtraArticles[i]);
+                }
             }
 
             sb.AppendLine();
@@ -1144,6 +1172,16 @@ namespace Supervertaler.Core
         // Separate fields rather than merged text, so FormatForPrompt can label
         // which layer a rule came from. An AI told "the client overrides the
         // house defaults" can only act on that if it can see which is which.
+        /// <summary>
+        /// Every other <c>*.md</c> at the shared bank's root, alongside the three
+        /// named files. Kept apart from <see cref="ExtraArticles"/> so the
+        /// formatter can put them under the house-defaults heading, where they
+        /// belong, rather than among the client's own material.
+        /// </summary>
+        public List<string> SharedExtraArticles { get; set; } = new List<string>();
+
+        public List<string> SharedExtraPaths { get; set; } = new List<string>();
+
         public string SharedBriefText { get; set; }
         public string SharedTerminologyText { get; set; }
         public string SharedStyleText { get; set; }
@@ -1173,6 +1211,7 @@ namespace Supervertaler.Core
                 if (SharedBriefText != null) chars += SharedBriefText.Length;
                 if (SharedTerminologyText != null) chars += SharedTerminologyText.Length;
                 if (SharedStyleText != null) chars += SharedStyleText.Length;
+                foreach (var t in SharedExtraArticles) chars += t.Length;
                 return chars / 4;
             }
         }
@@ -1193,6 +1232,20 @@ namespace Supervertaler.Core
             // TrimmedPaths preserves it, so a caller reading the list sees what
             // was considered least important first.
             var sharedPrefix = MemoryBankReader.SharedBankName + "/";
+
+            // First of all, because they are the least canonical thing here: the
+            // shared layer loses before the client layer, and within the shared
+            // layer the three named files are the ones the format is built
+            // around.
+            while (SharedExtraArticles.Count > 0 && EstimatedTokens > maxTokens)
+            {
+                SharedExtraArticles.RemoveAt(SharedExtraArticles.Count - 1);
+                if (SharedExtraPaths.Count > 0)
+                {
+                    TrimmedPaths.Add(SharedExtraPaths[SharedExtraPaths.Count - 1]);
+                    SharedExtraPaths.RemoveAt(SharedExtraPaths.Count - 1);
+                }
+            }
 
             if (EstimatedTokens > maxTokens && SharedBriefText != null)
             {
