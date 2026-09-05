@@ -864,6 +864,13 @@ namespace Supervertaler.Core
             // one-character candidates costs nothing (they are never useful glossary
             // entries); two-character abbreviations (UI, AI, ID, API…) are still matched.
             if (termUpper.Length < 2) return false;
+            // A term containing CJK characters has no word boundary to anchor on: \w
+            // includes them, and Chinese and Japanese text has no spaces, so \b never
+            // occurs inside a run of them and a Chinese term in Chinese source never
+            // matched (#102). Substring is the right test there - the language has no
+            // word boundaries to respect.
+            if (ContainsCjk(termUpper))
+                return textUpper.IndexOf(termUpper, StringComparison.Ordinal) >= 0;
             try
             {
                 // \b matches between \w and \W. For multi-word terms the spaces inside
@@ -879,6 +886,20 @@ namespace Supervertaler.Core
         }
 
         // ─── Private helpers ─────────────────────────────────────────
+
+        private static bool ContainsCjk(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            foreach (var ch in s)
+            {
+                if ((ch >= '\u4E00' && ch <= '\u9FFF')      // CJK Unified Ideographs
+                    || (ch >= '\u3400' && ch <= '\u4DBF')   // Extension A
+                    || (ch >= '\u3040' && ch <= '\u30FF')   // Hiragana, Katakana
+                    || (ch >= '\uAC00' && ch <= '\uD7AF'))  // Hangul syllables
+                    return true;
+            }
+            return false;
+        }
 
         private static string BuildTerminologySection(List<TermEntry> terms)
         {
