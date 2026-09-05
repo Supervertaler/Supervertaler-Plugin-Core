@@ -76,6 +76,26 @@ namespace Supervertaler.Core.Models
         /// anywhere saying so. Exported glossaries already declare their pair;
         /// this is the same declaration for the prompt that produced them.
         /// </summary>
+        /// <summary>
+        /// What wrote this prompt, when it was not a person - currently only
+        /// "autoprompt". Empty for a hand-written prompt.
+        ///
+        /// <para>Recorded because the runtime needs to tell the two apart. A
+        /// drafted prompt already carries a locked-terms table chosen for this
+        /// document, so sending the project glossary alongside it supplies the
+        /// same job's terminology twice, from two sources that were not written
+        /// to agree - and on the terms where they disagree the model is left to
+        /// pick. A hand-written prompt makes no such claim and still wants the
+        /// glossary.</para>
+        ///
+        /// <para>A string rather than a bool so that "drafted by what" stays
+        /// answerable: the answer will not always be AutoPrompt.</para>
+        /// </summary>
+        public string DraftedBy { get; set; } = "";
+
+        /// <summary>True when something other than a person wrote this prompt.</summary>
+        public bool IsDrafted => !string.IsNullOrWhiteSpace(DraftedBy);
+
         public string SourceLang { get; set; } = "";
 
         public string TargetLang { get; set; } = "";

@@ -377,6 +377,8 @@ namespace Supervertaler.Core
             if (!string.IsNullOrEmpty(prompt.App) &&
                 !prompt.App.Equals("both", StringComparison.OrdinalIgnoreCase))
                 sb.AppendLine("app: \"" + EscapeYamlString(prompt.App) + "\"");
+            if (!string.IsNullOrWhiteSpace(prompt.DraftedBy))
+                sb.AppendLine("drafted_by: \"" + EscapeYamlString(prompt.DraftedBy) + "\"");
             if (!string.IsNullOrWhiteSpace(prompt.SourceLang) && !string.IsNullOrWhiteSpace(prompt.TargetLang))
             {
                 sb.AppendLine("source_lang: \"" + EscapeYamlString(prompt.SourceLang) + "\"");
@@ -1345,6 +1347,9 @@ namespace Supervertaler.Core
                     case "app":
                         // Unified schema: "workbench", "trados", or "both"
                         prompt.App = value.ToLowerInvariant();
+                        break;
+                    case "drafted_by":
+                        prompt.DraftedBy = value.ToLowerInvariant();
                         break;
                     case "source_lang":
                         prompt.SourceLang = value;
