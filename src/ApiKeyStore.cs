@@ -165,7 +165,10 @@ namespace Supervertaler.Core
                 {
                     try
                     {
-                        using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+                        // FileShare.Delete alone: still exclusive against every reader and
+                        // writer, and it lets the empty-file case below delete while the
+                        // handle is held, so no other product can open the file in between.
+                        using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Delete))
                         {
                             string existing;
                             using (var reader = new StreamReader(fs, Encoding.UTF8, true, 4096, leaveOpen: true))
@@ -173,12 +176,14 @@ namespace Supervertaler.Core
                             var map = Parse(existing);
                             if (!mutate(map))
                             {
-                                // Nothing to write. OpenOrCreate may just have made an empty
-                                // file on a machine that had none; do not leave it behind to be
-                                // mistaken for a failed write (memoQ session's note).
-                                bool created = existing.Length == 0;
-                                fs.Close();
-                                if (created) { try { File.Delete(path); } catch { } }
+                                // Nothing to write. An empty key file - the one OpenOrCreate just
+                                // made on a machine that had none, or any other - is removed so it
+                                // cannot be mistaken for a failed write. Deleted BEFORE the handle
+                                // closes: Windows marks it delete-pending and nobody can open it
+                                // in the meantime, so a key another product writes in that window
+                                // cannot be lost (memoQ session, 2026-09-06).
+                                bool wasEmpty = existing.Length == 0;
+                                if (wasEmpty) { try { File.Delete(path); } catch { } }
                                 return false;
                             }
                             var bytes = new UTF8Encoding(false).GetBytes(Render(map));
