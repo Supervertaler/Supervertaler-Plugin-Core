@@ -292,6 +292,21 @@ namespace Supervertaler.Core
         /// Builds the complete meta-prompt that instructs the AI to generate
         /// a comprehensive translation prompt for the given project context.
         /// </summary>
+        /// <summary>"segments" or whatever the host said it was counting, singular-safe.</summary>
+        private static string UnitOf(PromptGenerationContext ctx)
+        {
+            var unit = (ctx?.SegmentUnit ?? "").Trim();
+            if (unit.Length == 0) unit = "segments";
+            if (ctx != null && ctx.SegmentCount == 1 && unit.EndsWith("s")) unit = unit.Substring(0, unit.Length - 1);
+            return unit;
+        }
+
+        private static string Singular(string unit) =>
+            !string.IsNullOrEmpty(unit) && unit.EndsWith("s") ? unit.Substring(0, unit.Length - 1) : unit;
+
+        private static string Capitalise(string s) =>
+            string.IsNullOrEmpty(s) ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
+
         public static string BuildMetaPrompt(PromptGenerationContext ctx)
         {
             // Get domain template
@@ -346,7 +361,9 @@ namespace Supervertaler.Core
             sb.AppendLine("=== ANALYSIS RESULTS ===");
             sb.AppendLine($"DETECTED DOMAIN: {domain.ToUpperInvariant()}");
             sb.AppendLine($"LANGUAGE PAIR: {ctx.SourceLang} -> {ctx.TargetLang}");
-            sb.AppendLine($"SEGMENT COUNT: {ctx.SegmentCount}");
+            // The label takes the singular noun whatever the count - "SEGMENT COUNT:
+            // 370", as it always read - where the summary line below says "Segments:".
+            sb.AppendLine($"{Singular(UnitOf(ctx)).ToUpperInvariant()} COUNT: {ctx.SegmentCount}");
             sb.AppendLine();
 
             if (!string.IsNullOrEmpty(ctx.AnalysisSummary))
@@ -767,7 +784,7 @@ namespace Supervertaler.Core
             sb.AppendLine();
             sb.AppendLine($"Domain: {char.ToUpper(domain[0])}{domain.Substring(1)}");
             sb.AppendLine($"Language pair: {ctx.SourceLang} \u2192 {ctx.TargetLang}");
-            sb.AppendLine($"Segments: {ctx.SegmentCount:N0}");
+            sb.AppendLine($"{Capitalise(UnitOf(ctx))}: {ctx.SegmentCount:N0}");
 
             if (ctx.TermbaseTerms != null && ctx.TermbaseTerms.Count > 0)
             {
@@ -1054,6 +1071,17 @@ namespace Supervertaler.Core
         public string DetectedDomain { get; set; }
         public string AnalysisSummary { get; set; }
         public int SegmentCount { get; set; }
+
+        /// <summary>
+        /// What <see cref="SegmentCount"/> counts: "segments" unless the host says
+        /// otherwise. memoQ's live-document link hands over paragraphs, each of
+        /// which holds one or more segments, and a count of 170 presented to the
+        /// model as segments told it the document was half its size when deciding
+        /// how much material to lock. Trados counts real segments and leaves this
+        /// at the default.
+        /// </summary>
+        public string SegmentUnit { get; set; } = "segments";
+
         public List<string> SourceSegments { get; set; }
         public List<TermEntry> TermbaseTerms { get; set; }
         public List<TmMatch> TmPairs { get; set; }
