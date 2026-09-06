@@ -163,24 +163,76 @@ namespace Supervertaler.Core
         public static string CheckShape(string providerKey, string key)
         {
             if (string.IsNullOrWhiteSpace(key)) return null;
+
             var k = key.Trim();
-            switch (Canonical(providerKey))
+            var wanted = Canonical(providerKey);
+            var prefix = PrefixFor(wanted);
+            if (prefix == null) return null;                  // no known shape: anything goes
+
+            var name = NameOf(wanted);
+
+            // The service the key belongs to is decided first, not the prefix the
+            // box wants. Every OpenRouter key also starts with OpenAI's "sk-", so
+            // testing the wanted prefix first would wave one straight through.
+            //
+            // Naming the service it DOES belong to is the useful half: "this does
+            // not look like an Anthropic key" leaves someone staring at a key that
+            // looks perfectly fine to them; "this is your OpenAI key" ends it.
+            var actual = ServiceOf(k);
+            if (actual != null)
+                return string.Equals(actual, name, StringComparison.Ordinal)
+                    ? null
+                    : "This is " + Article(actual) + " " + actual + " key, not " + Article(name) + " " + name + " one.";
+
+            return "This does not look like " + Article(name) + " " + name
+                 + " key - they start with " + prefix + ".";
+        }
+
+        /// <summary>The prefix a provider's keys are known to start with, or null.</summary>
+        private static string PrefixFor(string providerKey)
+        {
+            switch (providerKey)
             {
-                case LlmModels.ProviderClaude:
-                    return k.StartsWith("sk-ant-") ? null : "This does not look like an Anthropic key - they start with sk-ant-.";
-                case LlmModels.ProviderOpenAi:
-                    if (k.StartsWith("sk-or-")) return "This is an OpenRouter key (sk-or-), not an OpenAI key.";
-                    if (k.StartsWith("sk-ant-")) return "This is an Anthropic key (sk-ant-), not an OpenAI key.";
-                    return k.StartsWith("sk-") ? null : "This does not look like an OpenAI key - they start with sk- or sk-proj-.";
-                case LlmModels.ProviderGemini:
-                    return k.StartsWith("AIza") ? null : "This does not look like a Gemini key - they start with AIza.";
-                case LlmModels.ProviderGrok:
-                    return k.StartsWith("xai-") ? null : "This does not look like an xAI key - they start with xai-.";
-                case LlmModels.ProviderOpenRouter:
-                    return k.StartsWith("sk-or-") ? null : "This does not look like an OpenRouter key - they start with sk-or-.";
-                default:
-                    return null;
+                case LlmModels.ProviderClaude: return "sk-ant-";
+                case LlmModels.ProviderOpenAi: return "sk-";
+                case LlmModels.ProviderGemini: return "AIza";
+                case LlmModels.ProviderGrok: return "xai-";
+                case LlmModels.ProviderOpenRouter: return "sk-or-";
+                default: return null;
             }
+        }
+
+        private static string NameOf(string providerKey)
+        {
+            switch (providerKey)
+            {
+                case LlmModels.ProviderClaude: return "Anthropic";
+                case LlmModels.ProviderOpenAi: return "OpenAI";
+                case LlmModels.ProviderGemini: return "Gemini";
+                case LlmModels.ProviderGrok: return "xAI";
+                case LlmModels.ProviderOpenRouter: return "OpenRouter";
+                default: return providerKey;
+            }
+        }
+
+        /// <summary>
+        /// Which service a key plainly belongs to, or null. Longest prefix first:
+        /// every OpenRouter key also starts with "sk-".
+        /// </summary>
+        private static string ServiceOf(string key)
+        {
+            if (key.StartsWith("sk-ant-", StringComparison.Ordinal)) return "Anthropic";
+            if (key.StartsWith("sk-or-", StringComparison.Ordinal)) return "OpenRouter";
+            if (key.StartsWith("sk-", StringComparison.Ordinal)) return "OpenAI";
+            if (key.StartsWith("AIza", StringComparison.Ordinal)) return "Gemini";
+            if (key.StartsWith("xai-", StringComparison.Ordinal)) return "xAI";
+            return null;
+        }
+
+        private static string Article(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "a";
+            return "AEIOUaeiou".IndexOf(name[0]) >= 0 ? "an" : "a";
         }
     }
 }
