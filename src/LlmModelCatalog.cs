@@ -175,6 +175,11 @@ namespace Supervertaler.Core
         }
 
         // ─── Parsing: one DTO per list shape ────────────────────────────────────────
+        //
+        // Every field below is written by the deserialiser, which the compiler
+        // cannot see, so all of them would otherwise raise CS0649. Twelve
+        // permanent false warnings is how a real one goes unread.
+#pragma warning disable 0649
 
         [DataContract] private class OpenAiList { [DataMember(Name = "data")] public OpenAiEntry[] Data; }
         [DataContract] private class OpenAiEntry
@@ -194,6 +199,7 @@ namespace Supervertaler.Core
         }
         [DataContract] private class OllamaList { [DataMember(Name = "models")] public OllamaEntry[] Models; }
         [DataContract] private class OllamaEntry { [DataMember(Name = "name")] public string Name; }
+#pragma warning restore 0649
 
         private static T Read<T>(string json) where T : class
         {
