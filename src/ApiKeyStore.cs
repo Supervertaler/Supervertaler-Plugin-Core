@@ -64,18 +64,14 @@ namespace Supervertaler.Core
         /// <summary>Writes one key (empty removes it). Returns false if the file could not be written.</summary>
         public static bool Set(string providerKey, string key)
         {
-            lock (Gate)
+            var p = Canonical(providerKey);
+            return Update(map =>
             {
-                try
-                {
-                    var map = Load();
-                    var p = Canonical(providerKey);
-                    if (string.IsNullOrWhiteSpace(key)) map.Remove(p);
-                    else map[p] = key.Trim();
-                    return Save(map);
-                }
-                catch { return false; }
-            }
+                if (string.IsNullOrWhiteSpace(key)) return map.Remove(p);
+                if (map.TryGetValue(p, out var have) && have == key.Trim()) return false;
+                map[p] = key.Trim();
+                return true;
+            });
         }
 
         /// <summary>
@@ -86,41 +82,98 @@ namespace Supervertaler.Core
         public static int MigrateFrom(AiApiKeys local)
         {
             if (local == null) return 0;
-            lock (Gate)
+            int added = 0;
+            Update(map =>
             {
-                try
+                void Take(string provider, string key)
                 {
-                    var map = Load();
-                    int added = 0;
-                    void Take(string provider, string key)
-                    {
-                        if (string.IsNullOrWhiteSpace(key)) return;
-                        if (map.TryGetValue(provider, out var have) && !string.IsNullOrWhiteSpace(have)) return;
-                        map[provider] = key.Trim(); added++;
-                    }
-                    Take(LlmModels.ProviderOpenAi, local.OpenAi);
-                    Take(LlmModels.ProviderClaude, local.Claude);
-                    Take(LlmModels.ProviderGemini, local.Gemini);
-                    Take(LlmModels.ProviderGrok, local.Grok);
-                    Take(LlmModels.ProviderMistral, local.Mistral);
-                    Take(LlmModels.ProviderDeepSeek, local.DeepSeek);
-                    Take(LlmModels.ProviderOpenRouter, local.OpenRouter);
-                    if (added > 0 && !Save(map)) return 0;
-                    return added;
+                    if (string.IsNullOrWhiteSpace(key)) return;
+                    if (map.TryGetValue(provider, out var have) && !string.IsNullOrWhiteSpace(have)) return;
+                    map[provider] = key.Trim(); added++;
                 }
-                catch { return 0; }
-            }
+                Take(LlmModels.ProviderOpenAi, local.OpenAi);
+                Take(LlmModels.ProviderClaude, local.Claude);
+                Take(LlmModels.ProviderGemini, local.Gemini);
+                Take(LlmModels.ProviderGrok, local.Grok);
+                Take(LlmModels.ProviderMistral, local.Mistral);
+                Take(LlmModels.ProviderDeepSeek, local.DeepSeek);
+                Take(LlmModels.ProviderOpenRouter, local.OpenRouter);
+                return added > 0;
+            });
+            return added;
         }
 
         /// <summary>The whole file as provider → key, canonical ids. Empty when absent.</summary>
         public static Dictionary<string, string> Load()
         {
-            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var path = FilePath;
-            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return map;
-            var json = File.ReadAllText(path, Encoding.UTF8);
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // A writer holds the file exclusively for a few milliseconds; wait it out.
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    using (var reader = new StreamReader(fs, Encoding.UTF8, true))
+                        return Parse(reader.ReadToEnd());
+                }
+                catch (IOException) when (attempt < 20)
+                {
+                    System.Threading.Thread.Sleep(50);
+                }
+            }
+        }
+
+        /// <summary>
+        /// One read-modify-write under an exclusive open (#108 handoff): three
+        /// products share this file and two of them saving at the same moment must
+        /// not lose a write. A lock on the file, not the process; a second writer
+        /// waits up to a second. <paramref name="mutate"/> returns false to leave the
+        /// file untouched.
+        /// </summary>
+        private static bool Update(Func<Dictionary<string, string>, bool> mutate)
+        {
+            var path = FilePath;
+            if (string.IsNullOrEmpty(path)) return false;
+            lock (Gate)
+            {
+                try { Directory.CreateDirectory(Path.GetDirectoryName(path)); } catch { return false; }
+                for (int attempt = 0; ; attempt++)
+                {
+                    try
+                    {
+                        using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+                        {
+                            string existing;
+                            using (var reader = new StreamReader(fs, Encoding.UTF8, true, 4096, leaveOpen: true))
+                                existing = reader.ReadToEnd();
+                            var map = Parse(existing);
+                            if (!mutate(map)) return false;
+                            var bytes = new UTF8Encoding(false).GetBytes(Render(map));
+                            fs.SetLength(0);
+                            fs.Position = 0;
+                            fs.Write(bytes, 0, bytes.Length);
+                            fs.Flush(true);
+                            return true;
+                        }
+                    }
+                    catch (IOException) when (attempt < 20)
+                    {
+                        System.Threading.Thread.Sleep(50);
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        private static Dictionary<string, string> Parse(string json)
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             // A flat object of strings; nothing else is expected, and anything else is ignored.
-            foreach (Match m in Regex.Matches(json, "\"(?<k>[^\"\\\\]+)\"\\s*:\\s*\"(?<v>(?:[^\"\\\\]|\\\\.)*)\""))
+            foreach (Match m in Regex.Matches(json ?? "", "\"(?<k>[^\"\\\\]+)\"\\s*:\\s*\"(?<v>(?:[^\"\\\\]|\\\\.)*)\""))
             {
                 var k = m.Groups["k"].Value;
                 if (k.StartsWith("_")) continue;   // "_comment" and the like
@@ -129,11 +182,8 @@ namespace Supervertaler.Core
             return map;
         }
 
-        private static bool Save(Dictionary<string, string> map)
+        private static string Render(Dictionary<string, string> map)
         {
-            var path = FilePath;
-            if (string.IsNullOrEmpty(path)) return false;
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
             var sb = new StringBuilder();
             sb.AppendLine("{");
             sb.AppendLine("  \"_comment\": \"API keys shared by Supervertaler for Trados, Supervertaler for memoQ and Supervertaler Sidekick. One key per provider; edit by hand or in any product's settings.\",");
@@ -145,10 +195,7 @@ namespace Supervertaler.Core
                 sb.AppendLine(i < keys.Count - 1 ? "," : "");
             }
             sb.AppendLine("}");
-            var tmp = path + ".tmp";
-            File.WriteAllText(tmp, sb.ToString(), new UTF8Encoding(false));
-            if (File.Exists(path)) File.Replace(tmp, path, null); else File.Move(tmp, path);
-            return true;
+            return sb.ToString();
         }
 
         private static string Escape(string s) => (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
