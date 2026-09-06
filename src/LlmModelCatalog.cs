@@ -207,7 +207,7 @@ namespace Supervertaler.Core
         private static readonly Regex OpenAiNotForText = new Regex(@"(audio|realtime|transcribe|tts|image|search|codex|instruct|moderation|embedding)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // Gemini's list marks image, speech and transcription models as supporting
         // generateContent, so the method check alone lets Nano Banana through.
-        private static readonly Regex GeminiNotForText = new Regex(@"(tts|image|imagen|veo|embed|transcribe|aqa|learnlm|audio)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex GeminiNotForText = new Regex(@"(tts|image|imagen|veo|embed|transcribe|aqa|learnlm|audio|nano-banana|lyria|robotics|computer-use|antigravity|deep-research)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // "gpt-5.4-mini-2026-03-17" beside "gpt-5.4-mini": the snapshot adds nothing
         // to a picker, and the undated id is the one that keeps working.
         private static readonly Regex DatedSnapshot = new Regex(@"^(?<base>.+?)-(\d{4}-\d{2}-\d{2}|\d{8})$", RegexOptions.Compiled);
