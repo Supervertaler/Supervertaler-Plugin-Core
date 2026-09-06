@@ -61,17 +61,27 @@ namespace Supervertaler.Core
             catch { return null; }
         }
 
-        /// <summary>Writes one key (empty removes it). Returns false if the file could not be written.</summary>
+        /// <summary>
+        /// Writes one key (empty removes it). Returns false only when the file could
+        /// not be written.
+        ///
+        /// <para>A key already stored with this exact value needs no write, and that
+        /// is a success: it is by far the commonest case, since a settings dialog
+        /// saves every field whether or not it was touched. Reporting it as a
+        /// failure made memoQ believe every ordinary OK had failed to save.</para>
+        /// </summary>
         public static bool Set(string providerKey, string key)
         {
             var p = Canonical(providerKey);
+            var wanted = string.IsNullOrWhiteSpace(key) ? null : key.Trim();
+
             return Update(map =>
             {
-                if (string.IsNullOrWhiteSpace(key)) return map.Remove(p);
-                if (map.TryGetValue(p, out var have) && have == key.Trim()) return false;
-                map[p] = key.Trim();
+                if (wanted == null) return map.Remove(p);
+                if (map.TryGetValue(p, out var have) && have == wanted) return false;
+                map[p] = wanted;
                 return true;
-            });
+            }) != null;
         }
 
         /// <summary>
@@ -121,6 +131,15 @@ namespace Supervertaler.Core
                 {
                     System.Threading.Thread.Sleep(50);
                 }
+                catch
+                {
+                    // "Empty when absent" is what the summary promises, and a file
+                    // that cannot be read is as good as absent to every caller here:
+                    // the key simply is not available. Without this, a locked file
+                    // after the retries - or one the user has no rights to - throws
+                    // out of a method documented never to.
+                    return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                }
             }
         }
 
@@ -130,14 +149,18 @@ namespace Supervertaler.Core
         /// not lose a write. A lock on the file, not the process; a second writer
         /// waits up to a second. <paramref name="mutate"/> returns false to leave the
         /// file untouched.
+        ///
+        /// <para>Three outcomes, not two: <c>true</c> written, <c>false</c> nothing
+        /// needed writing, <c>null</c> could not be written. Collapsing the last two
+        /// is what let a no-op save look like a failed one.</para>
         /// </summary>
-        private static bool Update(Func<Dictionary<string, string>, bool> mutate)
+        private static bool? Update(Func<Dictionary<string, string>, bool> mutate)
         {
             var path = FilePath;
-            if (string.IsNullOrEmpty(path)) return false;
+            if (string.IsNullOrEmpty(path)) return null;
             lock (Gate)
             {
-                try { Directory.CreateDirectory(Path.GetDirectoryName(path)); } catch { return false; }
+                try { Directory.CreateDirectory(Path.GetDirectoryName(path)); } catch { return null; }
                 for (int attempt = 0; ; attempt++)
                 {
                     try
@@ -163,7 +186,7 @@ namespace Supervertaler.Core
                     }
                     catch
                     {
-                        return false;
+                        return null;
                     }
                 }
             }
