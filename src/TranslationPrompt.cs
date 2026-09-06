@@ -97,7 +97,8 @@ namespace Supervertaler.Core
             List<string> documentSegments = null,
             int maxDocumentSegments = 500,
             bool includeTermMetadata = true,
-            string kbContext = null)
+            string kbContext = null,
+            StructureContextMode structureContext = StructureContextMode.Off)
         {
             var sb = new StringBuilder(4096);
 
@@ -111,6 +112,19 @@ namespace Supervertaler.Core
             else
             {
                 sb.Append(BuildBaseSystemPrompt(sourceLang, targetLang));
+            }
+
+            // Layer 1b: document structure (#109). Part of the plugin's own preamble,
+            // never of a prompt template, so it reaches prompts the plugin did not
+            // write - the user's own, and AutoPrompt's.
+            var structureRule = StructureContext.RuleFor(structureContext);
+            if (structureRule != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine();
+                sb.AppendLine("# DOCUMENT STRUCTURE");
+                sb.AppendLine();
+                sb.Append(structureRule);
             }
 
             // Layer 2: Custom prompt from library (appended as additional instructions)
