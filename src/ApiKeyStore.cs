@@ -171,7 +171,16 @@ namespace Supervertaler.Core
                             using (var reader = new StreamReader(fs, Encoding.UTF8, true, 4096, leaveOpen: true))
                                 existing = reader.ReadToEnd();
                             var map = Parse(existing);
-                            if (!mutate(map)) return false;
+                            if (!mutate(map))
+                            {
+                                // Nothing to write. OpenOrCreate may just have made an empty
+                                // file on a machine that had none; do not leave it behind to be
+                                // mistaken for a failed write (memoQ session's note).
+                                bool created = existing.Length == 0;
+                                fs.Close();
+                                if (created) { try { File.Delete(path); } catch { } }
+                                return false;
+                            }
                             var bytes = new UTF8Encoding(false).GetBytes(Render(map));
                             fs.SetLength(0);
                             fs.Position = 0;
