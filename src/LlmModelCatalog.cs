@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -202,6 +202,26 @@ namespace Supervertaler.Core
         }
 
         private static readonly Regex OpenAiChatFamilies = new Regex(@"^(gpt|o[0-9]|chatgpt)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // Variants of a chat model that are not for translating text: speech, realtime
+        // voice, image, web search, code, legacy instruct, moderation, embeddings.
+        private static readonly Regex OpenAiNotForText = new Regex(@"(audio|realtime|transcribe|tts|image|search|codex|instruct|moderation|embedding)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // Gemini's list marks image, speech and transcription models as supporting
+        // generateContent, so the method check alone lets Nano Banana through.
+        private static readonly Regex GeminiNotForText = new Regex(@"(tts|image|imagen|veo|embed|transcribe|aqa|learnlm|audio)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // "gpt-5.4-mini-2026-03-17" beside "gpt-5.4-mini": the snapshot adds nothing
+        // to a picker, and the undated id is the one that keeps working.
+        private static readonly Regex DatedSnapshot = new Regex(@"^(?<base>.+?)-(\d{4}-\d{2}-\d{2}|\d{8})$", RegexOptions.Compiled);
+
+        /// <summary>Removes dated snapshots whose undated model is also in the list.</summary>
+        private static List<FetchedModel> DropDatedDuplicates(List<FetchedModel> list)
+        {
+            var ids = new HashSet<string>(list.Select(m => m.Id), StringComparer.OrdinalIgnoreCase);
+            return list.Where(m =>
+            {
+                var d = DatedSnapshot.Match(m.Id);
+                return !d.Success || !ids.Contains(d.Groups["base"].Value);
+            }).ToList();
+        }
 
         private static List<FetchedModel> Parse(string providerKey, string body)
         {
@@ -226,6 +246,7 @@ namespace Supervertaler.Core
                         if (m.Methods != null && !m.Methods.Any(x => string.Equals(x, "generateContent", StringComparison.OrdinalIgnoreCase)))
                             continue;
                         var id = m.Name.StartsWith("models/", StringComparison.OrdinalIgnoreCase) ? m.Name.Substring(7) : m.Name;
+                        if (GeminiNotForText.IsMatch(id)) continue;
                         Add(id, m.DisplayName);
                     }
                     break;
@@ -245,7 +266,7 @@ namespace Supervertaler.Core
                     {
                         // The list holds embeddings, audio, images, moderation... keep the
                         // chat families, newest first (the API returns them unordered).
-                        entries = entries.Where(e => OpenAiChatFamilies.IsMatch(e.Id))
+                        entries = entries.Where(e => OpenAiChatFamilies.IsMatch(e.Id) && !OpenAiNotForText.IsMatch(e.Id))
                                          .OrderByDescending(e => e.Created).ToList();
                     }
                     else if (providerKey == LlmModels.ProviderClaude)
@@ -260,7 +281,7 @@ namespace Supervertaler.Core
                     break;
                 }
             }
-            return list;
+            return DropDatedDuplicates(list);
         }
     }
 }

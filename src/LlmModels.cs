@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Supervertaler.Core
@@ -86,18 +86,6 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "gpt-5.5", DisplayName = "GPT-5.5",
-                Description = "Premium quality – OpenAI's most advanced model, ideal for AutoPrompt and complex translation tasks",
-                Provider = LlmProvider.OpenAi,
-                SupportsTemperature = false,  // GPT-5.5 only accepts the default temperature
-                // Refusing a custom temperature is the signature of the reasoning
-                // family, and the model thinks before it answers: it needs the long
-                // timeout, not the 120 s default. A user reported AutoPrompt timing
-                // out on this model at exactly 120.0 s.
-                IsReasoningModel = true
-            },
-            new LlmModelInfo
-            {
                 Id = "gpt-5.4-mini", DisplayName = "GPT-5.4 Mini",
                 Description = "Recommended for most tasks – fast, affordable, and high quality for everyday translation work",
                 Provider = LlmProvider.OpenAi
@@ -126,8 +114,8 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "claude-fable-5", DisplayName = "Claude Fable 5",
-                Description = "Maximum capability – always-on reasoning at double Opus pricing; rarely worth it now that Opus 5 exists",
+                Id = "claude-fable-5-1", DisplayName = "Claude Fable 5.1",
+                Description = "Maximum capability – Anthropic's most capable model, always-on reasoning at double Opus pricing; for the hardest legal/technical work when cost is secondary",
                 Provider = LlmProvider.Claude
             }
         };
