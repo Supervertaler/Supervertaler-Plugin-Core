@@ -1146,6 +1146,24 @@ namespace Supervertaler.Core
             if (cacheWriteMatch.Success)
                 usage.CacheWriteTokens = int.Parse(cacheWriteMatch.Groups[1].Value);
 
+            // Anthropic also reports the write broken down by cache lifetime, in a
+            // nested "cache_creation" object, and the flat field above can be
+            // absent or zero while those carry the real number. Reading only the
+            // flat one made a run look as though it had written nothing while the
+            // very next request read 24,918 tokens back - which is a cache that
+            // was plainly written and silently unreported.
+            //
+            // Summed, not preferred: a request can create entries at more than one
+            // lifetime, and what a caller wants to know is how much was written.
+            if (usage.CacheWriteTokens == 0)
+            {
+                var detailed = 0;
+                foreach (Match m in Regex.Matches(json, @"""ephemeral_(?:5m|1h)_input_tokens""\s*:\s*(\d+)"))
+                    detailed += int.Parse(m.Groups[1].Value);
+
+                usage.CacheWriteTokens = detailed;
+            }
+
             var cacheReadMatch = Regex.Match(json, @"""cache_read_input_tokens""\s*:\s*(\d+)");
             if (cacheReadMatch.Success)
                 usage.CacheReadTokens = int.Parse(cacheReadMatch.Groups[1].Value);
