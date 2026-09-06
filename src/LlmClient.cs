@@ -376,12 +376,21 @@ namespace Supervertaler.Core
         /// </summary>
         public static string ResolveApiKey(string providerKey, AiApiKeys localKeys)
         {
-            // 1. Check plugin-local keys
+            // 1. The shared key file - one file for every Supervertaler product (#108).
+            //    Not for custom endpoints: those keep their key in the profile.
+            if (providerKey != LlmModels.ProviderCustomOpenAi)
+            {
+                var shared = ApiKeyStore.Get(providerKey);
+                if (!string.IsNullOrEmpty(shared))
+                    return shared;
+            }
+
+            // 2. The plugin's own keys - the fallback, and where a pre-#108 install kept them
             var localKey = GetKeyFromLocal(providerKey, localKeys);
             if (!string.IsNullOrEmpty(localKey))
                 return localKey;
 
-            // 2. Check Supervertaler desktop settings
+            // 3. Supervertaler Workbench's settings
             return ReadKeyFromSupervertalerSettings(providerKey);
         }
 
