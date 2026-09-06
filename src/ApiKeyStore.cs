@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -36,7 +36,6 @@ namespace Supervertaler.Core
         private static readonly Dictionary<string, string> Aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             { "anthropic", LlmModels.ProviderClaude },
-            { "google", LlmModels.ProviderGemini },
             { "xai", LlmModels.ProviderGrok },
             { "x.ai", LlmModels.ProviderGrok },
             { "custom", LlmModels.ProviderCustomOpenAi },
