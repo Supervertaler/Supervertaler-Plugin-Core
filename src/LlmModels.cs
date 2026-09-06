@@ -120,36 +120,29 @@ namespace Supervertaler.Core
             }
         };
 
+        // Short list re-judged 2026-09-06 against Google's pricing page: the newest of
+        // each tier, superseded models dropped (3.5 Flash costs twice 3.8 Flash; 3.1
+        // Flash-Lite and 2.5 Pro are generations behind). Gemma is out: Google hosts it
+        // on the free tier only - paid tier "not available" - so a batch on a paid key
+        // hits the rate limits; it lives under Ollama, where open weights belong.
         public static readonly LlmModelInfo[] GeminiModels =
         {
             new LlmModelInfo
             {
-                Id = "gemini-3.1-flash-lite", DisplayName = "Gemini 3.1 Flash-Lite",
-                Description = "Recommended – fast, affordable, 1M context",
+                Id = "gemini-3.8-flash", DisplayName = "Gemini 3.8 Flash",
+                Description = "Recommended – newest Flash, strong quality at $0.75/$3.75 per 1M tokens (until end 2026), 1M context",
                 Provider = LlmProvider.Gemini
             },
             new LlmModelInfo
             {
-                Id = "gemini-3.5-flash", DisplayName = "Gemini 3.5 Flash",
-                Description = "Premium Flash – higher quality, ~6x cost of Flash-Lite, 1M context",
-                Provider = LlmProvider.Gemini
-            },
-            new LlmModelInfo
-            {
-                Id = "gemini-2.5-pro", DisplayName = "Gemini 2.5 Pro",
-                Description = "Higher quality – advanced reasoning, 1M context",
+                Id = "gemini-3.5-flash-lite", DisplayName = "Gemini 3.5 Flash-Lite",
+                Description = "Budget – $0.30/$2.50 per 1M tokens, for high-volume work where cost matters most",
                 Provider = LlmProvider.Gemini
             },
             new LlmModelInfo
             {
                 Id = "gemini-3.1-pro-preview", DisplayName = "Gemini 3.1 Pro (Preview)",
-                Description = "Newest model (preview) – Google's most advanced, 1M context",
-                Provider = LlmProvider.Gemini
-            },
-            new LlmModelInfo
-            {
-                Id = "gemma-4-26b-a4b-it", DisplayName = "Gemma 4 26B MoE",
-                Description = "Open-source – fast, strong multilingual quality, 256K context",
+                Description = "Top quality – Google's most capable, $2/$12 per 1M tokens; still a preview",
                 Provider = LlmProvider.Gemini
             }
         };
