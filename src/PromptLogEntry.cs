@@ -15,6 +15,8 @@ namespace Supervertaler.Core.Models
         ConnectionTest,
         SuperMemory,
         AutoTag,
+        /// <summary>SuperBench: the judge's call comparing several models' translations (Trados #107).</summary>
+        SuperBench,
         /// <summary>Looking at a drawing and reporting what it shows and
         /// which reference signs are printed on it.</summary>
         FigureAnalysis
@@ -86,6 +88,7 @@ namespace Supervertaler.Core.Models
                     case PromptLogFeature.PromptGeneration: baseLabel = "AutoPrompt"; break;
                     case PromptLogFeature.ConnectionTest: baseLabel = "Connection Test"; break;
                     case PromptLogFeature.AutoTag: baseLabel = "AutoTagger"; break;
+                    case PromptLogFeature.SuperBench: baseLabel = "SuperBench"; break;
                     // Without a label the usage ledger records the call
                     // but shows it nameless - the AutoTagger bug in 20.14x.
                     case PromptLogFeature.FigureAnalysis: baseLabel = "Figure analysis"; break;

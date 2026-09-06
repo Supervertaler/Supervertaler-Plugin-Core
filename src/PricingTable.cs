@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -90,6 +90,7 @@ namespace Supervertaler.Core
                 { "gpt-5.6-luna", (1.00m, 6.00m) },
                 { "gpt-5.5", (5.00m, 30.00m) },
                 { "gpt-5.4-mini", (0.75m, 4.50m) },
+                { "claude-fable-5-1", (10.00m, 50.00m) },
                 { "claude-fable-5", (10.00m, 50.00m) },
                 { "claude-opus-5", (5.00m, 25.00m) },
                 { "claude-opus-4-8", (5.00m, 25.00m) },
@@ -97,6 +98,9 @@ namespace Supervertaler.Core
                 { "claude-sonnet-4-6", (3.00m, 15.00m) },
                 { "claude-haiku-4-5-20251001", (1.00m, 5.00m) },
                 { "gemini-3.1-flash-lite", (0.25m, 1.50m) },
+                { "gemini-3.8-flash", (0.75m, 3.75m) },
+                { "gemini-3.5-flash-lite", (0.30m, 2.50m) },
+                { "gemini-3.1-pro-preview", (2.00m, 12.00m) },
             };
         }
 
