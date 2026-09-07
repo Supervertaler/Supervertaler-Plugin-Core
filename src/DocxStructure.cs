@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -50,6 +50,13 @@ namespace Supervertaler.Core
 
         /// <summary>True when the marker is a bullet rather than a counted number or letter.</summary>
         public bool IsBullet { get; set; }
+
+        /// <summary>
+        /// The paragraph's own character ranges in <c>document.xml</c>: its element
+        /// minus the paragraphs nested inside it (a text box's paragraphs are their
+        /// own). Start/end pairs, in order. Filled by the scanner.
+        /// </summary>
+        internal List<int> OwnSpans { get; } = new List<int>();
     }
 
     /// <summary>
@@ -191,7 +198,41 @@ namespace Supervertaler.Core
                 }
             }
             while (open.Count > 0) { var p = open.Pop(); p.EndOffset = xml.Length; p.Text = ExtractText(xml, p, result); }
-            return result;
+            return DropFallbacks(xml, result);
+        }
+
+        private static readonly Regex FallbackTag = new Regex("<(/?)mc:Fallback[ >]", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Word writes some content twice - DrawingML in mc:Choice and legacy VML in
+        /// mc:Fallback - and renders the Choice. Paragraphs in a Fallback are the
+        /// same paragraphs again; counting them doubled a document's figure labels
+        /// and put its numbering out by the duplicates. Dropped here, after the
+        /// texts were taken (a host paragraph's text already excludes them as
+        /// nested), and the survivors renumbered.
+        /// </summary>
+        private static List<DocxParagraph> DropFallbacks(string xml, List<DocxParagraph> all)
+        {
+            var ranges = new List<int>();   // start,end pairs
+            var stack = new Stack<int>();
+            foreach (Match m in FallbackTag.Matches(xml))
+            {
+                if (m.Groups[1].Value != "/") stack.Push(m.Index);
+                else if (stack.Count > 0) { int s = stack.Pop(); if (stack.Count == 0) { ranges.Add(s); ranges.Add(m.Index); } }
+            }
+            if (ranges.Count == 0) return all;
+
+            var kept = new List<DocxParagraph>(all.Count);
+            foreach (var p in all)
+            {
+                bool inside = false;
+                for (int i = 0; i < ranges.Count; i += 2)
+                    if (p.StartOffset >= ranges[i] && p.StartOffset < ranges[i + 1]) { inside = true; break; }
+                if (inside) continue;
+                p.Index = kept.Count;
+                kept.Add(p);
+            }
+            return kept;
         }
 
         private static void ReadProperties(string xml, int from, DocxParagraph p)
@@ -250,8 +291,9 @@ namespace Supervertaler.Core
         private static string ExtractText(string xml, DocxParagraph p, List<DocxParagraph> all)
         {
             // Text of this paragraph only: runs of paragraphs nested inside it (text
-            // boxes) belong to those paragraphs.
-            var sb = new StringBuilder();
+            // boxes) belong to those paragraphs. The same spans serve the image
+            // extractor, so they are kept on the paragraph.
+            p.OwnSpans.Clear();
             int pos = p.StartOffset;
             int end = p.EndOffset;
             for (int k = p.Index + 1; k < all.Count; k++)
@@ -259,10 +301,13 @@ namespace Supervertaler.Core
                 var nested = all[k];
                 if (nested.StartOffset >= end) break;
                 if (nested.EndOffset <= 0 || nested.EndOffset > end) continue;
-                AppendText(xml, pos, nested.StartOffset, sb);
+                if (nested.StartOffset > pos) { p.OwnSpans.Add(pos); p.OwnSpans.Add(nested.StartOffset); }
                 pos = Math.Max(pos, nested.EndOffset);
             }
-            AppendText(xml, pos, end, sb);
+            if (end > pos) { p.OwnSpans.Add(pos); p.OwnSpans.Add(end); }
+
+            var sb = new StringBuilder();
+            for (int i = 0; i < p.OwnSpans.Count; i += 2) AppendText(xml, p.OwnSpans[i], p.OwnSpans[i + 1], sb);
             return sb.ToString().Trim();
         }
 
