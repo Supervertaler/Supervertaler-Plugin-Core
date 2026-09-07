@@ -1498,7 +1498,6 @@ namespace Supervertaler.Core
             {
                 case "memoq": return " [memoQ]";
                 case "trados": return " [Trados]";
-                case "workbench": return " [Workbench]";
                 default: return "";   // "both", blank, or anything unrecognised
             }
         }
