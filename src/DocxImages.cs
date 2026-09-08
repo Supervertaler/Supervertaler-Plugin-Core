@@ -517,11 +517,41 @@ namespace Supervertaler.Core
                     ? "Figure " + num.Value.ToString().PadLeft(width, '0')
                     : "Image " + img.Ordinal.ToString().PadLeft(width, '0');
 
-                var name = stem + (img.Extension ?? ".img");
+                var ext = img.Extension ?? ".img";
+                byte[] converted = null;
+                if (ImageConversion.IsVectorFormat(ext))
+                {
+                    // A patent drawing is usually a metafile, and no vision model reads
+                    // one, so the folder would fill with files nothing downstream could
+                    // use. Rasterise it here. Extension keeps saying .emf because it
+                    // describes the part in the document; SavedFileName says .png,
+                    // because that is what is on disk.
+                    byte[] source;
+                    using (var s = part.Entry.Open())
+                    using (var ms = new MemoryStream())
+                    {
+                        s.CopyTo(ms);
+                        source = ms.ToArray();
+                    }
+                    string error;
+                    converted = ImageConversion.ToPng(source, out error);
+                    if (converted != null) ext = ".png";
+                }
+
+                var name = stem + ext;
                 var path = Path.Combine(folder, name);
-                using (var src = part.Entry.Open())
-                using (var dst = new FileStream(path, FileMode.Create, FileAccess.Write))
-                    src.CopyTo(dst);
+                if (converted != null)
+                {
+                    File.WriteAllBytes(path, converted);
+                }
+                else
+                {
+                    // Including a metafile that would not render: the original is
+                    // better than nothing, and the analyser says why it cannot read it.
+                    using (var src = part.Entry.Open())
+                    using (var dst = new FileStream(path, FileMode.Create, FileAccess.Write))
+                        src.CopyTo(dst);
+                }
                 return name;
             }
             catch { return null; }

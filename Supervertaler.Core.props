@@ -23,5 +23,8 @@
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.IO.Compression" />
+    <!-- GDI+, for rasterising the EMF/WMF drawings no vision model reads
+         (ImageConversion.cs). A framework assembly, so nothing is deployed. -->
+    <Reference Include="System.Drawing" />
   </ItemGroup>
 </Project>

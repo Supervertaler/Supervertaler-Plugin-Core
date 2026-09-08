@@ -106,9 +106,9 @@ namespace Supervertaler.Core
                 {
                     // EMF and WMF are common in patents and no vision API takes
                     // them. Say so rather than sending bytes that will be refused.
-                    result.Error = "not a format a vision model accepts ("
-                                 + Path.GetExtension(imagePath) + "). "
-                                 + "Convert it to PNG or JPEG first.";
+                    result.Error = "not a format a vision model can read ("
+                                 + Path.GetExtension(imagePath) + "), and it could not be "
+                                 + "converted to one. Open it, save it as PNG, and run this again.";
                     return result;
                 }
 

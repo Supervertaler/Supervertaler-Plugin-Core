@@ -39,7 +39,10 @@ namespace Supervertaler.Core
         /// </summary>
         private static readonly HashSet<string> ImageExtensions =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff" };
+            // .emf/.wmf included deliberately: they are image files, and a folder of
+            // drawings that could not be rasterised must not be reported as empty.
+            // Whether a vision model can read one is the analyser's business.
+            { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".emf", ".wmf" };
 
         /// <summary>
         /// The reference-images folder for a project: whatever the user chose,
