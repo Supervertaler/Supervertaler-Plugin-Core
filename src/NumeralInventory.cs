@@ -201,16 +201,16 @@ namespace Supervertaler.Core
         public static string Format(NumeralReport report, ReconciliationResult reconciliation)
         {
             var sb = new StringBuilder();
-            sb.AppendLine("## Reference numerals");
+            sb.AppendLine("## Reference numbers");
             sb.AppendLine();
 
             if (report == null || report.Citations.Count == 0)
             {
-                sb.AppendLine("No parenthesised reference numerals found in the source text.");
+                sb.AppendLine("No reference numbers in brackets found in the source text.");
                 return sb.ToString().TrimEnd();
             }
 
-            sb.AppendLine("**" + report.Citations.Count + " distinct numerals** cited in the source, "
+            sb.AppendLine("**" + report.Citations.Count + " distinct numbers** cited in the source, "
                         + "from " + report.Numerals.Min() + " to " + report.Numerals.Max() + ".");
             sb.AppendLine();
 
@@ -235,7 +235,7 @@ namespace Supervertaler.Core
             {
                 if (reconciliation.DrawingsOnly.Count > 0)
                 {
-                    sb.AppendLine("### In the drawings but never cited in the text");
+                    sb.AppendLine("### In the figures but never cited in the text");
                     sb.AppendLine();
                     sb.AppendLine("Usually a drafting defect in the source, and worth raising with the client: "
                                 + string.Join(", ", reconciliation.DrawingsOnly));
@@ -244,16 +244,16 @@ namespace Supervertaler.Core
 
                 if (reconciliation.TextOnly.Count > 0)
                 {
-                    sb.AppendLine("### Cited in the text but not found in the drawings");
+                    sb.AppendLine("### Cited in the text but not found in the figures");
                     sb.AppendLine();
-                    sb.AppendLine("Either the figure analysis is incomplete, or these numerals genuinely "
+                    sb.AppendLine("Either the figure analysis is incomplete, or these numbers genuinely "
                                 + "appear in no figure: " + string.Join(", ", reconciliation.TextOnly));
                     sb.AppendLine();
                 }
 
                 if (reconciliation.DrawingsOnly.Count == 0 && reconciliation.TextOnly.Count == 0)
                 {
-                    sb.AppendLine("Every numeral in the text appears in the drawings, and vice versa.");
+                    sb.AppendLine("Every number in the text appears in the figures, and vice versa.");
                     sb.AppendLine();
                 }
             }
