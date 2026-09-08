@@ -170,6 +170,34 @@ namespace Supervertaler.Core
         }
 
         /// <summary>Renders the report as Markdown for the chat panel or a file.</summary>
+        /// <summary>
+        /// The numbers between the lowest and highest cited that are not cited at all.
+        ///
+        /// <para>Empty when the sequence is dense, and empty when reporting the gaps
+        /// would be noise rather than a finding: a document citing (1) and (250) has
+        /// 248 "missing" numbers and no defect. The thresholds are deliberately
+        /// generous - a real reference-numeral sequence is short and mostly
+        /// continuous.</para>
+        /// </summary>
+        internal static List<int> MissingFromSequence(IEnumerable<int> numerals)
+        {
+            var found = new HashSet<int>(numerals ?? new List<int>());
+            var missing = new List<int>();
+            if (found.Count < 2) return missing;
+
+            int min = int.MaxValue, max = int.MinValue;
+            foreach (var n in found) { if (n < min) min = n; if (n > max) max = n; }
+            if (max - min > 200) return missing;
+
+            for (var n = min + 1; n < max; n++)
+                if (!found.Contains(n)) missing.Add(n);
+
+            // More holes than numbers means this is not a sequence with a gap in it,
+            // it is a scattering, and listing every absence helps nobody.
+            if (missing.Count > 20 || missing.Count > found.Count) missing.Clear();
+            return missing;
+        }
+
         public static string Format(NumeralReport report, ReconciliationResult reconciliation)
         {
             var sb = new StringBuilder();
@@ -185,6 +213,23 @@ namespace Supervertaler.Core
             sb.AppendLine("**" + report.Citations.Count + " distinct numerals** cited in the source, "
                         + "from " + report.Numerals.Min() + " to " + report.Numerals.Max() + ".");
             sb.AppendLine();
+
+            // The gap is the single most useful thing this list can say. A sequence
+            // that runs 1-4, 6, 7 means a part was renumbered or dropped while the
+            // document was drafted, and it is invisible in a list of what IS cited -
+            // the reader has to notice the absence, which nobody does.
+            var missing = MissingFromSequence(report.Numerals);
+            if (missing.Count > 0)
+            {
+                sb.AppendLine(missing.Count == 1
+                    ? "The sequence skips **(" + missing[0] + ")**, which is cited nowhere in the text."
+                    : "The sequence skips **" + string.Join(", ", missing.ConvertAll(n => "(" + n + ")"))
+                      + "**, cited nowhere in the text.");
+                sb.AppendLine();
+                sb.AppendLine("*Usually a part renumbered or dropped in drafting. Worth a look before "
+                            + "delivery; nothing to change in the translation.*");
+                sb.AppendLine();
+            }
 
             if (reconciliation != null)
             {
