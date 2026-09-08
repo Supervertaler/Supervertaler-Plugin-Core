@@ -171,6 +171,37 @@ namespace Supervertaler.Core
             return result;
         }
 
+        /// <summary>
+        /// How many image files a chosen folder holds, counting one level of
+        /// subfolders as well as the folder itself. Never throws; 0 for a folder
+        /// that does not exist.
+        ///
+        /// <para>One level, and no deeper, because that is exactly as deep as
+        /// extraction ever writes: a project with several documents holding images
+        /// gets one subfolder per document, so two documents' "Figure 01.png"
+        /// cannot overwrite each other. A flat count reads 0 straight after a
+        /// successful extraction, which tells the user their images are not there
+        /// when they are. Use <see cref="List"/> when the files themselves are
+        /// wanted in figure order; that stays per folder, where the ordering
+        /// means something.</para>
+        /// </summary>
+        public static int CountImages(string folder)
+        {
+            if (string.IsNullOrWhiteSpace(folder)) return 0;
+            var count = 0;
+            try
+            {
+                count = List(folder).Count;
+                foreach (var sub in Directory.EnumerateDirectories(folder))
+                {
+                    try { count += List(sub).Count; }
+                    catch { }
+                }
+            }
+            catch { }
+            return count;
+        }
+
         // "FIG. 1", "Fig 1", "Figure 1", "FIG-1", "1" — the label as the text
         // would cite it, so the vision pass can label its output without guessing.
         private static readonly Regex FigureRe = new Regex(
