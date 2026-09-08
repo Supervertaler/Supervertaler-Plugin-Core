@@ -57,19 +57,60 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
-        /// figures.md with what the AI saw: the diff first, then one row per
-        /// figure with what the document says and what the model read.
-        /// <paramref name="regenerateHint"/> names the host's own button.
+        /// One document's images and what the AI saw in each, for
+        /// <see cref="RenderWithVision(IList{FigureDocument}, IList{string}, string)"/>.
+        ///
+        /// <para><see cref="Images"/> and <see cref="Visions"/> are parallel and hold
+        /// only the images actually shown to the model: an image that could not be
+        /// written to a file is left out of both rather than shifting every row after
+        /// it, which is what a single flat list did.</para>
+        /// </summary>
+        public sealed class FigureDocument
+        {
+            public string Name;
+            /// <summary>The document's extraction, for the labelling note; may be null.</summary>
+            public DocxImageSet Set;
+            public List<ExtractedImage> Images = new List<ExtractedImage>();
+            public List<FigureVision> Visions = new List<FigureVision>();
+        }
+
+        /// <summary>
+        /// figures.md with what the AI saw, for one document. The multi-document
+        /// overload is the one to use when a project has several: this one renders
+        /// exactly what it is given.
         /// </summary>
         public static string RenderWithVision(string docName, DocxImageSet set, IList<FigureVision> visions,
             IList<string> signsNotInText, string regenerateHint)
         {
-            var anyLabelled = set != null && set.Images.Any(i => !string.IsNullOrEmpty(i.Label));
+            var doc = new FigureDocument { Name = docName, Set = set };
+            if (visions != null) doc.Visions.AddRange(visions);
+            for (int i = 0; i < doc.Visions.Count; i++)
+                doc.Images.Add(set != null && i < set.Images.Count ? set.Images[i] : null);
+            return RenderWithVision(new List<FigureDocument> { doc }, signsNotInText, regenerateHint);
+        }
+
+        /// <summary>
+        /// figures.md with what the AI saw: the diff first, then one row per figure
+        /// with what the document says and what the model read, one table per
+        /// document. <paramref name="regenerateHint"/> names the host's own button.
+        ///
+        /// <para>Every document is rendered. Passing only the last one - which is
+        /// what a single-set signature invited - dropped the rows for every document
+        /// before it while the count above the table went on including them.</para>
+        /// </summary>
+        public static string RenderWithVision(IList<FigureDocument> documents,
+            IList<string> signsNotInText, string regenerateHint)
+        {
+            var docs = (documents ?? new List<FigureDocument>()).Where(d => d != null).ToList();
+            var anyLabelled = docs.Any(d => d.Set != null && d.Set.Images.Any(i => !string.IsNullOrEmpty(i.Label)));
             var sb = new StringBuilder();
             sb.AppendLine("# " + VisualNoun(anyLabelled, true, true));
             sb.AppendLine();
+            var source = docs.Count == 1 && !string.IsNullOrEmpty(docs[0].Name) ? docs[0].Name
+                       : docs.Count > 1 ? docs.Count + " documents"
+                       : "the project";
             sb.AppendLine("*Written by Supervertaler on " + DateTime.Now.ToString("yyyy-MM-dd HH:mm")
-                + " from " + (string.IsNullOrEmpty(docName) ? "the project" : docName)
+                + " from " + source
                 + ", with the images examined by AI."
                 + (string.IsNullOrEmpty(regenerateHint) ? "" : " Regenerate from " + regenerateHint + ".") + "*");
             sb.AppendLine();
@@ -92,32 +133,42 @@ namespace Supervertaler.Core
             }
             sb.AppendLine();
 
+            var noun = VisualNoun(anyLabelled, false, false);
             sb.AppendLine("## The " + VisualNoun(anyLabelled, true, false));
             sb.AppendLine();
-            if (set != null && set.Method == LabelingMethod.Ordinal)
+
+            foreach (var d in docs)
             {
-                sb.AppendLine("Image *N* carries figure *N*, checked for all " + set.Images.Count + ".");
+                // One document keeps the plain shape it has always had; several get a
+                // heading each, so a row can be traced back to the file it came from.
+                if (docs.Count > 1)
+                {
+                    sb.AppendLine("### " + (string.IsNullOrEmpty(d.Name) ? "(unnamed document)" : d.Name));
+                    sb.AppendLine();
+                }
+                if (d.Set != null && d.Set.Method == LabelingMethod.Ordinal)
+                {
+                    sb.AppendLine("Image *N* carries figure *N*, checked for all " + d.Set.Images.Count + ".");
+                    sb.AppendLine();
+                }
+                sb.AppendLine("| " + VisualNoun(anyLabelled, false, true) + " | File | What the document says | What the " + noun + " shows | Signs on the " + noun + " |");
+                sb.AppendLine("|---|---|---|---|---|");
+                for (int i = 0; i < d.Visions.Count; i++)
+                {
+                    var v = d.Visions[i];
+                    var img = i < d.Images.Count ? d.Images[i] : null;
+                    var said = "";
+                    if (img != null && img.Descriptions != null && img.Descriptions.Count > 0) said = string.Join(" ", img.Descriptions);
+                    if (said.Length == 0) said = "—";
+                    var saw = !string.IsNullOrEmpty(v.Error) ? "*not analysed: " + v.Error + "*"
+                            : (string.IsNullOrWhiteSpace(v.Caption) ? "—" : v.Caption);
+                    var signs = v.SignsInDrawing != null && v.SignsInDrawing.Count > 0 ? string.Join(", ", v.SignsInDrawing) : "—";
+                    sb.AppendLine("| " + Cell(v.Label) + " | " + Cell(v.FileName) + " | " + Cell(said) + " | " + Cell(saw) + " | " + Cell(signs) + " |");
+                }
                 sb.AppendLine();
             }
 
-            var noun = VisualNoun(anyLabelled, false, false);
-            sb.AppendLine("| " + VisualNoun(anyLabelled, false, true) + " | File | What the document says | What the " + noun + " shows | Signs on the " + noun + " |");
-            sb.AppendLine("|---|---|---|---|---|");
-            for (int i = 0; i < (visions?.Count ?? 0); i++)
-            {
-                var v = visions[i];
-                var img = (set != null && i < set.Images.Count) ? set.Images[i] : null;
-                var said = "";
-                if (img != null && img.Descriptions != null && img.Descriptions.Count > 0) said = string.Join(" ", img.Descriptions);
-                if (said.Length == 0) said = "—";
-                var saw = !string.IsNullOrEmpty(v.Error) ? "*not analysed: " + v.Error + "*"
-                        : (string.IsNullOrWhiteSpace(v.Caption) ? "—" : v.Caption);
-                var signs = v.SignsInDrawing != null && v.SignsInDrawing.Count > 0 ? string.Join(", ", v.SignsInDrawing) : "—";
-                sb.AppendLine("| " + Cell(v.Label) + " | " + Cell(v.FileName) + " | " + Cell(said) + " | " + Cell(saw) + " | " + Cell(signs) + " |");
-            }
-            sb.AppendLine();
-
-            var failed = visions?.Count(x => !string.IsNullOrEmpty(x.Error)) ?? 0;
+            var failed = docs.Sum(d => d.Visions.Count(x => !string.IsNullOrEmpty(x.Error)));
             if (failed > 0)
             {
                 sb.AppendLine("*" + failed + " figure(s) could not be analysed; their rows say why. They are listed rather than dropped, so the gap is visible.*");

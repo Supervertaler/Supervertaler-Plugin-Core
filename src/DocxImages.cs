@@ -64,6 +64,15 @@ namespace Supervertaler.Core
         /// label looks wrong and someone has to work out why.</summary>
         public string LabelSource { get; set; }
 
+        /// <summary>
+        /// The file written for this image when extraction was asked to save, or
+        /// null. Carried on the image itself so a caller never has to index into
+        /// <see cref="DocxImageSet.SavedFiles"/>: one image failing to write
+        /// shifts that list by one and silently pairs every later image with the
+        /// wrong file.
+        /// </summary>
+        public string SavedFileName { get; set; }
+
         /// <summary>What the document SAYS this figure shows, found by figure
         /// number rather than by proximity.
         ///
@@ -367,7 +376,7 @@ namespace Supervertaler.Core
                         if (!string.IsNullOrEmpty(saveToFolder))
                         {
                             var saved = SaveImagePart(part, img, saveToFolder, flat.Count);
-                            if (saved != null) set.SavedFiles.Add(saved);
+                            if (saved != null) { img.SavedFileName = saved; set.SavedFiles.Add(saved); }
                         }
 
                         results.Add(img);
