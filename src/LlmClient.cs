@@ -85,6 +85,36 @@ namespace Supervertaler.Core
         /// </summary>
         public ApiUsage LastUsage { get; private set; }
 
+        /// <summary>
+        /// Why the model stopped on the last call, in the provider's own words:
+        /// "end_turn", "max_tokens", "stop", "length", "content_filter",
+        /// "STOP", "MAX_TOKENS". Null when the provider said nothing.
+        ///
+        /// <para>Raw rather than normalised, deliberately. A truncated answer, a
+        /// safety refusal and an exhausted account leave identical wreckage in the
+        /// text; this field is the only place the difference survives, and a
+        /// boolean would answer "was it cut off" while destroying "why".</para>
+        /// </summary>
+        public string LastFinishReason { get; private set; }
+
+        /// <summary>
+        /// Whether <see cref="LastFinishReason"/> is one of the values that mean
+        /// the model ran out of room. False when nothing was reported: absence of
+        /// evidence is not evidence of truncation.
+        /// </summary>
+        public bool WasTruncated
+        {
+            get
+            {
+                var r = LastFinishReason;
+                if (string.IsNullOrEmpty(r)) return false;
+                r = r.ToLowerInvariant();
+                // Anthropic: max_tokens. OpenAI family: length. Gemini: MAX_TOKENS.
+                // Ollama: reports done_reason "length".
+                return r == "max_tokens" || r == "length";
+            }
+        }
+
         public LlmClient(string provider, string model, string apiKey,
                           string baseUrl = null, int maxTokens = 16384,
                           int ollamaTimeoutMinutes = 0)
@@ -156,7 +186,10 @@ namespace Supervertaler.Core
 
             // Reset per-call usage so a previous call's numbers don't leak into the
             // log entry on a subsequent failure where Call*Async never sets it.
+            // Same for the stop reason: a stale one would say the LAST call was
+            // truncated when this one merely threw.
             LastUsage = null;
+            LastFinishReason = null;
 
             try
             {
@@ -609,6 +642,7 @@ namespace Supervertaler.Core
                         throw new HttpRequestException(EnrichErrorMessage(OpenAiProviderLabel(), (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractOpenAiUsage(body);
+                    LastFinishReason = ExtractJsonString(body, "finish_reason");
                     return ExtractOpenAiContent(body);
                 }
             }
@@ -672,6 +706,7 @@ namespace Supervertaler.Core
                         throw new HttpRequestException(EnrichErrorMessage("Claude", (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractClaudeUsage(body);
+                    LastFinishReason = ExtractJsonString(body, "stop_reason");
                     return ExtractClaudeContent(body);
                 }
             }
@@ -722,6 +757,7 @@ namespace Supervertaler.Core
                         throw new HttpRequestException(EnrichErrorMessage("Gemini", (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractGeminiUsage(body);
+                    LastFinishReason = ExtractJsonString(body, "finishReason");
                     return ExtractGeminiContent(body);
                 }
             }
@@ -767,6 +803,7 @@ namespace Supervertaler.Core
                         throw new HttpRequestException(EnrichErrorMessage("Ollama", (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractOllamaUsage(body);
+                    LastFinishReason = ExtractJsonString(body, "done_reason");
                     return ExtractOllamaContent(body);
                 }
             }
@@ -1040,6 +1077,7 @@ namespace Supervertaler.Core
                         throw new HttpRequestException(EnrichErrorMessage("Gemini", (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractGeminiUsage(body);
+                    LastFinishReason = ExtractJsonString(body, "finishReason");
                     return ExtractGeminiContent(body);
                 }
             }
@@ -1105,6 +1143,7 @@ namespace Supervertaler.Core
                         throw new HttpRequestException(EnrichErrorMessage("Ollama", (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractOllamaUsage(body);
+                    LastFinishReason = ExtractJsonString(body, "done_reason");
                     return ExtractOllamaContent(body);
                 }
             }
