@@ -86,6 +86,53 @@ namespace Supervertaler.Core
         public ApiUsage LastUsage { get; private set; }
 
         /// <summary>
+        /// Reasoning effort for the next Claude call - "low", "medium" or "high" -
+        /// or null to send nothing and let the model use its default. Sent only
+        /// to models that take adaptive thinking (<see cref="SupportsAdaptiveThinking"/>);
+        /// on any other model it is silently ignored, because the older
+        /// <c>thinking.type: "enabled"</c> API is a different contract and the
+        /// newer models reject it with a 400.
+        ///
+        /// <para>Why it exists (#119): on Claude Fable 5.1, thinking is on by
+        /// default and its tokens are drawn from the same max_tokens as the
+        /// visible reply. Given a 137k-token AutoPrompt input it spent ~27,000 of
+        /// a 32,768 budget thinking and ~5,000 on the prompt, which needs ~13,000 -
+        /// five runs in a row ended on stop_reason max_tokens with the prompt
+        /// two-thirds written. Effort is the dial the API offers for that.</para>
+        /// </summary>
+        public string ReasoningEffort { get; set; }
+
+        /// <summary>
+        /// Models on which thinking is adaptive and steered by output_config.effort
+        /// (Claude 4.6 and later, including the whole Claude 5 family). Everything
+        /// older uses the fixed-budget API or has no thinking at all.
+        /// </summary>
+        public static bool SupportsAdaptiveThinking(string model)
+        {
+            if (string.IsNullOrEmpty(model)) return false;
+            var m = model.ToLowerInvariant();
+            if (!m.Contains("claude")) return false;
+            return m.Contains("opus-5") || m.Contains("sonnet-5") || m.Contains("fable-5")
+                || m.Contains("mythos-5") || m.Contains("haiku-5")
+                || m.Contains("opus-4-6") || m.Contains("opus-4-7") || m.Contains("opus-4-8")
+                || m.Contains("sonnet-4-6") || m.Contains("sonnet-4-7");
+        }
+
+        /// <summary>
+        /// Appends the adaptive-thinking configuration when a caller asked for a
+        /// specific effort and the model takes it. Docs: "thinking": {"type":
+        /// "adaptive"} with "output_config": {"effort": ...}; "high" is the API
+        /// default, so nothing is sent unless the caller wants something else.
+        /// </summary>
+        private void AppendThinkingConfig(StringBuilder sb)
+        {
+            if (string.IsNullOrEmpty(ReasoningEffort)) return;
+            if (!SupportsAdaptiveThinking(_model)) return;
+            sb.Append(",\"thinking\":{\"type\":\"adaptive\"}");
+            sb.Append(",\"output_config\":{\"effort\":").Append(JsonString(ReasoningEffort)).Append("}");
+        }
+
+        /// <summary>
         /// Why the model stopped on the last call, in the provider's own words:
         /// "end_turn", "max_tokens", "stop", "length", "content_filter",
         /// "STOP", "MAX_TOKENS". Null when the provider said nothing.
@@ -752,6 +799,7 @@ namespace Supervertaler.Core
             var sb = new StringBuilder();
             sb.Append("{\"model\":").Append(JsonString(_model));
             sb.Append(",\"max_tokens\":").Append(tokens);
+            AppendThinkingConfig(sb);
 
             if (!string.IsNullOrEmpty(systemPrompt))
             {
@@ -1041,6 +1089,7 @@ namespace Supervertaler.Core
             var sb = new StringBuilder();
             sb.Append("{\"model\":").Append(JsonString(_model));
             sb.Append(",\"max_tokens\":").Append(tokens);
+            AppendThinkingConfig(sb);
 
             if (!string.IsNullOrEmpty(systemPrompt))
                 sb.Append(",\"system\":").Append(JsonString(systemPrompt));
