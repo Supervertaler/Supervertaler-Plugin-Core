@@ -259,13 +259,24 @@ namespace Supervertaler.Core
             {
                 sb.AppendLine("**CLOSEST APPROVED TRANSLATIONS FROM THE TRANSLATION MEMORY**");
                 sb.AppendLine();
+                // The percentage sentence is emitted only where percentages are
+                // actually given. memoQ never has them, and ~35 words describing a
+                // case that cannot arise is dead weight in a per-batch prompt -
+                // worse, a model could read the absence of a percentage as evidence
+                // the match is not close.
+                var havePercentages = withMemory.Any(s => s.FuzzyMatchPercent > 0);
+
                 sb.AppendLine("A human wrote and approved each of these for a nearly identical source. "
                     + "For the segments named below, follow them: keep their wording and terminology "
                     + "wherever the source agrees, and change only what that segment actually differs "
-                    + "in. Where a match percentage is given, it says how close that source was: at "
-                    + "100% reuse the translation as it stands, and the lower it falls the more of it "
-                    + "you should expect to change. Do NOT skip these segments – return a "
-                    + "translation for every segment in the list below, these included.");
+                    + "in. "
+                    + (havePercentages
+                        ? "Where a match percentage is given, it says how close that source was: at "
+                          + "100% reuse the translation as it stands, and the lower it falls the more "
+                          + "of it you should expect to change. "
+                        : "")
+                    + "Do NOT skip these segments – return a translation for every segment in the "
+                    + "list below, these included.");
                 sb.AppendLine();
 
                 foreach (var seg in withMemory)
