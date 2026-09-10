@@ -307,6 +307,20 @@ namespace Supervertaler.Core
         private static string Capitalise(string s) =>
             string.IsNullOrEmpty(s) ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
 
+        /// <summary>
+        /// The section headings a generated prompt for this domain is asked to
+        /// contain, in order. PromptValidator compares the finished prompt against
+        /// this: a truncated response loses a run of sections off the end, and
+        /// nothing else in the file has to be wrong for that to be true.
+        /// </summary>
+        public static IList<string> SectionsFor(string domain)
+        {
+            if (string.IsNullOrWhiteSpace(domain) ||
+                !DomainTemplates.TryGetValue(domain, out var t))
+                t = DomainTemplates["general"];
+            return t.Sections;
+        }
+
         public static string BuildMetaPrompt(PromptGenerationContext ctx)
         {
             // Get domain template

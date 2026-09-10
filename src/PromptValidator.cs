@@ -63,6 +63,18 @@ namespace Supervertaler.Core
         /// </summary>
         public static Result Validate(string prompt)
         {
+            return Validate(prompt, null);
+        }
+
+        /// <summary>
+        /// <paramref name="requestedSections"/> is the section list the meta-prompt
+        /// asked for (PromptGenerator.SectionsFor). Pass it wherever it is known:
+        /// without it, a cut inside the FINAL section's body passes every other
+        /// check, because OUTPUT FORMAT is present, the last heading has a body and
+        /// no table is ragged. With it, the sections that never arrived are named.
+        /// </summary>
+        public static Result Validate(string prompt, IList<string> requestedSections)
+        {
             var result = new Result();
             if (string.IsNullOrWhiteSpace(prompt))
             {
@@ -77,8 +89,70 @@ namespace Supervertaler.Core
             CheckNoPartialTableRow(lines, result);
             CheckContiguousNumbering(sections, result);
             CheckCrossReferencesResolve(prompt, sections, result);
+            CheckRequestedSectionsArrived(prompt, requestedSections, result);
 
             return result;
+        }
+
+        /// <summary>
+        /// Every section the model was asked for should be somewhere in the
+        /// finished prompt.
+        ///
+        /// Only a MISSING TAIL counts. A truncated response loses a run of sections
+        /// off the end; a model that renames or merges one in the middle has not
+        /// lost anything, and refusing that would cost a regeneration for a
+        /// paraphrase. So sections missing from the middle are ignored and a
+        /// missing suffix is a failure.
+        /// </summary>
+        private static void CheckRequestedSectionsArrived(
+            string prompt, IList<string> requestedSections, Result result)
+        {
+            if (requestedSections == null || requestedSections.Count == 0) return;
+
+            var haystack = prompt.ToUpperInvariant();
+            var arrived = new bool[requestedSections.Count];
+            for (var i = 0; i < requestedSections.Count; i++)
+            {
+                var headline = Headline(requestedSections[i]);
+                arrived[i] = headline.Length > 0
+                             && haystack.IndexOf(headline, StringComparison.Ordinal) >= 0;
+            }
+
+            // Walk back from the end over sections that never arrived.
+            var lastArrived = requestedSections.Count - 1;
+            while (lastArrived >= 0 && !arrived[lastArrived]) lastArrived--;
+
+            var missingTail = requestedSections.Count - 1 - lastArrived;
+            if (missingTail == 0) return;
+
+            var names = new List<string>();
+            for (var i = lastArrived + 1; i < requestedSections.Count; i++)
+                names.Add("\"" + Shorten(Headline(requestedSections[i])) + "\"");
+
+            result.Failures.Add(
+                "The last " + (missingTail == 1 ? "section" : missingTail + " sections") +
+                " the model was asked for never arrived: " + string.Join(", ", names) +
+                ". Everything before " + (missingTail == 1 ? "it" : "them") +
+                " is present, which is what a response cut off part-way through looks like.");
+        }
+
+        /// <summary>
+        /// The name part of a requested section spec: "TERMINOLOGY CONSISTENCY
+        /// HIERARCHY - (1) Previous correct translations..." is asked for as a
+        /// heading plus a description of what belongs under it, and only the
+        /// heading is expected verbatim in the output.
+        /// </summary>
+        private static string Headline(string spec)
+        {
+            if (string.IsNullOrWhiteSpace(spec)) return "";
+            var s = spec.Trim();
+            var cut = s.Length;
+            foreach (var sep in new[] { " \u2013 ", " - ", " (" })
+            {
+                var at = s.IndexOf(sep, StringComparison.Ordinal);
+                if (at > 0 && at < cut) cut = at;
+            }
+            return s.Substring(0, cut).Trim().ToUpperInvariant();
         }
 
         /// <summary>
