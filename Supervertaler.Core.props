@@ -26,5 +26,9 @@
     <!-- GDI+, for rasterising the EMF/WMF drawings no vision model reads
          (ImageConversion.cs). A framework assembly, so nothing is deployed. -->
     <Reference Include="System.Drawing" />
+    <!-- ProtectedData, for encrypting API keys at rest (DpapiSecret.cs, #115).
+         Declared here rather than left to each consumer so a plugin picking up
+         core does not fail to build on a reference it never knew it needed. -->
+    <Reference Include="System.Security" />
   </ItemGroup>
 </Project>
