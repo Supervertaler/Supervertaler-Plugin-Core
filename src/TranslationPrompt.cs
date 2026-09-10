@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -249,9 +249,10 @@ namespace Supervertaler.Core
         {
             var sb = new StringBuilder(segments.Count * 200);
 
+            // A match needs a target. Its source is optional: Trados can say how
+            // close the match is but cannot produce the source it was made for.
             var withMemory = segments
-                .Where(s => !string.IsNullOrWhiteSpace(s.FuzzySourceText)
-                            && !string.IsNullOrWhiteSpace(s.FuzzyTargetText))
+                .Where(s => !string.IsNullOrWhiteSpace(s.FuzzyTargetText))
                 .ToList();
 
             if (withMemory.Count > 0)
@@ -261,13 +262,22 @@ namespace Supervertaler.Core
                 sb.AppendLine("A human wrote and approved each of these for a nearly identical source. "
                     + "For the segments named below, follow them: keep their wording and terminology "
                     + "wherever the source agrees, and change only what that segment actually differs "
-                    + "in. These are reference only – do not return a translation for them.");
+                    + "in. Where a match percentage is given, it says how close that source was: at "
+                    + "100% reuse the translation as it stands, and the lower it falls the more of it "
+                    + "you should expect to change. Do NOT skip these segments – return a "
+                    + "translation for every segment in the list below, these included.");
                 sb.AppendLine();
 
                 foreach (var seg in withMemory)
                 {
-                    sb.AppendLine("Segment " + seg.Number + ", source in memory: " + seg.FuzzySourceText);
-                    sb.AppendLine("Segment " + seg.Number + ", approved translation: " + seg.FuzzyTargetText);
+                    if (!string.IsNullOrWhiteSpace(seg.FuzzySourceText))
+                        sb.AppendLine("Segment " + seg.Number + ", source in memory: " + seg.FuzzySourceText);
+
+                    var howClose = seg.FuzzyMatchPercent > 0
+                        ? " (" + seg.FuzzyMatchPercent + "% match)"
+                        : "";
+                    sb.AppendLine("Segment " + seg.Number + ", approved translation"
+                        + howClose + ": " + seg.FuzzyTargetText);
                 }
 
                 sb.AppendLine();
@@ -372,6 +382,13 @@ namespace Supervertaler.Core
         public string FuzzySourceText { get; set; }
 
         public string FuzzyTargetText { get; set; }
+
+        /// <summary>
+        /// How close the match is, 0-100, or 0 when unknown. memoQ hands a plugin
+        /// the segments and no rate, so it stays 0 there and nothing is claimed.
+        /// Trados knows the percentage Studio recorded on the segment.
+        /// </summary>
+        public int FuzzyMatchPercent { get; set; }
     }
 
     /// <summary>
