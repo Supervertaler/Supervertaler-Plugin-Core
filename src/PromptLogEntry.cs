@@ -73,6 +73,18 @@ namespace Supervertaler.Core.Models
         public bool IsError { get; set; }
         public string ErrorMessage { get; set; }
 
+        /// <summary>
+        /// Why the model stopped, in the provider's own words ("end_turn",
+        /// "max_tokens", "stop", "length", ...), or null if it said nothing.
+        /// Copied from <see cref="LlmClient.LastFinishReason"/> at the moment
+        /// the call completes, so it belongs to THIS call. It reaches the
+        /// prompt log because a reply that arrives complete-looking but cut
+        /// short is otherwise indistinguishable from a finished one - three
+        /// AutoPrompt runs were diagnosed by guesswork for want of this field
+        /// (#119).
+        /// </summary>
+        public string FinishReason { get; set; }
+
         public string FeatureLabel
         {
             get

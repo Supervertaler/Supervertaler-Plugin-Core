@@ -373,7 +373,9 @@ namespace Supervertaler.Core
                     IsCostKnown = TokenEstimator.HasPricing(_model),
                     Duration = duration,
                     IsError = errorMessage != null,
-                    ErrorMessage = errorMessage
+                    ErrorMessage = errorMessage,
+                    // Read here, not later: the next call resets it.
+                    FinishReason = LastFinishReason
                 };
 
                 // Prefer real API-reported usage when available (Anthropic native +
@@ -648,6 +650,83 @@ namespace Supervertaler.Core
             }
         }
 
+        /// <summary>
+        /// Sends a Claude /v1/messages request whose body asks for a stream, reads
+        /// the reply as the model generates it, records usage and the stop reason,
+        /// and returns the text. Shared by the single-prompt and chat paths so the
+        /// two cannot drift. The tools path still buffers - tool_use streaming is a
+        /// different shape and nothing long-running goes through it.
+        /// </summary>
+        private async Task<string> SendClaudeStreamedAsync(
+            HttpRequestMessage request, int timeoutMs, CancellationToken ct)
+        {
+            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                cts.CancelAfter(timeoutMs);
+
+                // ResponseHeadersRead is the whole point. Without it HttpClient
+                // buffers the entire body before returning, so a streamed reply is
+                // waited for exactly like an unstreamed one - the same silent
+                // connection, the same cut. With it, SendAsync returns when the
+                // headers arrive and the body is read as the model generates it.
+                var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                using (response)
+                {
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        // Error replies are small JSON objects, not streams.
+                        var body = await response.Content.ReadAsStringAsync();
+                        throw new HttpRequestException(EnrichErrorMessage("Claude", (int)response.StatusCode, body, _model));
+                    }
+
+                    // On .NET Framework the token handed to SendAsync stops covering
+                    // the request once the headers are in, and Http.Timeout is
+                    // infinite - so a stream that stalls would hang forever. Tearing
+                    // the response down on cancellation makes the read below throw,
+                    // and the filters turn that back into what it was: a timeout, or
+                    // the user's own cancel.
+                    using (cts.Token.Register(() => { try { response.Dispose(); } catch { } }))
+                    using (var stream = await response.Content.ReadAsStreamAsync())
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        ClaudeStreamResult result;
+                        try
+                        {
+                            result = await ReadClaudeStreamAsync(reader);
+                        }
+                        catch (Exception) when (ct.IsCancellationRequested)
+                        {
+                            throw new OperationCanceledException(ct);
+                        }
+                        catch (Exception ex) when (cts.IsCancellationRequested)
+                        {
+                            throw new TimeoutException(
+                                "Claude stopped sending data for " + (timeoutMs / 1000)
+                                + " seconds and the request was abandoned.", ex);
+                        }
+
+                        LastUsage = ExtractClaudeUsage(result.UsageJson);
+                        LastFinishReason = result.StopReason;
+
+                        // The defect this exists to fix: a connection that closes
+                        // mid-generation used to come back as a complete reply. The
+                        // end-of-message event is what says the model finished; no
+                        // event, no reply.
+                        if (!result.SawMessageStop)
+                            throw new InvalidOperationException(
+                                "Claude's reply was cut off: the connection closed after "
+                                + result.Text.Length + " characters, before the end-of-message "
+                                + "event. That is a dropped connection, not an output limit - "
+                                + "the model had not finished. Running it again may succeed.");
+
+                        if (result.Text.Length > 0) return result.Text;
+                        ThrowNoTextBlock(result.StopReason, result.BlockTypes, null);
+                        return ""; // unreachable - ThrowNoTextBlock always throws
+                    }
+                }
+            }
+        }
+
         private async Task<string> CallClaudeAsync(
             string prompt, string systemPrompt, int? maxTokens,
             CancellationToken ct, bool enablePromptCaching = false)
@@ -661,8 +740,14 @@ namespace Supervertaler.Core
             if (promptLen > 50000) timeoutMs = 300_000;
             else if (promptLen > 20000) timeoutMs = 180_000;
             else timeoutMs = 120_000;
-            // Large output requests (e.g. prompt generation) need more time
-            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            // Large output requests (e.g. prompt generation) need more time.
+            // With the reply streamed this no longer bounds the whole generation,
+            // only how long a STALLED stream is tolerated - data arriving keeps a
+            // connection alive, so a 13k-token prompt that takes nine minutes at a
+            // slow model's pace is fine. Before streaming, 600s was also the hard
+            // budget, and a model too slow to finish inside it could never
+            // complete AutoPrompt at all (#119).
+            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 900_000);
 
             var sb = new StringBuilder();
             sb.Append("{\"model\":").Append(JsonString(_model));
@@ -688,6 +773,12 @@ namespace Supervertaler.Core
             }
 
             sb.Append(",\"messages\":[{\"role\":\"user\",\"content\":").Append(JsonString(prompt)).Append("}]");
+            // #119: streamed. A non-streamed request holds one silent connection
+            // open for the whole generation, and something on the path closed it
+            // at ~395 seconds - three AutoPrompt runs in a row, each returned as a
+            // "successful" reply cut off two-thirds through. Anthropic's own
+            // guidance is to stream anything long-running for exactly this reason.
+            sb.Append(",\"stream\":true");
             sb.Append("}");
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, url))
@@ -696,19 +787,7 @@ namespace Supervertaler.Core
                 request.Headers.Add("x-api-key", _apiKey);
                 request.Headers.Add("anthropic-version", "2023-06-01");
 
-                using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
-                {
-                    cts.CancelAfter(timeoutMs);
-                    var response = await Http.SendAsync(request, cts.Token);
-                    var body = await response.Content.ReadAsStringAsync();
-
-                    if (!response.IsSuccessStatusCode)
-                        throw new HttpRequestException(EnrichErrorMessage("Claude", (int)response.StatusCode, body, _model));
-
-                    LastUsage = ExtractClaudeUsage(body);
-                    LastFinishReason = ExtractJsonString(body, "stop_reason");
-                    return ExtractClaudeContent(body);
-                }
+                return await SendClaudeStreamedAsync(request, timeoutMs, ct);
             }
         }
 
@@ -950,8 +1029,14 @@ namespace Supervertaler.Core
             if (totalLen > 50000) timeoutMs = 300_000;
             else if (totalLen > 20000) timeoutMs = 180_000;
             else timeoutMs = 120_000;
-            // Large output requests (e.g. prompt generation) need more time
-            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            // Large output requests (e.g. prompt generation) need more time.
+            // With the reply streamed this no longer bounds the whole generation,
+            // only how long a STALLED stream is tolerated - data arriving keeps a
+            // connection alive, so a 13k-token prompt that takes nine minutes at a
+            // slow model's pace is fine. Before streaming, 600s was also the hard
+            // budget, and a model too slow to finish inside it could never
+            // complete AutoPrompt at all (#119).
+            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 900_000);
 
             var sb = new StringBuilder();
             sb.Append("{\"model\":").Append(JsonString(_model));
@@ -989,6 +1074,12 @@ namespace Supervertaler.Core
                 if (i < messages.Count - 1) sb.Append(",");
             }
             sb.Append("]");
+            // #119: streamed. A non-streamed request holds one silent connection
+            // open for the whole generation, and something on the path closed it
+            // at ~395 seconds - three AutoPrompt runs in a row, each returned as a
+            // "successful" reply cut off two-thirds through. Anthropic's own
+            // guidance is to stream anything long-running for exactly this reason.
+            sb.Append(",\"stream\":true");
             sb.Append("}");
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, url))
@@ -997,17 +1088,9 @@ namespace Supervertaler.Core
                 request.Headers.Add("x-api-key", _apiKey);
                 request.Headers.Add("anthropic-version", "2023-06-01");
 
-                using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
-                {
-                    cts.CancelAfter(timeoutMs);
-                    var response = await Http.SendAsync(request, cts.Token);
-                    var body = await response.Content.ReadAsStringAsync();
-
-                    if (!response.IsSuccessStatusCode)
-                        throw new HttpRequestException(EnrichErrorMessage("Claude", (int)response.StatusCode, body, _model));
-
-                    return ExtractClaudeContent(body);
-                }
+                // Until #119 this path recorded neither usage nor the stop reason;
+                // the shared transport does both.
+                return await SendClaudeStreamedAsync(request, timeoutMs, ct);
             }
         }
 
@@ -1345,20 +1428,11 @@ namespace Supervertaler.Core
             var stopMatch = Regex.Match(json, @"""stop_reason""\s*:\s*""([^""]*)""");
             var stopReason = stopMatch.Success ? stopMatch.Groups[1].Value : null;
 
-            // A safety refusal returns stop_reason "refusal" with no text.
-            if (stopReason == "refusal")
-                throw new InvalidOperationException(
-                    "Claude declined this request (safety refusal) – no text was returned. " +
-                    "If this is legitimate translation content, try a different Claude model.");
-
             // An API-level error object carries a far better message than any we
             // could write: pass it through rather than paraphrasing it.
             var apiError = Regex.Match(json,
                 @"""error""\s*:\s*\{[^}]*?""message""\s*:\s*""((?:[^""\\]|\\.)*)""",
                 RegexOptions.Singleline);
-            if (apiError.Success)
-                throw new InvalidOperationException(
-                    "Claude returned an error: " + UnescapeJson(apiError.Groups[1].Value));
 
             var blockTypes = new List<string>();
             foreach (Match bt in Regex.Matches(json, @"""type""\s*:\s*""([a-z_]+)"""))
@@ -1367,6 +1441,28 @@ namespace Supervertaler.Core
                 if (!blockTypes.Contains(name)) blockTypes.Add(name);
             }
 
+            ThrowNoTextBlock(stopReason, blockTypes,
+                apiError.Success ? UnescapeJson(apiError.Groups[1].Value) : null);
+            return ""; // unreachable
+        }
+
+        /// <summary>
+        /// Explains a reply with no text in it, and always throws. Shared by the
+        /// buffered and the streamed Claude paths so the two cannot drift.
+        /// Reports block TYPE names and the stop reason only - never block
+        /// content, which is the user's own work.
+        /// </summary>
+        private static void ThrowNoTextBlock(string stopReason, List<string> blockTypes, string apiErrorMessage)
+        {
+            // A safety refusal returns stop_reason "refusal" with no text.
+            if (stopReason == "refusal")
+                throw new InvalidOperationException(
+                    "Claude declined this request (safety refusal) – no text was returned. " +
+                    "If this is legitimate translation content, try a different Claude model.");
+
+            if (!string.IsNullOrEmpty(apiErrorMessage))
+                throw new InvalidOperationException("Claude returned an error: " + apiErrorMessage);
+
             // The reply ran out of room before emitting any text. With a
             // reasoning model that usually means the whole output budget went on
             // thinking - which is a setting problem, not a fault, and the user
@@ -1374,7 +1470,7 @@ namespace Supervertaler.Core
             if (stopReason == "max_tokens")
                 throw new InvalidOperationException(
                     "Claude reached its output limit before writing any text"
-                    + (blockTypes.Contains("thinking")
+                    + (blockTypes != null && blockTypes.Contains("thinking")
                         ? " – the entire output budget went on reasoning"
                         : "")
                     + ". Raise the output-token limit in AI Settings, ask something "
@@ -1384,8 +1480,140 @@ namespace Supervertaler.Core
                 "Could not read Claude's reply: it contained no text block. "
                 + "stop_reason: " + (stopReason ?? "(none given)")
                 + "; blocks returned: "
-                + (blockTypes.Count > 0 ? string.Join(", ", blockTypes) : "(none)")
+                + (blockTypes != null && blockTypes.Count > 0 ? string.Join(", ", blockTypes) : "(none)")
                 + ". Please report this if it happens again.");
+        }
+
+        /// <summary>What one streamed Claude reply amounted to.</summary>
+        internal sealed class ClaudeStreamResult
+        {
+            public string Text = "";
+            /// <summary>The provider's own stop_reason from message_delta, or null.</summary>
+            public string StopReason;
+            /// <summary>
+            /// The raw data of message_delta followed by message_start, for
+            /// <see cref="ExtractClaudeUsage"/>. That order matters: both carry
+            /// output_tokens, message_start's is the count at the start (1), and
+            /// the extractor takes the first match.
+            /// </summary>
+            public string UsageJson = "";
+            /// <summary>True only if message_stop arrived. Without it the reply is not finished.</summary>
+            public bool SawMessageStop;
+            public List<string> BlockTypes = new List<string>();
+        }
+
+        /// <summary>
+        /// Reads an Anthropic server-sent-event stream to its end.
+        ///
+        /// <para>SSE is lines of <c>event: name</c> and <c>data: json</c>, one event
+        /// per blank-line-separated block. The events that matter: content_block_delta
+        /// with a text_delta is the reply, appended as it arrives; message_delta
+        /// carries stop_reason and the final output_tokens; message_start carries
+        /// input_tokens and the cache counters; message_stop means the model
+        /// finished; error means it did not. Everything else - ping, content_block
+        /// start/stop, thinking_delta (the model's reasoning), signature_delta - is
+        /// deliberately not text.</para>
+        ///
+        /// <para>Internal and static so it can be driven by a canned stream in a test
+        /// without an API key. Scale: a 13k-token reply is a few thousand small
+        /// events into one StringBuilder; designed for the 32k we ever request.</para>
+        /// </summary>
+        internal static async Task<ClaudeStreamResult> ReadClaudeStreamAsync(TextReader reader)
+        {
+            var result = new ClaudeStreamResult();
+            var text = new StringBuilder();
+            var usageStart = "";
+            var usageDelta = "";
+            string eventName = null;
+            var data = new StringBuilder();
+
+            bool Handle()
+            {
+                if (data.Length == 0) return false;
+                var payload = data.ToString();
+                // The data carries its own type; the event: line is a courtesy.
+                var type = ExtractJsonString(payload, "type") ?? eventName ?? "";
+                switch (type)
+                {
+                    case "content_block_delta":
+                        if (Regex.IsMatch(payload, @"""type""\s*:\s*""text_delta"""))
+                        {
+                            var m = Regex.Match(payload,
+                                @"""text""\s*:\s*""((?:[^""\\]|\\.)*)""", RegexOptions.Singleline);
+                            if (m.Success) text.Append(UnescapeJson(m.Groups[1].Value));
+                        }
+                        return false;
+
+                    case "content_block_start":
+                        {
+                            var bt = Regex.Match(payload,
+                                @"""content_block""\s*:\s*\{\s*""type""\s*:\s*""([a-z_]+)""");
+                            if (bt.Success && !result.BlockTypes.Contains(bt.Groups[1].Value))
+                                result.BlockTypes.Add(bt.Groups[1].Value);
+                        }
+                        return false;
+
+                    case "message_start":
+                        usageStart = payload;
+                        return false;
+
+                    case "message_delta":
+                        usageDelta = payload;
+                        {
+                            var sr = ExtractJsonString(payload, "stop_reason");
+                            if (!string.IsNullOrEmpty(sr)) result.StopReason = sr;
+                        }
+                        return false;
+
+                    case "message_stop":
+                        result.SawMessageStop = true;
+                        return true;
+
+                    case "error":
+                        {
+                            var em = Regex.Match(payload,
+                                @"""message""\s*:\s*""((?:[^""\\]|\\.)*)""", RegexOptions.Singleline);
+                            throw new InvalidOperationException("Claude returned an error: "
+                                + (em.Success ? UnescapeJson(em.Groups[1].Value) : payload));
+                        }
+
+                    default:
+                        return false; // ping, content_block_stop, anything added later
+                }
+            }
+
+            while (true)
+            {
+                var line = await reader.ReadLineAsync();
+                if (line == null) break;                       // end of stream
+
+                if (line.Length == 0)                          // blank line ends an event
+                {
+                    var done = Handle();
+                    eventName = null;
+                    data.Clear();
+                    if (done) break;
+                    continue;
+                }
+                if (line.StartsWith("event:", StringComparison.Ordinal))
+                {
+                    eventName = line.Substring(6).Trim();
+                    continue;
+                }
+                if (line.StartsWith("data:", StringComparison.Ordinal))
+                {
+                    if (data.Length > 0) data.Append('\n');
+                    data.Append(line.Substring(5).TrimStart());
+                    continue;
+                }
+                // ":" comment lines and unknown fields are ignored, per the SSE spec.
+            }
+            // A last event with no trailing blank line.
+            if (!result.SawMessageStop) Handle();
+
+            result.Text = text.ToString();
+            result.UsageJson = usageDelta + "\n" + usageStart;
+            return result;
         }
 
         private static string ExtractGeminiContent(string json)
