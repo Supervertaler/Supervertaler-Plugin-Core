@@ -509,6 +509,17 @@ namespace Supervertaler.Core
             sb.AppendLine();
 
             // Terminology
+            // #113: decided once, up front, so the generated prompt carries a lookup
+            // instead of a judgement the translating model must re-make on every
+            // segment. Omitted entirely when there is nothing to say - an empty
+            // heading would invite the model to invent rows for it.
+            if (!string.IsNullOrWhiteSpace(ctx.GlossRegister))
+            {
+                sb.AppendLine("=== GLOSS REGISTER (this document) ===");
+                sb.AppendLine(ctx.GlossRegister);
+                sb.AppendLine();
+            }
+
             sb.AppendLine("=== TERMINOLOGY DATA ===");
             sb.AppendLine(termInstruction);
             sb.AppendLine();
@@ -1119,6 +1130,14 @@ namespace Supervertaler.Core
         public string SegmentUnit { get; set; } = "segments";
 
         public List<string> SourceSegments { get; set; }
+
+        /// <summary>
+        /// #113: the rendered gloss register, or null when this document has no
+        /// bracketed English glosses - or when the source is not Dutch, where the
+        /// phenomenon and the detector both stop applying. Built by the host,
+        /// because deciding a row needs a model call and this class makes none.
+        /// </summary>
+        public string GlossRegister { get; set; }
 
         /// <summary>
         /// #122: whether <see cref="SourceSegments"/> carry the document's list
