@@ -65,7 +65,20 @@ namespace Supervertaler.Core
             "kan", "kunnen", "kunnen", "moet", "moeten", "zal", "zullen",
             "ten", "te", "der", "des", "aldus", "eveneens", "tevens", "alsook",
             "alleen", "vaste", "vast", "beide", "elk", "elke", "enkele", "enige",
+            "waaronder", "naast", "namelijk", "respectievelijk", "ofwel",
+            "twee", "drie", "vier", "vijf", "zes", "zeven", "acht", "negen", "tien",
             "materiaal", "stof", "middel", "deel", "vorm", "soort"
+        };
+
+        /// <summary>
+        /// A bracket opening with one of these is a measurement or an aside, not a
+        /// term. Both languages' prepositions, because either would disqualify it.
+        /// </summary>
+        private static readonly HashSet<string> LeadingPrepositions = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            "in", "on", "at", "with", "by", "for", "from", "per", "about", "as",
+            "van", "met", "voor", "bij", "op", "aan", "naar", "tot", "uit", "over"
         };
 
         /// <summary>
@@ -222,8 +235,16 @@ namespace Supervertaler.Core
             // A slash inside a word means a unit or a ratio: "(mol/kg hars)".
             if (words.Any(w => w.IndexOf('/') >= 0)) return false;
 
-            // The discriminator: an everyday Dutch word means Dutch prose.
-            if (words.Any(w => DutchWords.Contains(w))) return false;
+            // A gloss is a noun phrase. One that opens with a preposition is a
+            // measurement or an aside - "(in uren)", "(in gewichtsprocent)".
+            if (LeadingPrepositions.Contains(words[0])) return false;
+
+            // The discriminator: an everyday Dutch word means Dutch prose. Split
+            // compounds on the hyphen too, so "(twee-componenten systeem)" is caught
+            // by "twee" - Dutch builds words where English uses spaces, and the
+            // give-away is often welded to the front of one.
+            if (words.SelectMany(w => w.Split('-'))
+                     .Any(part => DutchWords.Contains(part))) return false;
 
             // Must be words, not only symbols.
             return words.All(w => w.Any(char.IsLetter))
