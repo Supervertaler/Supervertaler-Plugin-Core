@@ -281,10 +281,11 @@ namespace Supervertaler.Core
                     + "wherever the source agrees, and change only what that segment actually differs "
                     + "in. "
                     + (haveSources
-                        ? "Where the memory's own source is given, compare it against the segment "
-                          + "word by word and carry the approved translation across only as far as "
-                          + "the two agree. Translate the rest yourself. These are references, not "
-                          + "instructions - a match that does not fit is to be ignored, not forced. "
+                        ? "Below 100% the segment's own text is shown above the memory's, so compare "
+                          + "the two word by word and carry the approved translation across only as "
+                          + "far as they agree. Translate the rest yourself. These are references, "
+                          + "not instructions - a match that does not fit is to be ignored, not "
+                          + "forced. "
                         : "")
                     + (havePercentages
                         ? "Where a match percentage is given, it says how close that source was: at "
@@ -295,19 +296,30 @@ namespace Supervertaler.Core
                     + "list below, these included.");
                 sb.AppendLine();
 
+                // One block per segment, blank line between, labels aligned. The
+                // segment's OWN source is repeated here whenever the match is not
+                // exact, so the comparison the paragraph above asks for happens
+                // between two adjacent lines rather than against a list fifty
+                // segments further down - for a 96% match the whole difference can
+                // be one character. At 100% it is omitted: the memory's source IS
+                // the segment's source there, and repeating it is pure cost.
                 foreach (var seg in withMemory)
                 {
+                    sb.AppendLine("Segment " + seg.Number
+                        + (seg.FuzzyMatchPercent > 0 ? " — " + seg.FuzzyMatchPercent + "% match" : ""));
+
                     if (!string.IsNullOrWhiteSpace(seg.FuzzySourceText))
-                        sb.AppendLine("Segment " + seg.Number + ", source in memory: " + seg.FuzzySourceText);
+                    {
+                        if (seg.FuzzyMatchPercent > 0 && seg.FuzzyMatchPercent < 100
+                            && !string.IsNullOrWhiteSpace(seg.SourceText))
+                            sb.AppendLine("  this segment:     " + seg.SourceText);
 
-                    var howClose = seg.FuzzyMatchPercent > 0
-                        ? " (" + seg.FuzzyMatchPercent + "% match)"
-                        : "";
-                    sb.AppendLine("Segment " + seg.Number + ", approved translation"
-                        + howClose + ": " + seg.FuzzyTargetText);
+                        sb.AppendLine("  source in memory: " + seg.FuzzySourceText);
+                    }
+
+                    sb.AppendLine("  approved:         " + seg.FuzzyTargetText);
+                    sb.AppendLine();
                 }
-
-                sb.AppendLine();
             }
 
             sb.AppendLine("**SEGMENTS TO TRANSLATE (" + segments.Count + " segments):**");
