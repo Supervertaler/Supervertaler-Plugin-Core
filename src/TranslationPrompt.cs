@@ -266,10 +266,26 @@ namespace Supervertaler.Core
                 // the match is not close.
                 var havePercentages = withMemory.Any(s => s.FuzzyMatchPercent > 0);
 
-                sb.AppendLine("A human wrote and approved each of these for a nearly identical source. "
+                // #116: where the memory's own source travels with the match, say so
+                // and tell the model to read it. That source is the whole reason a
+                // sub-100% match can be shown at all - it turns "trust this, it is
+                // nearly right" into a comparison the model can actually make. Where
+                // there is no source the match is exact by construction (see
+                // BatchTranslator.ToPromptInput), and the older wording holds.
+                var haveSources = withMemory.Any(s => !string.IsNullOrWhiteSpace(s.FuzzySourceText));
+
+                sb.AppendLine("A human wrote and approved each of these for a source that was "
+                    + (haveSources ? "close to, but not always the same as, " : "nearly identical to ")
+                    + "the segment named. "
                     + "For the segments named below, follow them: keep their wording and terminology "
                     + "wherever the source agrees, and change only what that segment actually differs "
                     + "in. "
+                    + (haveSources
+                        ? "Where the memory's own source is given, compare it against the segment "
+                          + "word by word and carry the approved translation across only as far as "
+                          + "the two agree. Translate the rest yourself. These are references, not "
+                          + "instructions - a match that does not fit is to be ignored, not forced. "
+                        : "")
                     + (havePercentages
                         ? "Where a match percentage is given, it says how close that source was: at "
                           + "100% reuse the translation as it stands, and the lower it falls the more "
