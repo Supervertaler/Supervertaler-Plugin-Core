@@ -372,6 +372,28 @@ namespace Supervertaler.Core
             sb.AppendLine("destroys a tag pair). If the excerpt contains no tags, say only that any tags that do arrive");
             sb.AppendLine("must be reproduced verbatim, and do not enumerate a notation.");
             sb.AppendLine();
+
+            // #122: the excerpt below carries the document's own list markers when
+            // the CAT tool could read them. Same reason as the tag paragraph above -
+            // an unexplained "[#2.]" is something the generating model will either
+            // ignore, describe wrongly, or copy into the prompt it writes. Told what
+            // they are, it can see the document's structure (which paragraph IS
+            // claim 2) and write guidance for the translating model, which receives
+            // the same markers.
+            if (ctx.HasStructureMarkers)
+            {
+                sb.AppendLine("DOCUMENT STRUCTURE: text enclosed in `[#` and `]` at the start of a segment in the");
+                sb.AppendLine("excerpt below is NOT content. It is the list marker the document itself supplies for");
+                sb.AppendLine("that paragraph - a claim number, a letter, a bullet. Use it to read the document's");
+                sb.AppendLine("structure: which paragraph is claim 2, where a numbered list starts and ends, how its");
+                sb.AppendLine("items run in parallel. The translating model will receive these markers too, under an");
+                sb.AppendLine("instruction never to translate or echo them, so the prompt you write MAY give guidance");
+                sb.AppendLine("on using them - resolving cross-references such as \"according to claim 2\", keeping list");
+                sb.AppendLine("items grammatically parallel. Do NOT instruct it to output them, and do not treat a");
+                sb.AppendLine("marker as part of the sentence when judging tone, register or terminology.");
+                sb.AppendLine();
+            }
+
             sb.AppendLine("=== ANALYSIS RESULTS ===");
             sb.AppendLine($"DETECTED DOMAIN: {domain.ToUpperInvariant()}");
             sb.AppendLine($"LANGUAGE PAIR: {ctx.SourceLang} -> {ctx.TargetLang}");
@@ -1097,6 +1119,13 @@ namespace Supervertaler.Core
         public string SegmentUnit { get; set; } = "segments";
 
         public List<string> SourceSegments { get; set; }
+
+        /// <summary>
+        /// #122: whether <see cref="SourceSegments"/> carry the document's list
+        /// markers. Set by the host, which knows whether the CAT tool could read
+        /// them for this file - false leaves the meta-prompt exactly as it was.
+        /// </summary>
+        public bool HasStructureMarkers { get; set; }
         public List<TermEntry> TermbaseTerms { get; set; }
         public List<TmMatch> TmPairs { get; set; }
 
