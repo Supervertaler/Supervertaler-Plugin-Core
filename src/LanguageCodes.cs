@@ -42,6 +42,29 @@ namespace Supervertaler.Core
     /// and the terminological ones (<c>deu</c>, <c>nld</c>, <c>fra</c>) - plus
     /// English names, because some hosts pass those instead, and the handful of
     /// superseded codes still in the wild.</para>
+    ///
+    /// <para><b>How this relates to Trados's LanguageUtils, which is NOT a
+    /// duplicate of it.</b> Supervertaler for Trados has
+    /// <c>Core/LanguageUtils.cs</c>, whose <c>CanonicalLocale</c> deliberately
+    /// KEEPS the region - <c>nl_be</c> becomes <c>nl-BE</c> - because it mirrors
+    /// the Python Workbench's <c>language_codes.canonical()</c> so that both
+    /// products STORE the same codes against the shared termbase. That is a
+    /// convention already agreed between two of the three products and must not
+    /// be re-invented.</para>
+    ///
+    /// <para>This class answers a different question. <c>CanonicalLocale</c> is
+    /// for writing a code down; <c>Normalise</c> is for asking whether two codes
+    /// mean the same language, which is why it drops the region: a termbase
+    /// marked <c>en-GB</c> is usable on an <c>en-US</c> job. **Never store what
+    /// Normalise returns** - it is lossy on purpose. And what it adds is the step
+    /// <c>CanonicalLocale</c> does not have: three-letter to two-letter, so
+    /// memoQ's <c>dut-NL</c> can be compared with the database's <c>nl</c> at
+    /// all.</para>
+    ///
+    /// <para>When <c>LanguageUtils</c> eventually moves into core - it also holds
+    /// the four-way termbase direction comparison and a per-entry check for a row
+    /// written backwards inside an otherwise correct termbase - it should sit on
+    /// top of this table rather than beside it.</para>
     /// </summary>
     public static class LanguageCodes
     {
