@@ -273,6 +273,17 @@ namespace Supervertaler.Core
             "iw-IL|he"
         };
 
+        // Two-letter code to the first English name in its row: "nl" to "Dutch".
+        //
+        // Declared BEFORE _toTwoLetter, and not for tidiness: C# initialises
+        // static fields in declaration order, and Build() fills this one as a
+        // side effect of producing that one. The other way round, Build() ran
+        // against a null dictionary and the type initialiser threw - which
+        // surfaced, unhelpfully, as every caller of LanguageCodes failing at
+        // once. The harness now asserts EnglishName so the order is pinned.
+        private static readonly Dictionary<string, string> _toName =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
         private static readonly Dictionary<string, string> _toTwoLetter = Build();
 
         private static Dictionary<string, string> Build()
@@ -288,10 +299,13 @@ namespace Supervertaler.Core
                 map[parts[1]] = two;
                 map[parts[2]] = two;
 
+                var first = true;
                 foreach (var name in parts[3].Split(','))
                 {
                     var trimmed = name.Trim();
-                    if (trimmed.Length > 0) map[trimmed] = two;
+                    if (trimmed.Length == 0) continue;
+                    map[trimmed] = two;
+                    if (first) { _toName[two] = trimmed; first = false; }
                 }
             }
 
@@ -349,6 +363,49 @@ namespace Supervertaler.Core
             return left.Length > 0
                 && right.Length > 0
                 && string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// The form a code is WRITTEN DOWN in - as opposed to <see cref="Normalise"/>,
+        /// which is the form it is compared in. Base language to its two-letter
+        /// code, region kept and upper-cased, joined with a hyphen:
+        /// <c>dut-NL</c> becomes <c>nl-NL</c>, <c>ENG</c> becomes <c>en</c>,
+        /// <c>en_gb</c> becomes <c>en-GB</c>.
+        ///
+        /// <para>This is Trados's <c>CanonicalLocale</c> rule - base lower, region
+        /// upper, hyphen - which mirrors the Python Workbench's
+        /// <c>language_codes.canonical()</c> so that all three products store the
+        /// same codes against the shared termbase; with the one step that rule
+        /// lacks put in front of it, so memoQ's three-letter codes arrive in the
+        /// same form as everyone else's. For a two-letter input the output is
+        /// identical to <c>CanonicalLocale</c>'s. An unknown base is kept as it
+        /// came, lower-cased, for the same reason <c>Normalise</c> keeps it.</para>
+        /// </summary>
+        public static string Canonical(string code)
+        {
+            var value = (code ?? string.Empty).Trim();
+            if (value.Length == 0) return string.Empty;
+
+            var cut = value.IndexOfAny(new[] { '-', '_' });
+            var stem = cut > 0 ? value.Substring(0, cut) : value;
+            var region = cut > 0 ? value.Substring(cut + 1).Trim() : string.Empty;
+
+            string mapped;
+            var baseCode = _toTwoLetter.TryGetValue(stem, out mapped) ? mapped : stem.ToLowerInvariant();
+
+            return region.Length == 0 ? baseCode : baseCode + "-" + region.ToUpperInvariant();
+        }
+
+        /// <summary>
+        /// The English name of a language - <c>Dutch</c> for <c>nl</c>, <c>dut-NL</c>
+        /// or <c>Flemish</c> - or the code itself, trimmed, when the table does not
+        /// know it. For headings a person reads; never for anything stored.
+        /// </summary>
+        public static string EnglishName(string code)
+        {
+            var two = Normalise(code);
+            string name;
+            return two.Length > 0 && _toName.TryGetValue(two, out name) ? name : two;
         }
 
         /// <summary>
