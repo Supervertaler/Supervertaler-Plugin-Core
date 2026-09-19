@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -136,7 +136,23 @@ namespace Supervertaler.Core
                     }
                     else if (sourceParts.Count > 1)
                     {
-                        // Several sources, one target: each source renders that way.
+                        // Several sources against a target that is not a matching
+                        // list. Each source renders that way.
+                        //
+                        // The target may still itself be a list - three sources
+                        // against two targets - and then it has to be collapsed
+                        // here exactly as the single-source branch below does it.
+                        // The first version of this branch did not, so each source
+                        // was paired with the uncollapsed "x / y" and nothing
+                        // recorded that alternatives had been listed at all: slash
+                        // -bearing targets, which is the one thing the old code
+                        // never produced.
+                        if (targetParts.Count > 1)
+                        {
+                            note = Alternatived(note, target);
+                            target = targetParts[0];
+                        }
+
                         foreach (var one in sourceParts)
                             rowTerms.Add(new Entry { Source = one, Target = target, Note = note });
                     }
@@ -149,7 +165,7 @@ namespace Supervertaler.Core
                             // translator meant is worse than saying what the prompt
                             // said. A termbase holds this properly as target
                             // synonyms; this type cannot carry them yet.
-                            note = (note.Length > 0 ? note + "; " : "") + "prompt listed alternatives: " + target;
+                            note = Alternatived(note, target);
                             target = targetParts[0];
                         }
 
@@ -209,6 +225,17 @@ namespace Supervertaler.Core
                 sb.AppendLine();
             }
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// <paramref name="note"/> with a record that the prompt listed several
+        /// renderings. One helper rather than the same line twice, because the two
+        /// places that collapse a target must say the same thing - the first time
+        /// they did not, one of them said nothing at all.
+        /// </summary>
+        private static string Alternatived(string note, string target)
+        {
+            return (note.Length > 0 ? note + "; " : "") + "prompt listed alternatives: " + target;
         }
 
         /// <summary>
