@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -99,21 +99,81 @@ namespace Supervertaler.Core
                     source = StripQualifier(source);
                     if (source.Length == 0) continue;
 
-                    // "a / b" in a locked-target cell means the generator failed
-                    // to lock; take the first and say so in the note.
-                    if (target.Contains(" / "))
+                    // "a / b" in either cell means the generator ignored its
+                    // instructions: it is told that a locked target is the single
+                    // binding rendering, and that a collocation gets its own row.
+                    // So this is error handling, not a supported notation, and the
+                    // three cases have to be told apart before anything is dropped.
+                    //
+                    // The row's terms are gathered first and added at the end,
+                    // rather than each branch adding and then skipping out. The
+                    // first version of this did skip out, and silently took the
+                    // "never use X" handling below with it, so a forbidden term
+                    // stopped being generated for exactly the rows that needed the
+                    // most care. One list, one exit.
+                    var sourceParts = Alternatives(source);
+                    var targetParts = Alternatives(target);
+                    var rowTerms = new List<Entry>();
+
+                    if (sourceParts.Count > 1 && sourceParts.Count == targetParts.Count)
                     {
-                        note = (note.Length > 0 ? note + "; " : "") + "prompt listed alternatives: " + target;
-                        target = target.Split(new[] { " / " }, StringSplitOptions.None)[0].Trim();
+                        // Both sides listed and they line up: several terms written
+                        // as one row. Pair them positionally, which is the only
+                        // reading the table supports.
+                        //
+                        // This has to happen BEFORE the target is collapsed. It did
+                        // not, and collapsing first left the source holding a slash
+                        // and the target holding one word: one term was stored whose
+                        // source was the literal "a / b", matching nothing ever, and
+                        // the second alternative survived only inside a note.
+                        for (var pair = 0; pair < sourceParts.Count; pair++)
+                            rowTerms.Add(new Entry
+                            {
+                                Source = sourceParts[pair],
+                                Target = targetParts[pair],
+                                Note = note
+                            });
+                    }
+                    else if (sourceParts.Count > 1)
+                    {
+                        // Several sources, one target: each source renders that way.
+                        foreach (var one in sourceParts)
+                            rowTerms.Add(new Entry { Source = one, Target = target, Note = note });
+                    }
+                    else
+                    {
+                        if (targetParts.Count > 1)
+                        {
+                            // One source, several renderings. The first is binding
+                            // and the rest are recorded, because guessing which the
+                            // translator meant is worse than saying what the prompt
+                            // said. A termbase holds this properly as target
+                            // synonyms; this type cannot carry them yet.
+                            note = (note.Length > 0 ? note + "; " : "") + "prompt listed alternatives: " + target;
+                            target = targetParts[0];
+                        }
+
+                        rowTerms.Add(new Entry { Source = source, Target = target, Note = note });
                     }
 
-                    entries.Add(new Entry { Source = source, Target = target, Note = note });
+                    entries.AddRange(rowTerms);
 
+                    // A "never use X" note bans that rendering for every term the
+                    // row produced, not only the first.
                     foreach (Match never in NeverPattern.Matches(note))
                     {
                         var banned = never.Groups[1].Value.Trim();
-                        if (banned.Length > 0 && !string.Equals(banned, target, StringComparison.OrdinalIgnoreCase))
-                            entries.Add(new Entry { Source = source, Target = banned, Forbidden = true, Note = "from prompt note" });
+                        if (banned.Length == 0) continue;
+
+                        foreach (var term in rowTerms)
+                            if (!string.Equals(banned, term.Target, StringComparison.OrdinalIgnoreCase))
+                                entries.Add(new Entry
+                                {
+                                    Source = term.Source,
+                                    Target = banned,
+                                    Forbidden = true,
+                                    Note = "from prompt note"
+                                });
                     }
                 }
             }
@@ -149,6 +209,23 @@ namespace Supervertaler.Core
                 sb.AppendLine();
             }
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// A cell split on " / ", trimmed, empties dropped. A cell without one
+        /// comes back as a single item, so callers can compare counts rather than
+        /// test for the separator twice.
+        ///
+        /// <para>Spaces around the slash are what makes this safe: "and/or",
+        /// "km/h" and "24/7" are single terms and stay single terms.</para>
+        /// </summary>
+        private static List<string> Alternatives(string cell)
+        {
+            return (cell ?? "")
+                .Split(new[] { " / " }, StringSplitOptions.None)
+                .Select(part => part.Trim())
+                .Where(part => part.Length > 0)
+                .ToList();
         }
 
         private static List<string> SplitCells(string inner)
