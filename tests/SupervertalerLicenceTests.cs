@@ -359,6 +359,52 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        // ─── Telling the products ───────────────────────────────────
+
+        /// <summary>
+        /// A subscriber that throws - the Trados AI Assistant touching a pane
+        /// that was never opened did, on 2026-09-23 - must not break the licence
+        /// call that raised the event, nor keep later subscribers from hearing.
+        /// </summary>
+        public static void ASubscriberThatThrows_BreaksNothing()
+        {
+            using (var s = new Scene())
+            {
+                LicenceFile.Write(s.SharedPath, LicenceFile.Serialise(Activated(DateTime.UtcNow)), false);
+                var licence = s.Open();
+                Assert.Equal(LicenceState.Licensed, licence.State, "before");
+
+                bool laterSubscriberHeard = false;
+                licence.StateChanged += (o, e) => throw new InvalidOperationException("no window handle yet");
+                licence.StateChanged += (o, e) => laterSubscriberHeard = true;
+
+                var logged = new System.Collections.Generic.List<string>();
+                var previousLog = SupervertalerLicence.Log;
+                SupervertalerLicence.Log = m => logged.Add(m);
+                try
+                {
+                    // The other product deactivates; this one finds out on its next
+                    // validation, which then needs no network call.
+                    LicenceFile.Write(s.SharedPath, LicenceFile.Serialise(new LicenceRecord
+                    {
+                        TrialStartedAt = DateTime.UtcNow.AddDays(-100),
+                        MachineFingerprint = Scene.Fingerprint,
+                    }), replaceExisting: true);
+
+                    var (ok, message) = licence.ValidateOnlineAsync().GetAwaiter().GetResult();
+
+                    Assert.True(!ok && message.Contains("No active licence"), "the call completed normally: " + message);
+                    Assert.True(laterSubscriberHeard, "the later subscriber still heard");
+                    Assert.True(logged.Any(m => m.Contains("subscriber failed")), "the failure was logged");
+                    Assert.Equal(LicenceState.Expired, licence.State, "and the state followed the file");
+                }
+                finally
+                {
+                    SupervertalerLicence.Log = previousLog;
+                }
+            }
+        }
+
         // ─── Two products open at once ──────────────────────────────
 
         /// <summary>

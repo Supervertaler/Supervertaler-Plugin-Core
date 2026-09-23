@@ -717,9 +717,29 @@ namespace Supervertaler.Core
             }
         }
 
+        /// <summary>
+        /// Tells every subscriber, each on its own. A subscriber that throws -
+        /// a UI touching a control that has no window yet, say - is logged and
+        /// skipped: it must not turn an activation that succeeded into a
+        /// reported failure, nor keep the other subscribers from hearing of it.
+        /// </summary>
         private void OnStateChanged()
         {
-            StateChanged?.Invoke(this, EventArgs.Empty);
+            var handlers = StateChanged;
+            if (handlers == null) return;
+
+            foreach (EventHandler handler in handlers.GetInvocationList())
+            {
+                try
+                {
+                    handler(this, EventArgs.Empty);
+                }
+                catch (Exception ex)
+                {
+                    WriteLog("A StateChanged subscriber failed and was skipped: " +
+                        ex.GetType().Name + ": " + ex.Message);
+                }
+            }
         }
 
         // ─── Lemon Squeezy response parsing ─────────────────────────
