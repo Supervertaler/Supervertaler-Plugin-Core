@@ -359,6 +359,84 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        // ─── Only Supervertaler keys ────────────────────────────────
+
+        /// <summary>A validation reply in the live API's shape, as seen on 2026-09-23.</summary>
+        private static string Reply(string status, string meta) =>
+            "{\"valid\":true,\"error\":null," +
+            "\"license_key\":{\"id\":1,\"status\":\"" + status + "\",\"key\":\"K\",\"activation_limit\":2," +
+            "\"activation_usage\":1,\"created_at\":\"2026-09-23T20:10:00.000000Z\",\"expires_at\":null,\"test_mode\":false}," +
+            "\"instance\":{\"id\":\"instance-1\",\"name\":\"x\",\"created_at\":\"2026-09-23T20:10:00.000000Z\"}," +
+            "\"meta\":" + meta + "}";
+
+        private static string Meta(long storeId) =>
+            "{\"store_id\":" + storeId + ",\"order_id\":1,\"order_item_id\":1,\"product_id\":917153," +
+            "\"product_name\":\"Supervertaler for Trados\",\"variant_id\":1,\"variant_name\":\"Annual\"," +
+            "\"customer_id\":1,\"customer_name\":\"Acme\",\"customer_email\":\"a@example.com\"}";
+
+        public static void AKeyFromOurStore_IsOurs()
+        {
+            var r = SupervertalerLicence.ParseLemonSqueezyResponse(Reply("active", Meta(SupervertalerLicence.SupervertalerStoreId)));
+            Assert.True(r.Understood, "understood");
+            Assert.True(!r.FromAnotherStore, "ours");
+        }
+
+        public static void AKeyFromAnotherStore_IsNot()
+        {
+            var r = SupervertalerLicence.ParseLemonSqueezyResponse(Reply("active", Meta(12345)));
+            Assert.True(r.Understood, "understood");
+            Assert.True(r.FromAnotherStore, "another store's key is recognised as such");
+        }
+
+        /// <summary>A reply that names no store proves nothing, and absence of information never locks anyone out.</summary>
+        public static void AReplyNamingNoStore_FailsOpen()
+        {
+            var noStoreId = SupervertalerLicence.ParseLemonSqueezyResponse(Reply("active", "{\"variant_name\":\"Annual\"}"));
+            Assert.True(noStoreId.Understood && !noStoreId.FromAnotherStore, "meta without a store id");
+
+            var noMeta = SupervertalerLicence.ParseLemonSqueezyResponse(Reply("active", "null"));
+            Assert.True(noMeta.Understood && !noMeta.FromAnotherStore, "no meta at all");
+        }
+
+        public static void AValidationReplyFromAnotherStore_EndsIt_AndNeverRenews()
+        {
+            using (var s = new Scene())
+            {
+                var validated = DateTime.UtcNow.AddDays(-10);
+                LicenceFile.Write(s.SharedPath, LicenceFile.Serialise(Activated(validated)), false);
+                var licence = s.Open();
+                Assert.Equal(LicenceState.Licensed, licence.State, "before");
+
+                var reply = SupervertalerLicence.ParseLemonSqueezyResponse(Reply("active", Meta(12345)));
+                var after = licence.ApplyValidationReply(reply, Key, "instance-1");
+
+                Assert.Equal(LicenceState.Expired, after, "state at once, not in 20 days");
+                Assert.True(Math.Abs((licence.LastValidatedUtc - validated).TotalSeconds) < 1, "the window was not renewed");
+                Assert.Equal(LicenceState.Expired, s.Open().State, "and it is stored, not only held in memory");
+            }
+        }
+
+        /// <summary>The rules from 2026-09-19 still hold beside the store check: only active renews.</summary>
+        public static void AValidationReplyFromOurStore_RenewsOnlyWhenActive()
+        {
+            using (var s = new Scene())
+            {
+                LicenceFile.Write(s.SharedPath, LicenceFile.Serialise(Activated(DateTime.UtcNow.AddDays(-10))), false);
+                var licence = s.Open();
+
+                var active = SupervertalerLicence.ParseLemonSqueezyResponse(Reply("active", Meta(SupervertalerLicence.SupervertalerStoreId)));
+                Assert.Equal(LicenceState.Licensed, licence.ApplyValidationReply(active, Key, "instance-1"), "active");
+                Assert.True((DateTime.UtcNow - licence.LastValidatedUtc).TotalMinutes < 1, "active renews the window");
+
+                var renewed = licence.LastValidatedUtc;
+                var expired = SupervertalerLicence.ParseLemonSqueezyResponse(Reply("expired", Meta(SupervertalerLicence.SupervertalerStoreId)));
+                Assert.Equal(LicenceState.Expired, licence.ApplyValidationReply(expired, Key, "instance-1"), "expired");
+                // Within a second: the file stores milliseconds, memory holds ticks.
+                Assert.True(Math.Abs((licence.LastValidatedUtc - renewed).TotalSeconds) < 1,
+                    "expired does not renew: " + renewed.ToString("O") + " -> " + licence.LastValidatedUtc.ToString("O"));
+            }
+        }
+
         // ─── Telling the products ───────────────────────────────────
 
         /// <summary>

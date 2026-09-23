@@ -22,6 +22,7 @@ namespace Supervertaler.Core.Tests
                     case "--hammer": return Hammer(a[1], a[2], a[3], int.Parse(a[4]));
                     case "--anchor-hammer": return AnchorHammer(a);
                     case "--open": return Open(a[1], a[2], a[3], a[4], a[5]);
+                    case "--parse-reply": return ParseReply(a[1]);
                     default:
                         Console.WriteLine("unknown mode " + a[0]);
                         return 2;
@@ -131,6 +132,17 @@ namespace Supervertaler.Core.Tests
             }
 
             Console.WriteLine($"violations={violations} unreadable={unreadable}");
+            return 0;
+        }
+
+        /// <summary>
+        /// Runs a saved licence-server reply through the real parser. For
+        /// checking a live reply by hand; prints only what the parser concluded.
+        /// </summary>
+        private static int ParseReply(string path)
+        {
+            var r = SupervertalerLicence.ParseLemonSqueezyResponse(File.ReadAllText(path, Encoding.UTF8));
+            Console.WriteLine($"understood={r.Understood} valid={r.Valid} status={r.Status} fromAnotherStore={r.FromAnotherStore}");
             return 0;
         }
 

@@ -66,6 +66,19 @@ namespace Supervertaler.Core
         // ─── Constants ──────────────────────────────────────────────
 
         private const string BaseUrl = "https://api.lemonsqueezy.com/v1/licenses";
+
+        /// <summary>
+        /// The Lemon Squeezy store that sells Supervertaler licences. A key is a
+        /// Supervertaler licence only if the licence server says it was issued
+        /// by this store. Every product in the store is a licence, so the store
+        /// rather than the product is the test, and renaming or adding a product
+        /// needs no change here.
+        /// </summary>
+        internal const long SupervertalerStoreId = 307062;
+
+        private const string NotOurKeyStatus = "not-supervertaler";
+        private const string NotOurKeyMessage =
+            "This licence key is not a Supervertaler licence. Please check you entered the right key.";
         private const int OfflineCacheDays = 30;
         private static readonly TimeSpan AbandonedTempAge = TimeSpan.FromMinutes(10);
         private static readonly HttpClient Http = new HttpClient();
@@ -533,6 +546,14 @@ namespace Supervertaler.Core
                 if (!result.Activated)
                     return (false, result.Error ?? "Activation failed. Please check your licence key.");
 
+                if (result.FromAnotherStore)
+                {
+                    // Hand back the activation the server has just made, so it
+                    // does not hold a seat on someone else's key.
+                    await ReleaseAsync(key, result.InstanceId).ConfigureAwait(false);
+                    return (false, NotOurKeyMessage);
+                }
+
                 lock (_lock)
                 {
                     RefreshFromDisk();
@@ -589,21 +610,8 @@ namespace Supervertaler.Core
                 instance = _rec.InstanceId;
             }
 
-            try
-            {
-                var content = new FormUrlEncodedContent(new[]
-                {
-                    new KeyValuePair<string, string>("license_key", key),
-                    new KeyValuePair<string, string>("instance_id", instance),
-                });
-
-                await Http.PostAsync(BaseUrl + "/deactivate", content).ConfigureAwait(false);
-                // Even if the server call fails, local state is cleared.
-            }
-            catch
-            {
-                // Network error - still clear local state.
-            }
+            // Even if the server call fails, local state is cleared.
+            await ReleaseAsync(key, instance).ConfigureAwait(false);
 
             lock (_lock)
             {
@@ -674,34 +682,13 @@ namespace Supervertaler.Core
                 if (!result.Understood)
                     return (false, "Could not read the licence server's reply. Using cached licence state.");
 
-                LicenceState after;
-                lock (_lock)
-                {
-                    RefreshFromDisk();
-
-                    // A reply about a different activation - the other product
-                    // changed it while this request was out - is not applied.
-                    if (string.Equals(_rec.InstanceId, instance, StringComparison.Ordinal)
-                        && string.Equals(_rec.LicenseKey, key, StringComparison.Ordinal))
-                    {
-                        _rec.Status = result.Status;
-                        _rec.VariantName = result.VariantName;
-                        _rec.ExpiresAt = result.ExpiresAt;
-
-                        // Only a reply that says ACTIVE renews the window. A
-                        // reply that says disabled or expired still takes effect
-                        // at once through Status above - it just does not buy
-                        // another 30 days of offline grace.
-                        if (IsStatusActive())
-                            _rec.LastValidatedAt = DateTime.UtcNow;
-
-                        Save();
-                    }
-                    after = Resolve();
-                }
+                var after = ApplyValidationReply(result, key, instance);
 
                 if (after != before)
                     OnStateChanged();
+
+                if (result.FromAnotherStore)
+                    return (false, NotOurKeyMessage);
 
                 return result.Valid
                     ? (true, "Licence is valid.")
@@ -714,6 +701,60 @@ namespace Supervertaler.Core
             catch (Exception ex)
             {
                 return (false, "Validation error: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Applies a validation reply the licence code understood to the
+        /// activation it was about, and returns the resulting state. Separate
+        /// from the network call so the rules below can be tested without one.
+        /// </summary>
+        internal LicenceState ApplyValidationReply(LemonSqueezyResult result, string key, string instance)
+        {
+            lock (_lock)
+            {
+                RefreshFromDisk();
+
+                // A reply about a different activation - the other product
+                // changed it while this request was out - is not applied.
+                if (string.Equals(_rec.InstanceId, instance, StringComparison.Ordinal)
+                    && string.Equals(_rec.LicenseKey, key, StringComparison.Ordinal))
+                {
+                    // A key from another store is known not to be a Supervertaler
+                    // licence, so like a disabled one it takes effect at once.
+                    _rec.Status = result.FromAnotherStore ? NotOurKeyStatus : result.Status;
+                    _rec.VariantName = result.VariantName;
+                    _rec.ExpiresAt = result.ExpiresAt;
+
+                    // Only a reply that says ACTIVE renews the window. A
+                    // reply that says disabled or expired still takes effect
+                    // at once through Status above - it just does not buy
+                    // another 30 days of offline grace.
+                    if (IsStatusActive())
+                        _rec.LastValidatedAt = DateTime.UtcNow;
+
+                    Save();
+                }
+                return Resolve();
+            }
+        }
+
+        /// <summary>Gives back an activation. Failures are ignored: there is nothing to do about them here.</summary>
+        private static async Task ReleaseAsync(string key, string instanceId)
+        {
+            if (string.IsNullOrEmpty(instanceId)) return;
+            try
+            {
+                var content = new FormUrlEncodedContent(new[]
+                {
+                    new KeyValuePair<string, string>("license_key", key),
+                    new KeyValuePair<string, string>("instance_id", instanceId),
+                });
+                await Http.PostAsync(BaseUrl + "/deactivate", content).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Offline or refused: the seat stays taken on the server.
             }
         }
 
@@ -747,9 +788,9 @@ namespace Supervertaler.Core
         /// <summary>
         /// Parses a reply from Lemon Squeezy's licence API:
         /// <c>{ "valid", "activated", "error", "license_key": { "status",
-        /// "expires_at" }, "meta": { "variant_name" }, "instance": { "id" } }</c>.
+        /// "expires_at" }, "meta": { "variant_name", "store_id" }, "instance": { "id" } }</c>.
         /// </summary>
-        private static LemonSqueezyResult ParseLemonSqueezyResponse(string json)
+        internal static LemonSqueezyResult ParseLemonSqueezyResponse(string json)
         {
             var result = new LemonSqueezyResult();
 
@@ -785,7 +826,15 @@ namespace Supervertaler.Core
                     }
 
                     if (response.Meta != null)
+                    {
                         result.VariantName = response.Meta.VariantName ?? "";
+
+                        // Only a store that is named, and is not ours, counts.
+                        // A reply without one proves nothing either way, and
+                        // an absence of information never locks anyone out.
+                        result.FromAnotherStore = response.Meta.StoreId.HasValue
+                            && response.Meta.StoreId.Value != SupervertalerStoreId;
+                    }
 
                     if (response.Instance != null)
                         result.InstanceId = response.Instance.Id ?? "";
@@ -799,8 +848,11 @@ namespace Supervertaler.Core
             return result;
         }
 
-        private class LemonSqueezyResult
+        internal class LemonSqueezyResult
         {
+            /// <summary>The server named the store that issued the key, and it is not ours.</summary>
+            public bool FromAnotherStore;
+
             /// <summary>
             /// The body parsed and carried a recognisable licence block. False
             /// for a non-JSON body, a parse failure, or a reply of an
@@ -854,6 +906,9 @@ namespace Supervertaler.Core
         {
             [DataMember(Name = "variant_name")]
             public string VariantName { get; set; }
+
+            [DataMember(Name = "store_id")]
+            public long? StoreId { get; set; }
         }
 
         [DataContract]
