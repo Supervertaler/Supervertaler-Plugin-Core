@@ -24,6 +24,7 @@ already paid for once, with SQLite.
 | `ChatMessage`, `PromptLogEntry` | Conversation and audit types. |
 | `AiApiKeys` | Per-provider keys, as stored in a plugin's settings. |
 | `SupervertalerPaths` | The one folder every Supervertaler product shares. |
+| `SupervertalerLicence`, `LicenceState` | The one licence every Supervertaler product shares: trial, activation, validation. One licence per computer, safe with several products open at once. No UI. |
 
 Deliberately UI-free and CAT-tool-free: nothing here references WinForms, `Sdl.*`
 or `MemoQ.*`. That is the boundary — if a change to this repo needs one of those,
@@ -48,6 +49,19 @@ dotnet build build/Supervertaler.Core.Build.csproj
 
 Not a shipping artefact — nothing consumes its output. It exists so a compile
 error surfaces here in one line rather than halfway through a plugin build.
+
+## Tests
+
+```bash
+dotnet build tests/Supervertaler.Core.Tests.csproj
+tests/bin/Debug/net48/Supervertaler.Core.Tests.exe
+```
+
+A plain console program, no test framework. Exit code 0 means every test
+passed; a word on the command line runs only the tests whose names contain it.
+The licence tests use a temporary folder and a throwaway registry key and never
+touch the real licence. Some start copies of the program, because two products
+writing one file at once is only real across processes.
 
 ## Licence
 

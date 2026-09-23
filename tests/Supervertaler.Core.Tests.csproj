@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests for the shared code, as a plain console program: no test framework,
+    because core takes no NuGet packages and a test runner is not worth being
+    the first.
+
+        dotnet build tests/Supervertaler.Core.Tests.csproj
+        tests/bin/Debug/net48/Supervertaler.Core.Tests.exe
+
+    Exit code 0 means every test passed. The licence tests work in a temporary
+    folder and a throwaway registry key, and never touch the real licence.
+    Some of them start copies of this program, because two products writing the
+    same licence at once is only real across two processes.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Supervertaler.Core.Tests</AssemblyName>
+    <RootNamespace>Supervertaler.Core.Tests</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <Import Project="..\Supervertaler.Core.props" />
+
+  <ItemGroup>
+    <Compile Include="*.cs" />
+  </ItemGroup>
+
+</Project>
