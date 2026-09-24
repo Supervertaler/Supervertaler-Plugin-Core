@@ -180,6 +180,96 @@ namespace Supervertaler.Core.Tests
                 "the row used least is the one cut");
         }
 
+        public static void RelevantTerminology_OutranksSharedArticles_WhenNothingCanBeChosen()
+        {
+            // The core owner's probe. No article choice (offline); 300 client rows,
+            // ALL in the document; two _shared prose articles of ~4k tokens each;
+            // a 9,000-token budget. The priority order drops a _shared article long
+            // before client terminology, and dropping one fits everything - so all
+            // 300 rows must survive. Before the fix, 207 were cut and both
+            // articles kept.
+            var rows = new StringBuilder("| Source | Target | Scope | Note |\r\n|---|---|---|---|\r\n");
+            var doc = new StringBuilder();
+            for (var i = 0; i < 300; i++)
+            {
+                rows.Append("| relevantterm").Append(i).Append(" | relevantdoel").Append(i).Append(" | client | ordinary note |\r\n");
+                doc.Append("relevantterm").Append(i).Append(' ');
+            }
+
+            var ctx = new KbContext { ClientProfileText = "Brief." };
+            ctx.TerminologyArticles.Add(rows.ToString());
+            ctx.TerminologyPaths.Add("terminology.md");
+            ctx.SharedExtraArticles.Add("# One\n" + new string('x', 16000));
+            ctx.SharedExtraPaths.Add("_shared/one.md");
+            ctx.SharedExtraArticles.Add("# Two\n" + new string('y', 16000));
+            ctx.SharedExtraPaths.Add("_shared/two.md");
+
+            var r = BankExtract.Build(ctx, doc.ToString(), "nl", "en", 9000, _ => null);
+
+            var kept = r.Context.TerminologyArticles.Count == 0 ? 0
+                : r.Context.TerminologyArticles[0].Split('\n').Count(l => l.StartsWith("| relevantterm", StringComparison.Ordinal));
+            Assert.Equal(300, kept, "every relevant client row kept");
+            Assert.Equal(1, r.Context.TrimmedPaths.Count, "one _shared article trimmed: " + string.Join(", ", r.Context.TrimmedPaths));
+            Assert.True(r.Context.TrimmedPaths[0].StartsWith("_shared/", StringComparison.Ordinal), "and it is a _shared one");
+        }
+
+        public static void RelevantTerminology_IsCutByRows_WhenNothingElseIsLeftToDrop()
+        {
+            // Shrink still earns its place: prose already gone, the relevant
+            // terminology alone over budget. Rows are cut, not the table.
+            var rows = new StringBuilder("| Source | Target |\r\n|---|---|\r\n");
+            var doc = new StringBuilder();
+            for (var i = 0; i < 2000; i++)
+            {
+                rows.Append("| relevantterm").Append(i).Append(" | relevantdoel").Append(i).Append(" |\r\n");
+                doc.Append("relevantterm").Append(i).Append(' ');
+            }
+            var ctx = new KbContext { ClientProfileText = "Brief." };
+            ctx.TerminologyArticles.Add(rows.ToString());
+            ctx.TerminologyPaths.Add("terminology.md");
+
+            var r = BankExtract.Build(ctx, doc.ToString(), "nl", "en", 9000, null);
+            Assert.True(r.Context.TerminologyArticles.Count == 1, "the table is still there");
+            Assert.True(r.TokensAfter <= 9000 && r.TokensAfter > 8000, "cut to fit the budget: " + r.TokensAfter);
+            Assert.True(r.Report.Any(l => l.Contains("terminology rows cut")), "and the report says rows were cut");
+        }
+
+        public static void Fragments_StayModest_OnDutchLikeWords()
+        {
+            // The core owner measured the old every-fragment set at 73 MB on a
+            // Dutch-like document: 12,000 distinct words, lengths 4-30 skewed short,
+            // median about 12. Prefixes and suffixes only should be a small fraction.
+            var rnd = new Random(11);
+            var words = new List<string>();
+            var letters = "abcdefghijklmnopqrstuvwxyz";
+            while (words.Count < 12000)
+            {
+                var len = Math.Min(30, 4 + (int)(-Math.Log(1 - rnd.NextDouble()) * 11));
+                var sb = new StringBuilder();
+                for (var i = 0; i < len; i++) sb.Append(letters[rnd.Next(letters.Length)]);
+                words.Add(sb.ToString());
+            }
+            var text = new StringBuilder();
+            for (var s = 0; s < 5000; s++)
+                for (var w = 0; w < 15; w++) text.Append(words[rnd.Next(words.Count)]).Append(' ');
+
+            var median = words.Select(w => w.Length).OrderBy(n => n).ElementAt(words.Count / 2);
+
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            var start = GC.GetTotalMemory(true);
+            var doc = new DocumentTerms(text.ToString(), 1);
+            var afterIndex = GC.GetTotalMemory(true);
+            doc.Contains("zzzzzzzzq");   // a missed single word: builds the fragment set
+            var afterFragments = GC.GetTotalMemory(true);
+            GC.KeepAlive(doc);
+
+            var indexMb = (afterIndex - start) / 1048576.0;
+            var fragmentsMb = (afterFragments - afterIndex) / 1048576.0;
+            Console.WriteLine("      median word length " + median + ": run index " + indexMb.ToString("F1")
+                              + " MB, fragment set " + fragmentsMb.ToString("F1") + " MB");
+            Assert.True(fragmentsMb < 20, "the fragment set is modest: " + fragmentsMb.ToString("F1") + " MB");
+        }
+
         /// <summary>A bank over the threshold: a big terminology table, five articles, brief, style, domain.</summary>
         private static KbContext LargeBank(out int articleCount)
         {

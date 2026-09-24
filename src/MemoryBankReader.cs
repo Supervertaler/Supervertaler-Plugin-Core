@@ -1222,8 +1222,17 @@ namespace Supervertaler.Core
         /// it overrides the defaults anyway, so shedding defaults loses least.
         /// Terminology is dropped last on each layer: it is the densest content
         /// and the hardest for a model to guess.
+        ///
+        /// <para><paramref name="shrinkTerminology"/>, when given, is used at the
+        /// two points where a terminology file would be dropped whole: it is asked
+        /// to cut that text to at most the given number of characters, by rows,
+        /// and the file is dropped only if that is not enough. The order stays the
+        /// one written here - a caller that selected its terminology for a
+        /// document (<see cref="BankExtract"/>) would otherwise lose a whole
+        /// relevant table while less important material survived above it.
+        /// Returning null or the text unchanged means "cannot shrink".</para>
         /// </summary>
-        public void TrimToTokenBudget(int maxTokens)
+        public void TrimToTokenBudget(int maxTokens, Func<string, int, string> shrinkTerminology = null)
         {
             if (maxTokens <= 0 || EstimatedTokens <= maxTokens) return;
 
@@ -1259,8 +1268,12 @@ namespace Supervertaler.Core
             }
             if (EstimatedTokens > maxTokens && SharedTerminologyText != null)
             {
-                SharedTerminologyText = null;
-                TrimmedPaths.Add(sharedPrefix + MemoryBankReader.TerminologyFile);
+                SharedTerminologyText = Shrunk(SharedTerminologyText, maxTokens, shrinkTerminology);
+                if (EstimatedTokens > maxTokens)
+                {
+                    SharedTerminologyText = null;
+                    TrimmedPaths.Add(sharedPrefix + MemoryBankReader.TerminologyFile);
+                }
             }
 
             if (EstimatedTokens > maxTokens && StyleGuideText != null)
@@ -1280,8 +1293,20 @@ namespace Supervertaler.Core
                 }
             }
 
+            var shrunkLast = false;
             while (TerminologyArticles.Count > 0 && EstimatedTokens > maxTokens)
             {
+                // The last article first, as before - but shrunk by rows before it
+                // is dropped whole, and dropped only if shrinking it did not do.
+                if (shrinkTerminology != null && !shrunkLast)
+                {
+                    var last = TerminologyArticles.Count - 1;
+                    TerminologyArticles[last] = Shrunk(TerminologyArticles[last], maxTokens, shrinkTerminology);
+                    shrunkLast = true;
+                    continue;
+                }
+                shrunkLast = false;
+
                 TerminologyArticles.RemoveAt(TerminologyArticles.Count - 1);
                 if (TerminologyPaths.Count > 0)
                 {
@@ -1300,6 +1325,19 @@ namespace Supervertaler.Core
                     ClientProfileTruncated = true;
                 }
             }
+        }
+
+        /// <summary>
+        /// <paramref name="text"/> cut by just enough to bring the whole context
+        /// within <paramref name="maxTokens"/>, when a shrinker is given and can.
+        /// </summary>
+        private string Shrunk(string text, int maxTokens, Func<string, int, string> shrink)
+        {
+            if (shrink == null || string.IsNullOrEmpty(text)) return text;
+
+            var excessChars = (EstimatedTokens - maxTokens) * 4;
+            var result = shrink(text, Math.Max(0, text.Length - excessChars));
+            return string.IsNullOrEmpty(result) || result.Length >= text.Length ? text : result;
         }
 
         /// <summary>

@@ -73,7 +73,8 @@ namespace Supervertaler.Core
             string targetLang,
             int tokenBudget,
             Func<ArticleSelectionRequest, IList<string>> selectArticles,
-            IList<string> earlierChoice = null)
+            IList<string> earlierChoice = null,
+            string chooserName = null)
         {
             if (full == null) return null;
 
@@ -83,13 +84,13 @@ namespace Supervertaler.Core
             {
                 result.Report.Add("Sent whole: the bank is " + Tokens(result.TokensBefore)
                     + ", at or under the " + Tokens(Threshold) + " threshold for selecting.");
-                return Finish(result, tokenBudget);
+                return Finish(result, tokenBudget, null);
             }
 
             if (string.IsNullOrWhiteSpace(documentText))
             {
                 result.Report.Add("Sent whole within the budget: no document text is available yet to select against.");
-                return Finish(result, tokenBudget);
+                return Finish(result, tokenBudget, null);
             }
 
             result.Selected = true;
@@ -159,6 +160,7 @@ namespace Supervertaler.Core
                     result.ArticleChoice = chosen.ToList();
                     result.Report.Add("Articles: " + (candidates.Count - left.Count) + " of " + candidates.Count
                         + " chosen as relevant to this document"
+                        + (string.IsNullOrWhiteSpace(chooserName) || earlierChoice != null ? "" : " by " + chooserName)
                         + (left.Count > 0 ? "; left out: " + string.Join(", ", left) : "") + ".");
                 }
                 else
@@ -169,44 +171,34 @@ namespace Supervertaler.Core
                 }
             }
 
-            // ---- 3. still too big: cut the least used terms, _shared first ------
-            // The usual trimming drops a terminology file whole, which would throw
-            // away exactly the rows this extract kept for being relevant. So the
-            // excess comes off the rows the document uses least, the house
-            // defaults before the client's own.
-            if (tokenBudget > 0 && full.EstimatedTokens > tokenBudget)
-            {
-                var excess = (full.EstimatedTokens - tokenBudget) * 4;
-
-                if (!string.IsNullOrEmpty(full.SharedTerminologyText))
-                {
-                    var before = full.SharedTerminologyText.Length;
-                    full.SharedTerminologyText = TerminologyFilter.Shrink(full.SharedTerminologyText, doc,
-                        Math.Max(0, before - excess), out var cut);
-                    excess -= before - (full.SharedTerminologyText?.Length ?? 0);
-                    if (cut > 0)
-                        result.Report.Add("Still over budget: " + cut.ToString("N0", CultureInfo.InvariantCulture) + " "
-                            + MemoryBankReader.SharedBankName + " terminology rows cut, those this document uses least first.");
-                }
-
-                for (var i = 0; i < full.TerminologyArticles.Count && excess > 0; i++)
-                {
-                    var before = full.TerminologyArticles[i].Length;
-                    full.TerminologyArticles[i] = TerminologyFilter.Shrink(full.TerminologyArticles[i], doc,
-                        Math.Max(0, before - excess), out var cut);
-                    excess -= before - full.TerminologyArticles[i].Length;
-                    if (cut > 0)
-                        result.Report.Add("Still over budget: " + cut.ToString("N0", CultureInfo.InvariantCulture)
-                            + " client terminology rows cut, those this document uses least first.");
-                }
-            }
-
-            return Finish(result, tokenBudget);
+            return Finish(result, tokenBudget, doc);
         }
 
-        private static BankExtractResult Finish(BankExtractResult result, int tokenBudget)
+        /// <summary>
+        /// The budget, applied in the one order <see cref="KbContext.TrimToTokenBudget"/>
+        /// keeps. When the document is known, a terminology file that order would
+        /// drop whole is first cut by rows instead - the rows this document uses
+        /// least - because every row left by now was kept for being relevant.
+        /// </summary>
+        private static BankExtractResult Finish(BankExtractResult result, int tokenBudget, DocumentTerms doc)
         {
-            result.Context.TrimToTokenBudget(tokenBudget);
+            var cutRows = 0;
+            Func<string, int, string> shrink = null;
+            if (doc != null)
+            {
+                shrink = (text, maxChars) =>
+                {
+                    var shrunk = TerminologyFilter.Shrink(text, doc, maxChars, out var cut);
+                    cutRows += cut;
+                    return shrunk;
+                };
+            }
+
+            result.Context.TrimToTokenBudget(tokenBudget, shrink);
+
+            if (cutRows > 0)
+                result.Report.Add("Over the " + Tokens(tokenBudget) + " budget: " + cutRows.ToString("N0", CultureInfo.InvariantCulture)
+                    + " terminology rows cut, those this document uses least first, in the usual order.");
             if (result.Context.TrimmedPaths.Count > 0)
                 result.Report.Add("Over the " + Tokens(tokenBudget) + " budget even so; left out by the usual order: "
                     + string.Join(", ", result.Context.TrimmedPaths) + ".");
@@ -406,10 +398,16 @@ namespace Supervertaler.Core
     /// searching a 5,000-segment document is seconds; this is milliseconds.</para>
     ///
     /// <para>Compounds - Dutch and German write "inlegschoeisel" where the term is
-    /// "schoeisel" - are found through a second set, built only if needed, of every
-    /// fragment of at least <see cref="MinCompoundLength"/> letters of every
-    /// distinct document word. Only single-word terms that missed the word set are
-    /// looked up there, so a short word does not match inside everything.</para>
+    /// "schoeisel" - are found through a second set, built only if needed, of the
+    /// PREFIXES and SUFFIXES of at least <see cref="MinCompoundLength"/> letters of
+    /// every distinct document word: the parts of a compound sit at its ends
+    /// ("inlegSCHOEISEL", "SCHOEISELmaat"). Every fragment of a word would find a
+    /// middle part too ("inlegSCHOEISELmaat"), but costs (L-4)(L-3)/2 entries per
+    /// word against 2(L-4) - measured at 76 MB against 17 MB on a Dutch-like
+    /// 5,000-segment document (12,000 distinct words, median length 11) - and a term found only in the middle of a compound
+    /// almost always also occurs on its own somewhere in the same document. Only
+    /// single-word terms that missed the word set are looked up there, so a short
+    /// word does not match inside everything.</para>
     /// </summary>
     public class DocumentTerms
     {
@@ -485,9 +483,11 @@ namespace Supervertaler.Core
             foreach (var w in _words)
             {
                 if (w.Length <= MinCompoundLength || w.Length > MaxWordLengthForFragments) continue;
-                for (var start = 0; start + MinCompoundLength <= w.Length; start++)
-                    for (var len = MinCompoundLength; start + len <= w.Length; len++)
-                        set.Add(w.Substring(start, len));
+                for (var len = MinCompoundLength; len < w.Length; len++)
+                {
+                    set.Add(w.Substring(0, len));              // prefix: "schoeisel" in "schoeiselmaat"
+                    set.Add(w.Substring(w.Length - len, len)); // suffix: "schoeisel" in "inlegschoeisel"
+                }
             }
             _fragments = set;
             return set;
@@ -655,8 +655,10 @@ namespace Supervertaler.Core
             var clean = Parenthetical.Replace(cell.Replace("*", "").Replace("`", "").Replace("_", " "), " ");
             foreach (var part in clean.Split('/', ';'))
             {
+                // Under three letters is not a term: "and/or" would otherwise keep a
+                // row through "or", which occurs in almost any English text.
                 var t = part.Trim();
-                if (t.Length > 0 && t != "-") yield return t;
+                if (t.Length >= 3) yield return t;
             }
         }
 
