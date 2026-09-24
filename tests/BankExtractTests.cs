@@ -94,17 +94,39 @@ namespace Supervertaler.Core.Tests
             Assert.Equal(0, r.Context.ExtraArticles.Count + r.Context.SharedExtraArticles.Count, "the choice of none removed every article");
         }
 
-        public static void ArticleChoice_IsAskedOnlyWhenStillOverBudget_AndReused()
+        public static void ArticleChoice_IsAskedWhenOverTheThreshold_EvenWithinBudget()
+        {
+            // The first live run: a bank that fitted the budget after terminology
+            // filtering was never asked, and a third of what went with every row
+            // was notes no translation needed. Fitting is not relevance.
+            var asked = 0;
+            Func<ArticleSelectionRequest, IList<string>> choose = req => { asked++; return new List<string> { "patents.md" }; };
+
+            var within = BankExtract.Build(LargeBank(out _), "schoeisel", "nl", "en", 1000000, choose);
+            Assert.Equal(1, asked, "asked although the bank is well within the budget");
+            Assert.True(within.Context.ExtraPaths.SequenceEqual(new[] { "patents.md" }) && within.Context.SharedExtraArticles.Count == 0,
+                "and what was not chosen is left out");
+        }
+
+        public static void ArticleChoice_IsNotAsked_WithoutArticlesToChooseFrom()
+        {
+            var asked = 0;
+            var ctx = LargeBank(out _);
+            ctx.ExtraArticles.Clear(); ctx.ExtraPaths.Clear();
+            ctx.SharedExtraArticles.Clear(); ctx.SharedExtraPaths.Clear();
+            ctx.ClientProfileText = "Brief. " + new string('b', 40000);   // still over the threshold
+
+            BankExtract.Build(ctx, "schoeisel", "nl", "en", 1000000, _ => { asked++; return new List<string>(); });
+            Assert.Equal(0, asked, "nothing to choose between, so nothing is asked");
+        }
+
+        public static void ArticleChoice_IsAskedOnce_AndReused()
         {
             var asked = 0;
             Func<ArticleSelectionRequest, IList<string>> choose = req => { asked++; return new List<string> { "patents.md" }; };
 
-            // A generous budget: terminology filtering alone brings it under.
-            BankExtract.Build(LargeBank(out _), "schoeisel", "nl", "en", 1000000, choose);
-            Assert.Equal(0, asked, "not asked when already within budget");
-
             var r = BankExtract.Build(LargeBank(out _), "schoeisel", "nl", "en", 9000, choose);
-            Assert.Equal(1, asked, "asked once when over budget");
+            Assert.Equal(1, asked, "asked once");
             Assert.True(r.ArticleChoice != null && r.ArticleChoice.Contains("patents.md"), "the choice is returned for reuse");
             Assert.True(r.Context.ExtraPaths.SequenceEqual(new[] { "patents.md" }), "only the chosen article is left");
 

@@ -24,8 +24,8 @@ namespace Supervertaler.Core
     /// the document are kept - in EITHER term column, because a bank's tables
     /// run in whichever direction the translator wrote them, and on a job in the
     /// other direction every relevant term sits in the target column.</item>
-    /// <item><b>Prose articles, only if still over budget.</b> The host is asked
-    /// which of the remaining articles matter, through
+    /// <item><b>Prose articles, whenever selection runs.</b> The host is asked
+    /// which of the articles matter, through
     /// <c>selectArticles</c> - an AI call in the products, a plain function in the
     /// tests. A failure there means today's behaviour: every article kept, the
     /// usual trimming applied.</item>
@@ -124,9 +124,15 @@ namespace Supervertaler.Core
                 }
             }
 
-            // ---- 2. prose articles, only if still over budget -------------------
+            // ---- 2. prose articles, whenever selection runs ---------------------
+            // Not only when the bank is still over the budget. The first live run
+            // had a bank that fitted after terminology filtering, so the question
+            // was never asked - and a file of assistant workflow notes, a third of
+            // everything sent, went with every row of a job it had nothing to do
+            // with. Fitting the budget is not the same as being relevant. One
+            // request per job, reused; a failure still keeps every article.
             var candidates = Candidates(full);
-            if (candidates.Count > 0 && tokenBudget > 0 && full.EstimatedTokens > tokenBudget)
+            if (candidates.Count > 0)
             {
                 IList<string> chosen = earlierChoice;
                 string failure = null;
