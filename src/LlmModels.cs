@@ -108,8 +108,14 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
+                Id = "claude-opus-5-5", DisplayName = "Claude Opus 5.5",
+                Description = "Premium – the newest Opus, and cheaper than Opus 5 ($4/$20), 1M context. Top choice for hard legal/technical work",
+                Provider = LlmProvider.Claude
+            },
+            new LlmModelInfo
+            {
                 Id = "claude-opus-5", DisplayName = "Claude Opus 5",
-                Description = "Premium – Anthropic's flagship Opus; near-Fable-5 intelligence at half the price ($5/$25), 1M context. Top choice for hard legal/technical work",
+                Description = "Previous Opus – kept for anyone who prefers it; Opus 5.5 is newer and costs less ($5/$25 here)",
                 Provider = LlmProvider.Claude
             },
             new LlmModelInfo

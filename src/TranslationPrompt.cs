@@ -351,39 +351,112 @@ namespace Supervertaler.Core
         /// Tolerant: returns what it can parse even if count mismatches.
         /// </summary>
         public static List<ParsedTranslation> ParseBatchResponse(string response, int expectedCount)
+            => ParseBatchResponse(response, null);
+
+        // "N." at the start of a line, NOT followed by a digit: "4.1 Inleiding" is
+        // a sub-numbered line of text, never segment 4.
+        private static readonly Regex SegmentMarker = new Regex(@"^\s*(\d+)\.(?!\d)[ \t]*(.*)");
+
+        /// <summary>
+        /// Parses a batch response with numbered translations, using the
+        /// segments that were sent to tell a segment's number from a numbered
+        /// line inside a segment. A translation may itself contain lines that
+        /// begin "1.", "2." or "4.1" - a contents list, the steps of a
+        /// procedure - and reading each of those as a new segment moved the
+        /// lines onto other segments and cut them off their own. So a line
+        /// opens a new segment only if:
+        ///
+        ///   - its number is followed by a full stop and then text, not a digit;
+        ///   - it is one of the numbers sent (when the segments are given), and
+        ///     one not already answered; without the segments, it must be higher
+        ///     than the segment being read, since answers come in order;
+        ///   - it is not one of the current segment's own numbered lines. When
+        ///     the current segment's source has a line with that number and its
+        ///     translation has not yet reached as many lines as the source, the
+        ///     line is part of it.
+        ///
+        /// Tolerant: returns what it can parse even if the count does not match.
+        /// </summary>
+        public static List<ParsedTranslation> ParseBatchResponse(
+            string response, IReadOnlyList<BatchSegmentInput> segments)
         {
             var results = new List<ParsedTranslation>();
             if (string.IsNullOrWhiteSpace(response))
                 return results;
 
+            var sources = new Dictionary<int, string>();
+            if (segments != null)
+                foreach (var s in segments)
+                    sources[s.Number] = s.SourceText ?? "";
+
             // Map: number -> translation text
             var map = new Dictionary<int, StringBuilder>();
+            var linesIn = new Dictionary<int, int>();
+            var listLinesUsed = new Dictionary<int, Dictionary<int, int>>();
             int currentNumber = -1;
 
             var lines = response.Split(new[] { '\n' }, StringSplitOptions.None);
-            var numberPattern = new Regex(@"^\s*(\d+)\.\s*(.*)");
 
             foreach (var line in lines)
             {
-                var match = numberPattern.Match(line);
+                var match = SegmentMarker.Match(line);
                 if (match.Success)
                 {
-                    currentNumber = int.Parse(match.Groups[1].Value);
-                    var text = match.Groups[2].Value;
-
-                    if (!map.ContainsKey(currentNumber))
-                        map[currentNumber] = new StringBuilder();
-                    else
-                        map[currentNumber].AppendLine(); // multiple blocks with same number
-
-                    map[currentNumber].Append(text);
+                    var n = int.Parse(match.Groups[1].Value);
+                    // The current segment's own number again is a line of that
+                    // segment - "1. Open" in a list inside segment 1 - and falls
+                    // through to be kept whole. Stripping its "1." would delete
+                    // text from the translation.
+                    if (n != currentNumber && (currentNumber < 0 || OpensSegment(n)))
+                    {
+                        currentNumber = n;
+                        if (!map.ContainsKey(n))
+                        {
+                            map[n] = new StringBuilder();
+                            linesIn[n] = 0;
+                        }
+                        else
+                        {
+                            map[n].AppendLine();
+                        }
+                        map[n].Append(match.Groups[2].Value);
+                        linesIn[n]++;
+                        continue;
+                    }
                 }
-                else if (currentNumber >= 0)
+
+                if (currentNumber >= 0)
                 {
                     // Continuation line – append to current translation
                     map[currentNumber].AppendLine();
                     map[currentNumber].Append(line);
+                    linesIn[currentNumber]++;
                 }
+            }
+
+            bool OpensSegment(int n)
+            {
+                if (sources.Count == 0)
+                    return n > currentNumber;
+
+                if (!sources.ContainsKey(n) || map.ContainsKey(n))
+                    return false;
+
+                // One of the current segment's own numbered lines, still to come?
+                if (sources.TryGetValue(currentNumber, out var source))
+                {
+                    int inSource = CountNumberedLines(source, n);
+                    if (!listLinesUsed.TryGetValue(currentNumber, out var used))
+                        listLinesUsed[currentNumber] = used = new Dictionary<int, int>();
+                    used.TryGetValue(n, out var usedN);
+                    int sourceLines = source.Split('\n').Length;
+                    if (usedN < inSource && linesIn[currentNumber] < sourceLines)
+                    {
+                        used[n] = usedN + 1;
+                        return false;
+                    }
+                }
+                return true;
             }
 
             // Build result list
@@ -401,6 +474,19 @@ namespace Supervertaler.Core
             }
 
             return results;
+        }
+
+        /// <summary>How many of <paramref name="text"/>'s lines begin with "<paramref name="n"/>.".</summary>
+        private static int CountNumberedLines(string text, int n)
+        {
+            int count = 0;
+            foreach (var line in text.Split('\n'))
+            {
+                var m = SegmentMarker.Match(line);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out var k) && k == n)
+                    count++;
+            }
+            return count;
         }
     }
 
