@@ -106,16 +106,14 @@ namespace Supervertaler.Core
                 Description = "Fast and affordable – good for large batch jobs",
                 Provider = LlmProvider.Claude
             },
+            // Opus 5.5 supersedes Opus 5 here (Michael, 2026-09-24): newer, and
+            // cheaper. Anyone with Opus 5 saved keeps it - a model missing from this
+            // list shows in the custom model ID field and still works - and it
+            // stays in the price list so their runs are still costed.
             new LlmModelInfo
             {
                 Id = "claude-opus-5-5", DisplayName = "Claude Opus 5.5",
-                Description = "Premium – the newest Opus, and cheaper than Opus 5 ($4/$20), 1M context. Top choice for hard legal/technical work",
-                Provider = LlmProvider.Claude
-            },
-            new LlmModelInfo
-            {
-                Id = "claude-opus-5", DisplayName = "Claude Opus 5",
-                Description = "Previous Opus – kept for anyone who prefers it; Opus 5.5 is newer and costs less ($5/$25 here)",
+                Description = "Premium – Anthropic's newest Opus ($4/$20), 1M context. Top choice for hard legal/technical work",
                 Provider = LlmProvider.Claude
             },
             new LlmModelInfo
