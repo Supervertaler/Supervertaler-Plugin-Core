@@ -662,6 +662,7 @@ namespace Supervertaler.Core
             // Refresh outdated default prompt content (only when still flagged default,
             // never user-cloned/edited copies – those keep their default: false flag).
             RefreshOutdatedDefaultProofreadingPrompt();
+            RefreshOutdatedDefaultTranslationPrompt();
 
             foreach (var def in GetDefaultPromptDefinitions())
             {
@@ -901,6 +902,51 @@ namespace Supervertaler.Core
         /// flagged "default: true" – user-cloned/edited copies have "default: false" and
         /// are never touched.
         /// </summary>
+        /// <summary>
+        /// Replaces the shipped Default Translation Prompt when it still carries
+        /// the line that invited notes into the target. Deleted here and written
+        /// again from the current definition by the loop that follows, exactly as
+        /// the proofreading prompt is refreshed.
+        ///
+        /// <para>The prompt library is shared on disk, so whichever product runs
+        /// this first rewrites the file for all of them - which is the point.</para>
+        /// </summary>
+        private void RefreshOutdatedDefaultTranslationPrompt()
+        {
+            try
+            {
+                var folder = Path.Combine(PromptsDir, "Translate", "Default");
+                var filePath = Path.Combine(folder, SanitizeFileName("Default Translation Prompt") + ".md");
+                if (!File.Exists(filePath)) return;
+
+                string content;
+                try { content = File.ReadAllText(filePath); }
+                catch { return; }
+
+                if (IsOutdatedDefaultTranslationPrompt(content))
+                {
+                    try { File.Delete(filePath); }
+                    catch { /* ignore – file locked or permissions */ }
+                }
+            }
+            catch { /* defensive – never break startup over a prompt-refresh error */ }
+        }
+
+        /// <summary>
+        /// True for the shipped Default Translation Prompt as it was before
+        /// September 2026, whose Terminology section asked the model to "add a
+        /// brief explanation in parentheses if needed". A model took that as
+        /// licence to write notes to the translator into the target, and one
+        /// reached a client job. Only a copy still flagged default is matched, by
+        /// that exact line, so a translator's edited copy is never touched.
+        /// </summary>
+        internal static bool IsOutdatedDefaultTranslationPrompt(string content)
+        {
+            return !string.IsNullOrEmpty(content)
+                && IsDefaultPromptFile(content)
+                && content.Contains("keep the source term and add a brief explanation in parentheses if needed");
+        }
+
         private void RefreshOutdatedDefaultProofreadingPrompt()
         {
             try
@@ -1609,12 +1655,12 @@ namespace Supervertaler.Core
 
 ## Terminology
 - Use the glossary terms provided (if any) – they take priority over alternative translations
-- When a term has no established equivalent, keep the source term and add a brief explanation in parentheses if needed
+- When a term has no established equivalent, keep the source term; if that needs flagging, use a [[TC: ...]] marker
 
 ## Style
 - Match the formality level of the source (formal documents stay formal, casual content stays casual)
 - Use natural sentence structures in the target language rather than mirroring source syntax
-- Avoid unnecessary additions, omissions, or explanatory notes unless explicitly requested"
+- Avoid unnecessary additions or omissions"
                 },
 
                 // ─── Proofreading ─────────────────────────────────────────
