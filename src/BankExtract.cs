@@ -80,6 +80,10 @@ namespace Supervertaler.Core
 
             var result = new BankExtractResult { Context = full, TokensBefore = full.EstimatedTokens };
 
+            if (full.AssistantOnlyPaths.Count > 0)
+                result.Report.Add("Left out as notes for the assistants only (audience: assistant): "
+                    + string.Join(", ", full.AssistantOnlyPaths) + ".");
+
             if (result.TokensBefore <= Threshold)
             {
                 result.Report.Add("Sent whole: the bank is " + Tokens(result.TokensBefore)

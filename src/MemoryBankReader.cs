@@ -64,6 +64,37 @@ namespace Supervertaler.Core
         public const string SharedBankName = "_shared";
 
         /// <summary>
+        /// A note whose frontmatter says <c>audience: assistant</c> is for the AI
+        /// assistants working a job - the Trados chat, and Claude Desktop or ChatGPT
+        /// through the MCP tools - and is left out of every TRANSLATION use: an MT
+        /// engine's rows, Batch Translate, single-segment translation, AutoPrompt.
+        /// A translation caller says so with <c>forTranslation: true</c> on
+        /// <see cref="LoadContext"/>; everything else loads the note as always.
+        ///
+        /// <para>Asked for after the first live run of the per-job extract, where a
+        /// <c>_shared/method.md</c> of workflow notes - how to check a termbase,
+        /// what Studio's auto-propagation drops - was a third of what went with every
+        /// translated row. Its readers are the assistants; the MT engine rendering a
+        /// sentence has no use for it.</para>
+        ///
+        /// <para>One value only. A note without the key behaves exactly as before,
+        /// so nothing existing moves. Honoured by: Supervertaler for memoQ (MT rows
+        /// and AutoPrompt), and Supervertaler for Trados once its translation paths
+        /// pass the flag. Obsidian shows the key as an ordinary property.</para>
+        /// </summary>
+        public const string AudienceKey = "audience";
+
+        /// <summary>The one value <see cref="AudienceKey"/> takes.</summary>
+        public const string AssistantAudience = "assistant";
+
+        /// <summary>True when <paramref name="noteText"/> is marked for the assistants only.</summary>
+        public static bool IsAssistantOnly(string noteText)
+        {
+            return ParseFrontmatter(noteText).TryGetValue(AudienceKey, out var value)
+                && string.Equals(value?.Trim(), AssistantAudience, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
         /// File extensions that appear inside memory banks but are NOT knowledge
         /// content – Obsidian plugin sidecars, editor metadata, etc. Callers that
         /// enumerate inbox files for Process Inbox or Distill must filter these
@@ -176,9 +207,19 @@ namespace Supervertaler.Core
             string targetLang,
             int tokenBudget = 24000,
             string manualClientProfile = null,
-            string queryText = null)
+            string queryText = null,
+            bool forTranslation = false)
         {
             var ctx = new KbContext();
+
+            // A translation use leaves out notes marked for the assistants, and
+            // says which, so nothing is dropped without a trace (see AudienceKey).
+            string ForUse(string text, string path)
+            {
+                if (!forTranslation || text == null || !IsAssistantOnly(text)) return text;
+                ctx.AssistantOnlyPaths.Add(path);
+                return null;
+            }
 
             // The bank IS the selection. There is no client detection any more:
             // the user picked a bank from the toolbar, so filtering its contents
@@ -193,12 +234,12 @@ namespace Supervertaler.Core
 
             if (VaultExists)
             {
-                ctx.ClientProfileText = ReadBankFile(_vaultDir, BriefFile, out var briefPath);
-                ctx.ClientProfilePath = briefPath;
-                ctx.StyleGuideText = ReadBankFile(_vaultDir, StyleFile, out var stylePath);
-                ctx.StyleGuidePath = stylePath;
+                ctx.ClientProfileText = ForUse(ReadBankFile(_vaultDir, BriefFile, out var briefPath), BriefFile);
+                ctx.ClientProfilePath = ctx.ClientProfileText == null ? null : briefPath;
+                ctx.StyleGuideText = ForUse(ReadBankFile(_vaultDir, StyleFile, out var stylePath), StyleFile);
+                ctx.StyleGuidePath = ctx.StyleGuideText == null ? null : stylePath;
 
-                var terms = ReadBankFile(_vaultDir, TerminologyFile, out var termPath);
+                var terms = ForUse(ReadBankFile(_vaultDir, TerminologyFile, out var termPath), TerminologyFile);
                 if (!string.IsNullOrWhiteSpace(terms))
                 {
                     ctx.TerminologyArticles.Add(terms);
@@ -217,6 +258,7 @@ namespace Supervertaler.Core
                 // deliberately not in every prompt, and this must not sweep it in.
                 foreach (var extra in ReadOtherBankFiles(_vaultDir))
                 {
+                    if (ForUse(extra.Key, extra.Value) == null) continue;
                     ctx.ExtraArticles.Add(extra.Key);
                     ctx.ExtraPaths.Add(extra.Value);
                 }
@@ -228,9 +270,9 @@ namespace Supervertaler.Core
             var sharedDir = ResolveSharedBankDir(_vaultDir);
             if (sharedDir != null)
             {
-                ctx.SharedBriefText = ReadBankFile(sharedDir, BriefFile, out _);
-                ctx.SharedTerminologyText = ReadBankFile(sharedDir, TerminologyFile, out _);
-                ctx.SharedStyleText = ReadBankFile(sharedDir, StyleFile, out _);
+                ctx.SharedBriefText = ForUse(ReadBankFile(sharedDir, BriefFile, out _), SharedBankName + "/" + BriefFile);
+                ctx.SharedTerminologyText = ForUse(ReadBankFile(sharedDir, TerminologyFile, out _), SharedBankName + "/" + TerminologyFile);
+                ctx.SharedStyleText = ForUse(ReadBankFile(sharedDir, StyleFile, out _), SharedBankName + "/" + StyleFile);
 
                 // Anything else at the shared root, on the same footing as the
                 // extras of a selected bank. Only the three named files were read
@@ -242,6 +284,7 @@ namespace Supervertaler.Core
                 // means it to be used.
                 foreach (var extra in ReadOtherBankFiles(sharedDir))
                 {
+                    if (ForUse(extra.Key, SharedBankName + "/" + extra.Value) == null) continue;
                     ctx.SharedExtraArticles.Add(extra.Key);
                     ctx.SharedExtraPaths.Add(SharedBankName + "/" + extra.Value);
                 }
@@ -1160,6 +1203,15 @@ namespace Supervertaler.Core
         /// caller re-ask with a bigger budget.</para>
         /// </summary>
         public List<string> TrimmedPaths { get; set; } = new List<string>();
+
+        /// <summary>
+        /// Notes left out because they are marked for the assistants only and this
+        /// was a translation use (<see cref="MemoryBankReader.AudienceKey"/>), as
+        /// bank-relative paths. Deliberate, unlike <see cref="TrimmedPaths"/>, so
+        /// the model is not told about them - but the translator is, through the
+        /// extract report.
+        /// </summary>
+        public List<string> AssistantOnlyPaths { get; set; } = new List<string>();
 
         /// <summary>True if the brief was cut mid-way rather than dropped
         /// whole. Tracked separately because a truncated article is still
