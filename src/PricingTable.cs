@@ -36,6 +36,25 @@ namespace Supervertaler.Core
 
         private static readonly Dictionary<string, (decimal input, decimal output)> _prices = Load();
 
+        /// <summary>
+        /// The dearest input rate and the dearest output rate in the list, per
+        /// 1M tokens - taken separately, so they may come from two models. What
+        /// a model missing from the list is priced at when only an upper bound
+        /// can be given (<see cref="TokenEstimator.CostCeiling"/>).
+        /// </summary>
+        public static (decimal input, decimal output) Dearest { get; } = FindDearest(_prices);
+
+        private static (decimal, decimal) FindDearest(Dictionary<string, (decimal input, decimal output)> prices)
+        {
+            decimal input = 0m, output = 0m;
+            foreach (var rates in prices.Values)
+            {
+                if (rates.input > input) input = rates.input;
+                if (rates.output > output) output = rates.output;
+            }
+            return (input, output);
+        }
+
         /// <summary>Look up (input, output) per-1M rates for a model id. False if unknown.</summary>
         public static bool TryGet(string model, out (decimal input, decimal output) rates)
         {

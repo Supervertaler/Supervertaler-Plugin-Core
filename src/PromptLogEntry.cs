@@ -133,7 +133,7 @@ namespace Supervertaler.Core.Models
                     if (cost >= 0.01m) costStr = $"${cost:F2}";
                     else if (cost > 0) costStr = $"${cost:F4}";
                     else if (IsCostKnown) costStr = "free";
-                    else costStr = "unknown";
+                    else costStr = CeilingText(regularIn, cacheRead, cacheWrite, output, "");
 
                     // Show cache hit count when caching contributed, so users can
                     // see at a glance how much of their input was discounted.
@@ -146,10 +146,30 @@ namespace Supervertaler.Core.Models
                 if (EstimatedCost >= 0.01m) estCostStr = $"~${EstimatedCost:F2}";
                 else if (EstimatedCost > 0) estCostStr = $"~${EstimatedCost:F4}";
                 else if (IsCostKnown) estCostStr = "free";
-                else estCostStr = "unknown";
+                else estCostStr = CeilingText(EstimatedInputTokens, 0, 0, EstimatedOutputTokens, "~");
 
                 return $"{DisplayModel ?? Model} \u2022 {EstimatedInputTokens:N0} in / {EstimatedOutputTokens:N0} out \u2022 {estCostStr} \u2022 {Duration.TotalSeconds:F1}s";
             }
+        }
+
+        /// <summary>
+        /// A model missing from the price list: the most the call can have cost
+        /// (<see cref="TokenEstimator.CostCeiling"/>), never "unknown". "free"
+        /// only where it is - Ollama, or a call that used no tokens.
+        /// </summary>
+        private string CeilingText(int regularIn, int cacheRead, int cacheWrite, int output, string approx)
+        {
+            var ceiling = TokenEstimator.CostCeiling(Provider, Model, regularIn, cacheRead, cacheWrite, output);
+            if (ceiling <= 0) return "free";
+            return ceiling >= 0.01m ? $"up to {approx}${ceiling:F2}" : $"up to {approx}${ceiling:F4}";
+        }
+
+        /// <summary><see cref="CeilingText"/> with the reason, for the full-text view.</summary>
+        private string CeilingNote(int regularIn, int cacheRead, int cacheWrite, int output)
+        {
+            var ceiling = TokenEstimator.CostCeiling(Provider, Model, regularIn, cacheRead, cacheWrite, output);
+            if (ceiling <= 0) return "free";
+            return $"up to ${ceiling:F4} (model not in the price list; counted at the dearest listed rates)";
         }
 
         /// <summary>
@@ -177,7 +197,7 @@ namespace Supervertaler.Core.Models
                 string costLabel;
                 if (cost > 0) costLabel = $"${cost:F4}";
                 else if (IsCostKnown) costLabel = "free";
-                else costLabel = "unknown (model not in pricing table)";
+                else costLabel = CeilingNote(regularIn, cacheRead, cacheWrite, output);
                 sb.AppendLine($"Cost (actual): {costLabel}");
             }
             else
@@ -186,7 +206,7 @@ namespace Supervertaler.Core.Models
                 string estLabel;
                 if (EstimatedCost > 0) estLabel = $"${EstimatedCost:F4}";
                 else if (IsCostKnown) estLabel = "free";
-                else estLabel = "unknown (model not in pricing table)";
+                else estLabel = CeilingNote(EstimatedInputTokens, 0, 0, EstimatedOutputTokens);
                 sb.AppendLine($"Estimated cost: {estLabel}");
             }
             sb.AppendLine();

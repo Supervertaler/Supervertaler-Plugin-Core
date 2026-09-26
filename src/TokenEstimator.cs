@@ -85,6 +85,32 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
+        /// The most a call to a model MISSING from the price list can have cost:
+        /// its tokens at the dearest input and output rates the list holds
+        /// (<see cref="PricingTable.Dearest"/>), with the provider's cache
+        /// discounts as the model's name implies them. Shown as "up to $X" rather
+        /// than "unknown", which reads as nothing, or as a figure that could be
+        /// mistaken for the real one. It holds for any model priced no higher than
+        /// the dearest one listed - a rarer, dearer model is the one case it can
+        /// understate. Zero for Ollama, which runs on the translator's machine.
+        /// For estimated counts pass the estimated input as regular input.
+        /// </summary>
+        public static decimal CostCeiling(string provider, string model,
+            int regularInputTokens, int cacheReadTokens, int cacheWriteTokens, int outputTokens)
+        {
+            if (string.Equals(provider, LlmModels.ProviderOllama, System.StringComparison.OrdinalIgnoreCase))
+                return 0m;
+
+            var (inputPer1M, outputPer1M) = PricingTable.Dearest;
+            var (readMul, writeMul) = GetCacheMultipliers(model);
+
+            return (regularInputTokens * inputPer1M / 1_000_000m)
+                 + (cacheReadTokens * inputPer1M * readMul / 1_000_000m)
+                 + (cacheWriteTokens * inputPer1M * writeMul / 1_000_000m)
+                 + (outputTokens * outputPer1M / 1_000_000m);
+        }
+
+        /// <summary>
         /// Returns the per-provider cache discount multipliers for a given model:
         /// (cacheReadMultiplier, cacheWriteMultiplier), both relative to the regular
         /// input rate. Multiply input rate by these for the effective cached rate.

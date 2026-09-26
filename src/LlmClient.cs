@@ -214,19 +214,31 @@ namespace Supervertaler.Core
             bool suppressLog = false,
             bool enablePromptCaching = false)
         {
-            // enablePromptCaching: caller asserts the system prompt will be reused
-            // byte-identically across multiple calls within ~5 minutes (e.g. batch
-            // translate sending one big system prompt with N batches of segments).
+            // enablePromptCaching: caller asserts the system prompt will be sent
+            // again, byte for byte, within ~5 minutes - by this call's successors,
+            // not necessarily by this client or this run. That covers batch
+            // translate (one system prompt, N batches) AND a single-segment
+            // translate the translator repeats down the document, as long as the
+            // system prompt carries only what is the same for every segment and
+            // the segment's own material (its termbase hits, TM match, the
+            // segment) goes in the user prompt. One changed byte in the system
+            // prompt makes every call a write that nothing reads.
             // For Anthropic and OpenRouter→Anthropic routes this adds an explicit
             // cache_control:ephemeral marker on the system prompt block, costing
             // 1.25× on the first call (cache write) and saving 90% on subsequent
-            // calls (cache reads). For other providers it's a no-op:
+            // calls (cache reads), so it pays from the second call. For other
+            // providers it's a no-op here:
             //   • OpenAI: automatic caching for prompts ≥1024 tokens, no marker needed.
             //   • DeepSeek: automatic disk caching, no marker needed.
             //   • Gemini 2.5+: automatic implicit caching for stable prefixes ≥1024 tokens.
             //   • Grok / Mistral / Ollama: no caching available.
-            // Single-shot callers (chat, AutoPrompt, single-segment translate) should
-            // leave this false – the 1.25× write surcharge is wasted with no reads.
+            // (The automatic kinds match a PREFIX too, so the same rule about what
+            // goes in the system prompt decides whether they hit.)
+            // Leave it false only where the system prompt is genuinely one-off: a
+            // call nothing will repeat within the window, e.g. an AutoPrompt
+            // generation. Leaving it false on a repeated call - the old advice for
+            // single-segment translate - paid full price for ~40k tokens on every
+            // segment (24 Sep 2026, memoQ's MT engine).
             var sw = Stopwatch.StartNew();
             string result = null;
             string errorMsg = null;
@@ -808,8 +820,11 @@ namespace Supervertaler.Core
                     // Mark the system prompt as ephemeral-cached. First call within a
                     // 5-minute window pays 1.25× input rate (cache write); subsequent
                     // calls with the byte-identical system prompt pay 0.1× (cache read).
-                    // BatchTranslator builds the system prompt once before the batch
-                    // loop, so every batch after the first is a cache hit.
+                    // A batch run builds the system prompt once before its loop, so
+                    // every batch after the first is a hit; single-segment callers
+                    // hit when they keep per-segment material out of the system
+                    // prompt (see SendPromptAsync). Below the model's minimum
+                    // cacheable length the marker is ignored and nothing is charged.
                     sb.Append(",\"system\":[{\"type\":\"text\",\"text\":")
                       .Append(JsonString(systemPrompt))
                       .Append(",\"cache_control\":{\"type\":\"ephemeral\"}}]");

@@ -150,49 +150,7 @@ namespace Supervertaler.Core
             {
                 sb.AppendLine();
                 sb.AppendLine();
-                sb.AppendLine("# TERMBASE");
-                sb.AppendLine();
-                sb.AppendLine("Use these approved terms consistently in your translation:");
-                sb.AppendLine();
-                foreach (var term in termbaseTerms)
-                {
-                    if (string.IsNullOrEmpty(term.SourceTerm) || string.IsNullOrEmpty(term.TargetTerm))
-                        continue;
-
-                    if (term.Forbidden)
-                        sb.AppendLine("- " + term.SourceTerm + " \u2192 \u26A0\uFE0F DO NOT USE: " + term.TargetTerm);
-                    else if (term.IsNonTranslatable)
-                        sb.AppendLine("- " + term.SourceTerm + " \u2192 " + term.TargetTerm + " (do not translate)");
-                    else
-                        sb.AppendLine("- " + term.SourceTerm + " \u2192 " + term.TargetTerm);
-
-                    // Include term metadata (domain, definition, notes, client)
-                    if (includeTermMetadata)
-                    {
-                        if (!string.IsNullOrWhiteSpace(term.Client))
-                            sb.Append("  Client: ").AppendLine(term.Client);
-                        if (!string.IsNullOrWhiteSpace(term.Domain))
-                            sb.Append("  Domain: ").AppendLine(term.Domain);
-                        if (!string.IsNullOrWhiteSpace(term.Definition))
-                            sb.Append("  Definition: ").AppendLine(term.Definition);
-                        if (!string.IsNullOrWhiteSpace(term.Notes))
-                            sb.Append("  Notes: ").AppendLine(term.Notes);
-                    }
-
-                    // Include abbreviation pair if available. Every source spelling
-                    // is listed so the model recognises them all, but only the
-                    // primary target form is offered, so it produces one canonical
-                    // abbreviation instead of picking between spellings.
-                    //
-                    // These fields may hold several pipe-separated variants
-                    // ("PCPs|PCP's"). Emitting them raw told the model the
-                    // abbreviation literally contains a pipe, which it could then
-                    // copy straight into the translation.
-                    var srcAbbrVariants = term.GetSourceAbbreviationVariants();
-                    var primaryTgtAbbr = term.PrimaryTargetAbbreviation;
-                    if (srcAbbrVariants.Length > 0 && !string.IsNullOrEmpty(primaryTgtAbbr))
-                        sb.AppendLine("- " + string.Join(", ", srcAbbrVariants) + " \u2192 " + primaryTgtAbbr + " (abbreviation of: " + term.SourceTerm + ")");
-                }
+                AppendTermbase(sb, termbaseTerms, includeTermMetadata);
             }
 
             // Document context (all source segments for document type analysis)
@@ -240,6 +198,71 @@ namespace Supervertaler.Core
             }
 
             return sb.ToString().TrimEnd();
+        }
+
+        /// <summary>
+        /// The termbase section on its own, worded exactly as
+        /// <see cref="BuildSystemPrompt"/> words it, or null when no term has
+        /// both sides. For a caller that sends the terms in the USER prompt: a
+        /// request for one segment carries that segment's terms, which differ
+        /// from one segment to the next, and inside the system prompt they would
+        /// make every request a cache write that nothing reads.
+        /// </summary>
+        public static string BuildTermbaseBlock(List<TermEntry> termbaseTerms, bool includeTermMetadata = true)
+        {
+            if (termbaseTerms == null
+                || !termbaseTerms.Any(t => !string.IsNullOrEmpty(t.SourceTerm) && !string.IsNullOrEmpty(t.TargetTerm)))
+                return null;
+            var sb = new StringBuilder(termbaseTerms.Count * 60);
+            AppendTermbase(sb, termbaseTerms, includeTermMetadata);
+            return sb.ToString().TrimEnd();
+        }
+
+        private static void AppendTermbase(StringBuilder sb, List<TermEntry> termbaseTerms, bool includeTermMetadata)
+        {
+            sb.AppendLine("# TERMBASE");
+            sb.AppendLine();
+            sb.AppendLine("Use these approved terms consistently in your translation:");
+            sb.AppendLine();
+            foreach (var term in termbaseTerms)
+            {
+                if (string.IsNullOrEmpty(term.SourceTerm) || string.IsNullOrEmpty(term.TargetTerm))
+                    continue;
+
+                if (term.Forbidden)
+                    sb.AppendLine("- " + term.SourceTerm + " → ⚠️ DO NOT USE: " + term.TargetTerm);
+                else if (term.IsNonTranslatable)
+                    sb.AppendLine("- " + term.SourceTerm + " → " + term.TargetTerm + " (do not translate)");
+                else
+                    sb.AppendLine("- " + term.SourceTerm + " → " + term.TargetTerm);
+
+                // Include term metadata (domain, definition, notes, client)
+                if (includeTermMetadata)
+                {
+                    if (!string.IsNullOrWhiteSpace(term.Client))
+                        sb.Append("  Client: ").AppendLine(term.Client);
+                    if (!string.IsNullOrWhiteSpace(term.Domain))
+                        sb.Append("  Domain: ").AppendLine(term.Domain);
+                    if (!string.IsNullOrWhiteSpace(term.Definition))
+                        sb.Append("  Definition: ").AppendLine(term.Definition);
+                    if (!string.IsNullOrWhiteSpace(term.Notes))
+                        sb.Append("  Notes: ").AppendLine(term.Notes);
+                }
+
+                // Include abbreviation pair if available. Every source spelling
+                // is listed so the model recognises them all, but only the
+                // primary target form is offered, so it produces one canonical
+                // abbreviation instead of picking between spellings.
+                //
+                // These fields may hold several pipe-separated variants
+                // ("PCPs|PCP's"). Emitting them raw told the model the
+                // abbreviation literally contains a pipe, which it could then
+                // copy straight into the translation.
+                var srcAbbrVariants = term.GetSourceAbbreviationVariants();
+                var primaryTgtAbbr = term.PrimaryTargetAbbreviation;
+                if (srcAbbrVariants.Length > 0 && !string.IsNullOrEmpty(primaryTgtAbbr))
+                    sb.AppendLine("- " + string.Join(", ", srcAbbrVariants) + " → " + primaryTgtAbbr + " (abbreviation of: " + term.SourceTerm + ")");
+            }
         }
 
         /// <summary>
