@@ -120,9 +120,20 @@ namespace Supervertaler.Core
             if (string.IsNullOrEmpty(model)) return (1m, 1m);
             var lc = model.ToLowerInvariant();
 
-            // Anthropic native + OpenRouter→Anthropic
+            // Anthropic native + OpenRouter→Anthropic. A cache read is 0.1x the input
+            // rate, except on the newest top models: 0.05x on Claude Opus 5.5 and
+            // 0.025x on Claude Fable 5.1 and Mythos 5.1 (Anthropic's pricing page,
+            // checked 2026-09-28). At 0.1x their cache reads were costed at two and
+            // four times what they are billed. Writes are 1.25x on all of them.
             if (lc.Contains("claude") || lc.StartsWith("anthropic/"))
+            {
+                if (lc.Contains("opus-5-5") || lc.Contains("opus-5.5"))
+                    return (0.05m, 1.25m);
+                if (lc.Contains("fable-5-1") || lc.Contains("fable-5.1")
+                    || lc.Contains("mythos-5-1") || lc.Contains("mythos-5.1"))
+                    return (0.025m, 1.25m);
                 return (0.1m, 1.25m);
+            }
 
             // OpenAI auto-cache: 50% off cache reads, no separate cache-write surcharge
             if (lc.StartsWith("gpt-") || lc.StartsWith("openai/") || lc.StartsWith("o4-"))

@@ -114,6 +114,7 @@ namespace Supervertaler.Core
                 { "claude-opus-5-5", (4.00m, 20.00m) },
                 { "claude-opus-5", (5.00m, 25.00m) },
                 { "claude-opus-4-8", (5.00m, 25.00m) },
+                { "claude-sonnet-5-5", (2.00m, 10.00m) },
                 { "claude-sonnet-5", (2.00m, 10.00m) },
                 { "claude-sonnet-4-6", (3.00m, 15.00m) },
                 { "claude-haiku-4-5-20251001", (1.00m, 5.00m) },

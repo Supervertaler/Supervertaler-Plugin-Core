@@ -92,24 +92,22 @@ namespace Supervertaler.Core
             }
         };
 
+        // The newest Sonnet, Opus and Fable, in that order (Michael, 2026-09-28).
+        // The first is Trados's default for a new install. Superseded models leave
+        // this list but not the price list: anyone with one saved keeps it - a
+        // model missing from here shows in the custom model ID field and still
+        // works - and their runs are still costed. So Sonnet 5 (superseded by
+        // Sonnet 5.5, same price, released 2026-09-28), Opus 5 (by Opus 5.5,
+        // 2026-09-24) and Haiku 4.5 (out of the short list, same day as Sonnet
+        // 5.5) all still run.
         public static readonly LlmModelInfo[] ClaudeModels =
         {
             new LlmModelInfo
             {
-                Id = "claude-sonnet-5", DisplayName = "Claude Sonnet 5",
-                Description = "Recommended – newest Sonnet, near-Opus quality at Sonnet cost",
+                Id = "claude-sonnet-5-5", DisplayName = "Claude Sonnet 5.5",
+                Description = "Recommended – newest Sonnet, near-Opus quality at Sonnet cost ($2/$10), 1M context",
                 Provider = LlmProvider.Claude
             },
-            new LlmModelInfo
-            {
-                Id = "claude-haiku-4-5-20251001", DisplayName = "Claude Haiku 4.5",
-                Description = "Fast and affordable – good for large batch jobs",
-                Provider = LlmProvider.Claude
-            },
-            // Opus 5.5 supersedes Opus 5 here (Michael, 2026-09-24): newer, and
-            // cheaper. Anyone with Opus 5 saved keeps it - a model missing from this
-            // list shows in the custom model ID field and still works - and it
-            // stays in the price list so their runs are still costed.
             new LlmModelInfo
             {
                 Id = "claude-opus-5-5", DisplayName = "Claude Opus 5.5",
