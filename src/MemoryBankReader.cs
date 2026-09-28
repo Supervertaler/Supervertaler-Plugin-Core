@@ -29,9 +29,9 @@ namespace Supervertaler.Core
         private List<KbArticleIndex> _index;
         private DateTime _indexBuiltAt;
 
-        // Cache of lowercased note bodies for content matching, keyed by file
-        // path and invalidated per-file by last-write time (so external Obsidian
-        // edits are picked up). Only populated when a query is supplied.
+        // Cache of lowercased note bodies for search, keyed by file path and
+        // invalidated per-file by last-write time (so external Obsidian edits
+        // are picked up). Only a search fills it.
         private readonly Dictionary<string, KeyValuePair<long, string>> _bodyCache
             = new Dictionary<string, KeyValuePair<long, string>>(StringComparer.OrdinalIgnoreCase);
 
@@ -197,8 +197,14 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
-        /// Loads relevant KB context for a translation based on project name, domain, and language pair.
-        /// Returns null if the vault doesn't exist or has no relevant content.
+        /// Loads the bank - its brief, style guide, terminology and other root
+        /// notes, plus the shared bank - within the token budget. Returns null
+        /// if the vault doesn't exist or has no content.
+        ///
+        /// <para>Nothing here selects: projectName, the languages and
+        /// queryText are not used, and domain only labels the result
+        /// (DomainName). They stay in the signature because both products pass
+        /// them. A per-document selection is BankExtract's job.</para>
         /// </summary>
         public KbContext LoadContext(
             string projectName,
@@ -206,7 +212,6 @@ namespace Supervertaler.Core
             string sourceLang,
             string targetLang,
             int tokenBudget = 24000,
-            string manualClientProfile = null,
             string queryText = null,
             bool forTranslation = false)
         {
@@ -224,11 +229,8 @@ namespace Supervertaler.Core
             // The bank IS the selection. There is no client detection any more:
             // the user picked a bank from the toolbar, so filtering its contents
             // by a frontmatter "client" field would only be a chance to get it
-            // wrong. projectName/domain/langs are kept in the signature because
-            // callers pass them, and they still label the result.
-            ctx.ClientName = string.IsNullOrWhiteSpace(manualClientProfile)
-                ? SafeBankName(_vaultDir)
-                : manualClientProfile;
+            // wrong. The client is the bank.
+            ctx.ClientName = SafeBankName(_vaultDir);
             ctx.DomainName = domain;
             ctx.DetectionMethod = "bank";
 
@@ -607,172 +609,6 @@ namespace Supervertaler.Core
 
         // ─── Private helpers ─────────────────────────────────────────
 
-        private KbArticleIndex DetectClient(string projectName)
-        {
-            if (string.IsNullOrEmpty(projectName)) return null;
-
-            var clients = _index.Where(e => e.Folder == "01_CLIENTS").ToList();
-            if (clients.Count == 0) return null;
-
-            // Try exact match on client name from frontmatter
-            foreach (var c in clients)
-            {
-                var clientName = c.GetFrontmatter("client");
-                if (!string.IsNullOrEmpty(clientName) &&
-                    projectName.IndexOf(clientName, StringComparison.OrdinalIgnoreCase) >= 0)
-                    return c;
-            }
-
-            // Try match on filename (without extension)
-            foreach (var c in clients)
-            {
-                var name = Path.GetFileNameWithoutExtension(c.FileName);
-                if (name.Length >= 3 && // avoid short false positives
-                    projectName.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
-                    return c;
-            }
-
-            return null;
-        }
-
-        private bool MatchesDomain(KbArticleIndex entry, string domain)
-        {
-            var entryDomain = entry.GetFrontmatter("domain");
-            if (!string.IsNullOrEmpty(entryDomain))
-                return entryDomain.IndexOf(domain, StringComparison.OrdinalIgnoreCase) >= 0
-                    || domain.IndexOf(entryDomain, StringComparison.OrdinalIgnoreCase) >= 0;
-
-            // Fallback: match filename
-            var name = Path.GetFileNameWithoutExtension(entry.FileName);
-            return name.IndexOf(domain, StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        private KbArticleIndex FindStyleGuide(string sourceLang, string targetLang, string clientName)
-        {
-            var styles = _index.Where(e => e.Folder == "04_STYLE").ToList();
-            if (styles.Count == 0) return null;
-
-            // Prefer client-specific style guide
-            if (!string.IsNullOrEmpty(clientName))
-            {
-                var clientStyle = styles.FirstOrDefault(s =>
-                    s.FileName.IndexOf(clientName, StringComparison.OrdinalIgnoreCase) >= 0);
-                if (clientStyle != null) return clientStyle;
-            }
-
-            // Match by language pair in filename or frontmatter
-            if (!string.IsNullOrEmpty(sourceLang) && !string.IsNullOrEmpty(targetLang))
-            {
-                // Try matching common language code patterns
-                var srcShort = ExtractLangCode(sourceLang);
-                var tgtShort = ExtractLangCode(targetLang);
-
-                foreach (var s in styles)
-                {
-                    var name = s.FileName.ToUpperInvariant();
-                    var fm = s.GetFrontmatter("languages") ?? "";
-
-                    if ((name.Contains(srcShort) && name.Contains(tgtShort)) ||
-                        (fm.Contains(srcShort) && fm.Contains(tgtShort)))
-                        return s;
-                }
-            }
-
-            // Fallback: return first "General" style guide
-            return styles.FirstOrDefault(s =>
-                s.FileName.IndexOf("General", StringComparison.OrdinalIgnoreCase) >= 0);
-        }
-
-        // Boost applied when the user's query (chat message / segment) explicitly
-        // mentions a term note's source/target term or filename. Large enough to
-        // dominate the client/domain/language signals so a directly-asked-about
-        // note ranks first and survives token-budget trimming.
-        private const int QueryMatchBoost = 100;
-
-        private List<KbArticleIndex> FindTerminologyArticles(
-            string clientName, string domain, string sourceLang, string targetLang,
-            string queryText = null)
-        {
-            var terms = _index.Where(e => e.Folder == "02_TERMINOLOGY").ToList();
-            if (terms.Count == 0) return terms;
-
-            var queryLower = string.IsNullOrWhiteSpace(queryText) ? null : queryText.ToLowerInvariant();
-            var queryTokens = QueryTokens(queryLower);
-
-            // Score each term article by relevance
-            var scored = new List<(KbArticleIndex entry, int score)>();
-
-            foreach (var t in terms)
-            {
-                int score = 0;
-
-                // Query match: the user explicitly mentioned this term. Dominant signal.
-                if (queryLower != null && QueryMentionsTerm(t, queryLower))
-                    score += QueryMatchBoost;
-
-                // Content match: the user's query words appear in the note BODY
-                // (not just its frontmatter term). Additive – surfaces a note that
-                // discusses the topic even when its title/term doesn't match. Read
-                // bodies only when there is a query (chat), and cache by mtime.
-                if (queryTokens.Count > 0)
-                {
-                    var body = GetBodyLower(t);
-                    if (body.Length > 0)
-                    {
-                        int hits = 0;
-                        foreach (var tok in queryTokens)
-                            if (body.IndexOf(tok, StringComparison.Ordinal) >= 0) hits++;
-                        if (hits > 0) score += Math.Min(hits * 5, 40);
-                    }
-                }
-
-                // Client match: +3 points
-                if (!string.IsNullOrEmpty(clientName))
-                {
-                    var clients = t.GetFrontmatter("clients") ?? t.GetFrontmatter("client") ?? "";
-                    if (clients.IndexOf(clientName, StringComparison.OrdinalIgnoreCase) >= 0)
-                        score += 3;
-                }
-
-                // Domain match: +2 points
-                if (!string.IsNullOrEmpty(domain))
-                {
-                    var entryDomain = t.GetFrontmatter("domain") ?? "";
-                    if (entryDomain.IndexOf(domain, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        domain.IndexOf(entryDomain, StringComparison.OrdinalIgnoreCase) >= 0)
-                        score += 2;
-                }
-
-                // Language match: +1 point. Accept the keys real notes actually use
-                // (language_pair) alongside the older languages / source_language keys.
-                var langs = t.GetFrontmatter("languages")
-                    ?? t.GetFrontmatter("language_pair")
-                    ?? t.GetFrontmatter("source_language") ?? "";
-                if (!string.IsNullOrEmpty(sourceLang))
-                {
-                    var srcShort = ExtractLangCode(sourceLang);
-                    if (langs.ToUpperInvariant().Contains(srcShort))
-                        score += 1;
-                }
-
-                // Only include articles with at least some relevance
-                if (score > 0)
-                    scored.Add((t, score));
-            }
-
-            // If nothing matched by query/client/domain/language, fall back to all
-            // term articles (still useful general terminology). The token budget –
-            // not an arbitrary count cap – limits how many actually reach the prompt.
-            if (scored.Count == 0)
-                return terms;
-
-            // Return sorted by relevance (highest first)
-            return scored
-                .OrderByDescending(x => x.score)
-                .Select(x => x.entry)
-                .ToList();
-        }
-
         /// <summary>Lower-cased note body, cached and invalidated by file mtime.</summary>
         private string GetBodyLower(KbArticleIndex entry)
         {
@@ -786,74 +622,6 @@ namespace Supervertaler.Core
                 return text;
             }
             catch { return ""; }
-        }
-
-        /// <summary>
-        /// Splits a lower-cased query into distinct word tokens of 4+ characters
-        /// (short words are too noisy for body matching).
-        /// </summary>
-        private static List<string> QueryTokens(string queryLower)
-        {
-            var tokens = new List<string>();
-            if (string.IsNullOrEmpty(queryLower)) return tokens;
-            var sb = new StringBuilder();
-            foreach (var ch in queryLower)
-            {
-                if (char.IsLetterOrDigit(ch)) sb.Append(ch);
-                else { if (sb.Length >= 4) tokens.Add(sb.ToString()); sb.Clear(); }
-            }
-            if (sb.Length >= 4) tokens.Add(sb.ToString());
-            return tokens.Distinct().ToList();
-        }
-
-        /// <summary>
-        /// True if the user's (lower-cased) query text mentions this term note –
-        /// by its source term, target term, or filename. Candidates shorter than
-        /// 3 characters are ignored to avoid spurious matches on stop-words.
-        /// </summary>
-        private static bool QueryMentionsTerm(KbArticleIndex entry, string queryLower)
-        {
-            foreach (var candidate in new[]
-            {
-                entry.GetFrontmatter("term_source"),
-                entry.GetFrontmatter("term_target"),
-                Path.GetFileNameWithoutExtension(entry.FileName)
-            })
-            {
-                if (string.IsNullOrWhiteSpace(candidate)) continue;
-                var c = candidate.Trim().ToLowerInvariant();
-                if (c.Length >= 3 && queryLower.IndexOf(c, StringComparison.Ordinal) >= 0)
-                    return true;
-            }
-            return false;
-        }
-
-        private static string ExtractLangCode(string langDisplayName)
-        {
-            if (string.IsNullOrEmpty(langDisplayName)) return "";
-
-            // Common patterns: "English (United States)", "Dutch", "en-US", etc.
-            // Extract a short code like "EN", "NL", "FR"
-            var upper = langDisplayName.ToUpperInvariant();
-
-            // Try to match known language names
-            if (upper.Contains("DUTCH") || upper.Contains("NEDERLAND") || upper.Contains("NL"))
-                return "NL";
-            if (upper.Contains("FRENCH") || upper.Contains("FRAN") || upper.Contains("FR"))
-                return "FR";
-            if (upper.Contains("GERMAN") || upper.Contains("DEUTSCH") || upper.Contains("DE"))
-                return "DE";
-            if (upper.Contains("ENGLISH") || upper.Contains("EN"))
-                return "EN";
-            if (upper.Contains("SPANISH") || upper.Contains("ESPA") || upper.Contains("ES"))
-                return "ES";
-            if (upper.Contains("ITALIAN") || upper.Contains("IT"))
-                return "IT";
-            if (upper.Contains("PORTUGUESE") || upper.Contains("PT"))
-                return "PT";
-
-            // Fallback: take first two characters
-            return upper.Length >= 2 ? upper.Substring(0, 2) : upper;
         }
 
         internal static string ReadHead(string path, int maxChars)
@@ -1167,10 +935,9 @@ namespace Supervertaler.Core
         public string ClientProfileText { get; set; }
         public string ClientProfilePath { get; set; }
 
-        // Domain
+        // Domain: the caller's label, echoed by the MCP tools. No domain
+        // article is loaded; the bank is not divided by domain.
         public string DomainName { get; set; }
-        public string DomainArticleText { get; set; }
-        public string DomainArticlePath { get; set; }
 
         // Style guide
         public string StyleGuideText { get; set; }
@@ -1187,7 +954,8 @@ namespace Supervertaler.Core
         public List<string> ExtraArticles { get; set; } = new List<string>();
         public List<string> ExtraPaths { get; set; } = new List<string>();
 
-        // Detection info
+        // Detection info: "bank" from LoadContext - the client is the bank the
+        // user picked. Kept because the MCP tools of both products report it.
         public string DetectionMethod { get; set; } = "none";
 
         /// <summary>

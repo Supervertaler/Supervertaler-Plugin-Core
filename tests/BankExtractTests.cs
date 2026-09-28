@@ -84,13 +84,13 @@ namespace Supervertaler.Core.Tests
             Assert.True(r.Context.TerminologyArticles[0].Contains("stoomturbine"), "terminology untouched");
         }
 
-        public static void Selection_NeverRemovesBriefStyleOrDomain()
+        public static void Selection_NeverRemovesBriefOrStyle()
         {
             var ctx = LargeBank(out _);
             var r = BankExtract.Build(ctx, "schoeisel", "nl", "en", 9000, _ => new List<string>());
             Assert.True(r.Selected, "selected");
-            Assert.True(r.Context.ClientProfileText != null && r.Context.StyleGuideText != null
-                        && r.Context.DomainArticleText != null, "brief, style and domain are all still there");
+            Assert.True(r.Context.ClientProfileText != null && r.Context.StyleGuideText != null,
+                        "brief and style are both still there");
             Assert.Equal(0, r.Context.ExtraArticles.Count + r.Context.SharedExtraArticles.Count, "the choice of none removed every article");
         }
 
@@ -393,14 +393,13 @@ namespace Supervertaler.Core.Tests
             Assert.True(fragmentsMb < 20, "the fragment set is modest: " + fragmentsMb.ToString("F1") + " MB");
         }
 
-        /// <summary>A bank over the threshold: a big terminology table, five articles, brief, style, domain.</summary>
+        /// <summary>A bank over the threshold: a big terminology table, five articles, brief, style.</summary>
         private static KbContext LargeBank(out int articleCount)
         {
             var ctx = new KbContext
             {
                 ClientProfileText = "Brief.",
-                StyleGuideText = "Style.",
-                DomainArticleText = "Domain."
+                StyleGuideText = "Style."
             };
 
             var rows = new StringBuilder("| Source | Target | Scope | Note |\r\n|---|---|---|---|\r\n| schoeisel | footwear | client | |\r\n");

@@ -32,6 +32,8 @@ namespace Supervertaler.Core.Tests
                     "the same block with or without a domain and a query");
                 Assert.Equal("medical", labelled.DomainName, "the domain is kept as a label, which the MCP tool echoes");
                 Assert.True(plain.DomainName == null, "and nothing is invented when none is given");
+                Assert.Equal("acme", labelled.ClientName, "the client is the bank");
+                Assert.Equal("bank", labelled.DetectionMethod, "which is how the MCP tools say it was found");
             }
             finally
             {
