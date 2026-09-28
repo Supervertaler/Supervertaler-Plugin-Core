@@ -145,6 +145,107 @@ namespace Supervertaler.Core.Tests
                 "no article removed by selection - only the usual trimming");
         }
 
+        private const string SharedStyle =
+            "# Style - house defaults\r\n\r\nWhere each rule came from is in provenance.md.\r\n\r\n" +
+            "## 1. Gender-neutral pronouns\r\n\r\n**Scope**: all Dutch->English work.\r\nDutch \"zijn\" becomes \"their\".\r\n\r\n" +
+            "## 2. Quotation marks: straight, always\r\n\r\n**Scope**: all work, any direction.\r\nUse straight quotes.\r\n\r\n" +
+            "### 2b. Even in comments\r\n\r\nStill straight.\r\n\r\n" +
+            "## 3. Comprising boilerplate\r\n\r\n**Scope**: all nl->en patent work.\r\n```\r\n## not a heading, inside a fence\r\n```\r\n";
+
+        private const string SharedTerminology =
+            "# Terminology - house defaults\r\n\r\n" +
+            "## nl -> en\r\n\r\n| Source | Target |\r\n|---|---|\r\n| schoeisel | footwear |\r\n\r\n" +
+            "## Hedging adverbs (nl -> en)\r\n\r\n\"bij voorkeur\" is \"preferably\".\r\n";
+
+        private static KbContext BankWithHouseRules()
+        {
+            var ctx = LargeBank(out _);
+            ctx.SharedStyleText = SharedStyle;
+            ctx.SharedTerminologyText = SharedTerminology;
+            return ctx;
+        }
+
+        public static void HouseRules_AreOfferedOneByOne_AndOnlyTheChosenAreSent()
+        {
+            ArticleSelectionRequest seen = null;
+            var r = BankExtract.Build(BankWithHouseRules(), "schoeisel", "en", "nl", 1000000,
+                req => { seen = req; return new List<string> { "patents.md", "_shared/style.md#2" }; });
+
+            var ids = seen.Candidates.Select(c => c.Path).ToList();
+            Assert.True(ids.Contains("_shared/style.md#1") && ids.Contains("_shared/style.md#2") && ids.Contains("_shared/style.md#3"),
+                "each style rule is offered: " + string.Join(", ", ids));
+            Assert.True(seen.Candidates.First(c => c.Path == "_shared/style.md#2").Opening.Contains("**Scope**: all work"),
+                "the rule's Scope line is shown");
+            Assert.True(!ids.Contains("_shared/style.md#4"), "a fenced \"## \" is not a rule");
+
+            var style = r.Context.SharedStyleText;
+            Assert.True(style.StartsWith("# Style - house defaults", StringComparison.Ordinal), "the file's title stays");
+            Assert.True(style.Contains("## 2. Quotation marks") && style.Contains("### 2b. Even in comments"),
+                "the chosen rule is sent, sub-section and all");
+            Assert.True(!style.Contains("Gender-neutral") && !style.Contains("Comprising"), "rules not chosen are not sent");
+            Assert.True(r.Report.Any(l => l.StartsWith("House rules (_shared/style.md): 1 of 3", StringComparison.Ordinal)
+                                          && l.Contains("1. Gender-neutral pronouns") && l.Contains("3. Comprising boilerplate")),
+                "the report names what was left out");
+        }
+
+        public static void HouseRules_ATableIsNeverOffered_ItsRowsAreFilteredInstead()
+        {
+            ArticleSelectionRequest seen = null;
+            var r = BankExtract.Build(BankWithHouseRules(), "The footwear.", "en", "nl", 1000000,
+                req => { seen = req; return new List<string>(); });
+
+            var ids = seen.Candidates.Select(c => c.Path).ToList();
+            Assert.True(!ids.Contains("_shared/terminology.md#1"), "the nl -> en table is not offered");
+            Assert.True(ids.Contains("_shared/terminology.md#2"), "its prose section is");
+            var term = r.Context.SharedTerminologyText;
+            Assert.True(term != null && term.Contains("| schoeisel | footwear |"), "the relevant row survives a choice of nothing");
+            Assert.True(!term.Contains("Hedging adverbs"), "the prose section not chosen is gone");
+        }
+
+        public static void HouseRules_NoneChosen_TheFileGoesWithItsTitle()
+        {
+            var r = BankExtract.Build(BankWithHouseRules(), "schoeisel", "en", "nl", 1000000, _ => new List<string>());
+            Assert.True(r.Context.SharedStyleText == null, "no orphan \"# Style\" heading is sent");
+        }
+
+        public static void HouseRules_ChoiceFails_EveryRuleIsKept()
+        {
+            var r = BankExtract.Build(BankWithHouseRules(), "schoeisel", "en", "nl", 1000000,
+                _ => throw new InvalidOperationException("network down"));
+            Assert.Equal(SharedStyle, r.Context.SharedStyleText, "the style guide is sent as it was");
+            Assert.True(r.Context.SharedTerminologyText.Contains("Hedging adverbs"), "and the terminology prose");
+            Assert.True(r.Report.Any(l => l.StartsWith("Articles and house rules: all", StringComparison.Ordinal)
+                                          && l.Contains("network down")), "the report says so");
+        }
+
+        public static void HouseRules_AllChosen_TextIsByteForByte()
+        {
+            var all = new List<string> { "patents.md", "marketing.md", "legal.md", "_shared/method.md", "_shared/checks.md",
+                                         "_shared/style.md#1", "_shared/style.md#2", "_shared/style.md#3", "_shared/terminology.md#2" };
+            var r = BankExtract.Build(BankWithHouseRules(), "schoeisel", "en", "nl", 1000000, _ => all);
+            Assert.Equal(SharedStyle, r.Context.SharedStyleText, "CRLF, fence and all, unchanged");
+        }
+
+        public static void HouseRules_TheChoiceIsReused_RulesIncluded()
+        {
+            var asked = 0;
+            Func<ArticleSelectionRequest, IList<string>> choose = req => { asked++; return new List<string> { "_shared/style.md#2" }; };
+            var r = BankExtract.Build(BankWithHouseRules(), "schoeisel", "en", "nl", 1000000, choose);
+            var again = BankExtract.Build(BankWithHouseRules(), "schoeisel", "en", "nl", 1000000, choose, r.ArticleChoice);
+            Assert.Equal(1, asked, "asked once");
+            Assert.Equal(r.Context.SharedStyleText, again.Context.SharedStyleText, "the same rules on reuse");
+        }
+
+        public static void HouseRules_AStyleFileWithoutSections_IsNotOffered()
+        {
+            var ctx = BankWithHouseRules();
+            ctx.SharedStyleText = "# Style\r\n\r\nAlways British spelling.\r\n";
+            ArticleSelectionRequest seen = null;
+            var r = BankExtract.Build(ctx, "schoeisel", "en", "nl", 1000000, req => { seen = req; return new List<string>(); });
+            Assert.True(!seen.Candidates.Any(c => c.Path.StartsWith("_shared/style.md", StringComparison.Ordinal)), "nothing to offer");
+            Assert.Equal("# Style\r\n\r\nAlways British spelling.\r\n", r.Context.SharedStyleText, "and it is sent as it was");
+        }
+
         public static void ParseSelection_TakesOnlyKnownPaths_AndRefusesNonsense()
         {
             var candidates = new List<ArticleCandidate>

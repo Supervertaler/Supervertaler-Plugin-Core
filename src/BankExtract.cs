@@ -31,6 +31,10 @@ namespace Supervertaler.Core
     /// usual trimming applied.</item>
     /// <item><b>Never selected away:</b> the client's brief, its domain article and
     /// its style guide. Only the budget can drop those, as before.</item>
+    /// <item><b>The house defaults, rule by rule:</b> each "## " section of the
+    /// <c>_shared</c> style guide, and each section of its terminology file that
+    /// holds no table, is offered in the same question, so a rule written for
+    /// another language direction or kind of document stays out.</item>
     /// </list>
     ///
     /// <para>Below <see cref="Threshold"/> nothing is selected: a small bank is
@@ -135,7 +139,21 @@ namespace Supervertaler.Core
             // everything sent, went with every row of a job it had nothing to do
             // with. Fitting the budget is not the same as being relevant. One
             // request per job, reused; a failure still keeps every article.
+            //
+            // The house defaults are asked about too, rule by rule (item 5 of the
+            // Trados 198 list). _shared is how the translator works by default, and
+            // its style guide and terminology notes were sent whole to every job:
+            // nl->en patent boilerplate reached an en->nl software deck. Each "## "
+            // section of those two files is offered with the articles; most open
+            // with a Scope line that says what work the rule is for. The client's
+            // own brief, style guide and domain article are still never offered.
             var candidates = Candidates(full);
+            var articleCount = candidates.Count;
+            var styleRules = Rules(full.SharedStyleText, SharedStylePath, tablesStay: false);
+            var termRules = Rules(full.SharedTerminologyText, SharedTerminologyPath, tablesStay: true);
+            candidates.AddRange(styleRules.Rules.Concat(termRules.Rules).Where(r => r.Offered).Select(r => Candidate(r.Id, r.Text)));
+            var ruleCount = candidates.Count - articleCount;
+
             if (candidates.Count > 0)
             {
                 IList<string> chosen = earlierChoice;
@@ -168,14 +186,19 @@ namespace Supervertaler.Core
                     var keep = new HashSet<string>(chosen, StringComparer.OrdinalIgnoreCase);
                     var left = RemoveArticles(full, keep);
                     result.ArticleChoice = chosen.ToList();
-                    result.Report.Add("Articles: " + (candidates.Count - left.Count) + " of " + candidates.Count
-                        + " chosen as relevant to this document"
-                        + (string.IsNullOrWhiteSpace(chooserName) || earlierChoice != null ? "" : " by " + chooserName)
-                        + (left.Count > 0 ? "; left out: " + string.Join(", ", left) : "") + ".");
+                    var by = string.IsNullOrWhiteSpace(chooserName) || earlierChoice != null ? "" : " by " + chooserName;
+                    if (articleCount > 0)
+                        result.Report.Add("Articles: " + (articleCount - left.Count) + " of " + articleCount
+                            + " chosen as relevant to this document" + by
+                            + (left.Count > 0 ? "; left out: " + string.Join(", ", left) : "") + ".");
+
+                    full.SharedStyleText = KeepRules(styleRules, keep, SharedStylePath, by, result.Report);
+                    full.SharedTerminologyText = KeepRules(termRules, keep, SharedTerminologyPath, by, result.Report);
                 }
                 else
                 {
-                    result.Report.Add("Articles: all " + candidates.Count + " kept - "
+                    result.Report.Add((ruleCount > 0 ? "Articles and house rules: all " : "Articles: all ")
+                        + candidates.Count + " kept - "
                         + (failure ?? "no way to choose was available")
                         + ", so the usual trimming order applies.");
                 }
@@ -218,8 +241,10 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// The articles the choice may remove: the extras of both layers. The
-        /// brief, the domain article, the style guides and terminology are not
-        /// candidates - they are never selected away.
+        /// client's brief, domain article, style guide and terminology are not
+        /// candidates - they are never selected away. The house defaults' own
+        /// style guide and terminology notes are offered rule by rule instead
+        /// (<see cref="Rules"/>).
         /// </summary>
         private static List<ArticleCandidate> Candidates(KbContext ctx)
         {
@@ -266,6 +291,121 @@ namespace Supervertaler.Core
             }
         }
 
+        // ---- the house defaults, rule by rule ---------------------------------
+
+        private static readonly string SharedStylePath = MemoryBankReader.SharedBankName + "/" + MemoryBankReader.StyleFile;
+        private static readonly string SharedTerminologyPath = MemoryBankReader.SharedBankName + "/" + MemoryBankReader.TerminologyFile;
+
+        /// <summary>One "## " section of a house-defaults file, sub-sections included.</summary>
+        private sealed class Rule
+        {
+            /// <summary>The file and the section's place in it, 1-based: "_shared/style.md#6".</summary>
+            public string Id;
+            public string Title;
+            public string Text;
+            /// <summary>Whether the choice may leave it out. A section holding a table is not
+            /// offered: its rows were already kept for occurring in this document.</summary>
+            public bool Offered;
+        }
+
+        private sealed class RuleSet
+        {
+            /// <summary>Whatever comes before the first "## " heading - the file's title.</summary>
+            public string Preamble;
+            public List<Rule> Rules = new List<Rule>();
+        }
+
+        private static RuleSet Rules(string text, string path, bool tablesStay)
+        {
+            var set = new RuleSet();
+            var sections = SplitSections(text, out set.Preamble);
+            for (var i = 0; i < sections.Count; i++)
+            {
+                var s = sections[i];
+                var eol = s.IndexOf('\n');
+                set.Rules.Add(new Rule
+                {
+                    Id = path + "#" + (i + 1).ToString(CultureInfo.InvariantCulture),
+                    Title = (eol < 0 ? s : s.Substring(0, eol)).TrimStart('#', ' ').Trim(),
+                    Text = s,
+                    Offered = !(tablesStay && HasTable(s))
+                });
+            }
+            return set;
+        }
+
+        /// <summary>
+        /// The file again with only the rules kept - or null when every rule was
+        /// left out, because a title with nothing under it tells the model
+        /// nothing. A file with no "## " sections was never offered and comes
+        /// back as it was.
+        /// </summary>
+        private static string KeepRules(RuleSet set, HashSet<string> keep, string path, string by, List<string> report)
+        {
+            if (set.Rules.Count == 0) return set.Preamble;
+
+            var sb = new StringBuilder(set.Preamble);
+            var leftOut = new List<string>();
+            var kept = 0;
+            foreach (var r in set.Rules)
+            {
+                if (r.Offered && !keep.Contains(r.Id)) { leftOut.Add(r.Title); continue; }
+                sb.Append(r.Text);
+                kept++;
+            }
+
+            var offered = set.Rules.Count(r => r.Offered);
+            if (offered > 0)
+                report.Add("House rules (" + path + "): " + (offered - leftOut.Count) + " of " + offered
+                    + " chosen as applying to this document" + by
+                    + (leftOut.Count > 0 ? "; left out: " + string.Join("; ", leftOut) : "") + ".");
+            return kept > 0 ? sb.ToString() : null;
+        }
+
+        /// <summary>
+        /// <paramref name="text"/> cut at its level-2 headings ("## "), outside code
+        /// fences, each piece keeping its own line endings; the text before the
+        /// first heading is returned in <paramref name="preamble"/>. Deeper headings
+        /// stay with the section they are in. No heading: no sections, and the whole
+        /// text is the preamble.
+        /// </summary>
+        internal static List<string> SplitSections(string text, out string preamble)
+        {
+            preamble = text;
+            var sections = new List<string>();
+            if (string.IsNullOrEmpty(text)) return sections;
+
+            var starts = new List<int>();
+            var inFence = false;
+            for (var pos = 0; pos < text.Length;)
+            {
+                var nl = text.IndexOf('\n', pos);
+                var next = nl < 0 ? text.Length : nl + 1;
+                if (string.CompareOrdinal(text, pos, "## ", 0, 3) == 0 && !inFence)
+                    starts.Add(pos);
+                else
+                {
+                    var p = pos;
+                    while (p < next && (text[p] == ' ' || text[p] == '\t')) p++;
+                    if (string.CompareOrdinal(text, p, "```", 0, 3) == 0 || string.CompareOrdinal(text, p, "~~~", 0, 3) == 0)
+                        inFence = !inFence;
+                }
+                pos = next;
+            }
+            if (starts.Count == 0) return sections;
+
+            preamble = text.Substring(0, starts[0]);
+            for (var i = 0; i < starts.Count; i++)
+            {
+                var end = i + 1 < starts.Count ? starts[i + 1] : text.Length;
+                sections.Add(text.Substring(starts[i], end - starts[i]));
+            }
+            return sections;
+        }
+
+        private static bool HasTable(string section) =>
+            section.Split('\n').Any(l => l.TrimStart().StartsWith("|", StringComparison.Ordinal));
+
         // ---- the article choice, as a prompt and a parser ----------------------
 
         /// <summary>
@@ -278,7 +418,11 @@ namespace Supervertaler.Core
             + "You are shown the start of the document and a list of articles, each with its path and opening. "
             + "Keep an article if it could affect how this document is translated: its subject, its client, its "
             + "document type, or rules that apply to all work. Leave out articles about unrelated subjects or "
-            + "clients. When unsure, keep it. Reply with a JSON array of the paths to keep and nothing else, "
+            + "clients. Entries whose path ends in #1, #2 and so on are single rules from the translator's house "
+            + "defaults; most open with a Scope line saying what work the rule is for, such as a language direction "
+            + "or a kind of document. Leave such a rule out only when its scope, or failing that its content, "
+            + "clearly does not fit this document's language pair or kind; a rule for all work stays. "
+            + "When unsure, keep it. Reply with a JSON array of the paths to keep and nothing else, "
             + "for example [\"method.md\", \"_shared/patents.md\"]. An empty array means none is relevant.";
 
         public static string SelectionUserPrompt(ArticleSelectionRequest request)
