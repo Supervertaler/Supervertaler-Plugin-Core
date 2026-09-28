@@ -54,7 +54,7 @@ namespace Supervertaler.Core
         // Trados before September 2026 used the white square brackets, and a
         // comment in one of those must not be mistaken for stray text.
         private static readonly Regex Marker =
-            new Regex(@"(?:\[\[|⟦)\s*TC\s*:.*?(?:\]\]|⟧)", RegexOptions.Compiled | RegexOptions.Singleline);
+            new Regex(@"(?:\[\[|⟦)\s*TC\s*:(?<text>.*?)(?:\]\]|⟧)", RegexOptions.Compiled | RegexOptions.Singleline);
 
         private static readonly Regex TagMarker =
             new Regex(@"</?([A-Za-z_][A-Za-z0-9_]*)(?:\s[^>]*)?/?>", RegexOptions.Compiled);
@@ -124,6 +124,36 @@ namespace Supervertaler.Core
                 return "far longer than the source";
 
             return null;
+        }
+
+        /// <summary>
+        /// <paramref name="reply"/> without its closing <c>[[TC: ...]]</c> marker,
+        /// and the marker's text in <paramref name="comment"/>, for a host that
+        /// turns the marker into a comment of its own instead of leaving it in the
+        /// target. A reply with no marker comes back as it was, with a null
+        /// <paramref name="comment"/>; so does one whose marker is anywhere but at
+        /// the very end, or which has two, because <see cref="Problem"/> refuses
+        /// those and a reply it accepted is never half taken apart. An empty
+        /// marker is removed and gives no comment.
+        ///
+        /// <para>The same pattern as the check, both bracket forms, so what the
+        /// check accepts as the comment is exactly what comes out here.</para>
+        /// </summary>
+        public static string WithoutComment(string reply, out string comment)
+        {
+            comment = null;
+            if (string.IsNullOrEmpty(reply)) return reply;
+
+            var trimmed = reply.TrimEnd();
+            var markers = Marker.Matches(trimmed);
+            if (markers.Count != 1) return reply;
+
+            var m = markers[0];
+            if (m.Index + m.Length != trimmed.Length) return reply;
+
+            var text = m.Groups["text"].Value.Trim();
+            comment = text.Length > 0 ? text : null;
+            return trimmed.Substring(0, m.Index).TrimEnd();
         }
 
         /// <summary>

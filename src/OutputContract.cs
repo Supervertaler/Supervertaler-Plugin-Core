@@ -55,6 +55,42 @@ namespace Supervertaler.Core
         });
 
         /// <summary>
+        /// The same promise for a proofreading request, whose reply is a verdict on
+        /// each segment rather than a translation. It goes on the end of the
+        /// proofreading system prompt for the same reason <see cref="Text"/> goes
+        /// on the end of a translation one: a prompt the translator chose cannot
+        /// switch it off, and the format the host parses is written down once.
+        ///
+        /// <para>Nothing a proofread returns is written into a target, so no
+        /// check stands behind this one. What it adds besides the format is the
+        /// register of a source query: written as a <c>[[TC: ...]]</c> comment is
+        /// written, to the client, so the translator can pass it on as it
+        /// stands.</para>
+        /// </summary>
+        public static readonly string ProofreadText = string.Join(Environment.NewLine, new[]
+        {
+            Heading,
+            "",
+            "Fixed. It applies whatever the instructions above say.",
+            "",
+            "- Give one verdict for every segment you are given, in the order given, each headed by the",
+            "  segment's number exactly as it was given: [SEGMENT 0001]. Nothing before the first verdict and",
+            "  nothing after the last: no preamble, no summary, no markdown, no code fences.",
+            "- A segment with nothing wrong is one line: [SEGMENT 0001] OK",
+            "- A segment with a problem is [SEGMENT 0001] ISSUE, followed by these lines, each on a line of its own:",
+            "      Issue: <what is wrong>",
+            "      Evidence: <the segment numbers that show it; leave this line out when there are none>",
+            "      Suggestion: <how to fix it>",
+            "- Describe the fix. Never return a corrected translation of the whole segment.",
+            "- When the problem is in the SOURCE (a typo, a missing word, a contradiction), start the Issue line",
+            "  with \"Source query:\" and write the rest as the translator's comment to the client: 5 to 20 words,",
+            "  in English unless the instructions above say otherwise, stating the fact and the fix, with no",
+            "  reasoning and no \"I\". Say in the Suggestion line whether the translation needs to change.",
+            "  Example: Issue: Source query: \"100 000 miljoen euro\" means EUR 100 billion. Please check.",
+            "- Never put commentary anywhere else in the reply.",
+        });
+
+        /// <summary>
         /// Said once more, in front of the segment, when the first reply broke the
         /// contract and the request is being made again.
         /// </summary>

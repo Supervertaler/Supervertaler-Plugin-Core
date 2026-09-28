@@ -82,6 +82,54 @@ namespace Supervertaler.Core.Tests
             Assert.True(OutputContract.Text.IndexOf('—') < 0, "no em dash");
         }
 
+        public static void WithoutComment_TakesOffTheClosingMarker()
+        {
+            var reply = Dutch + " [[TC: \"areas\" read as regions, not surfaces. Please check.]]";
+            Assert.Equal(Dutch, ReplyCheck.WithoutComment(reply, out var comment), "the translation");
+            Assert.Equal("\"areas\" read as regions, not surfaces. Please check.", comment, "the comment");
+
+            Assert.Equal(Dutch, ReplyCheck.WithoutComment(Dutch + " ⟦TC: older form⟧\r\n", out comment), "older form, trailing newline");
+            Assert.Equal("older form", comment, "older form's comment");
+
+            const string tagged = "<t1>Opslaan</t1> nu";
+            Assert.Equal(tagged, ReplyCheck.WithoutComment(tagged + " [[TC: check the button name]]", out comment), "tags kept");
+            Assert.Equal("check the button name", comment, "comment after tags");
+
+            // Taken whole: the comment's own brackets and tags are its text.
+            Assert.Equal(Dutch, ReplyCheck.WithoutComment(Dutch + " [[TC: see [3] and <b>x</b>]]", out comment), "brackets inside");
+            Assert.Equal("see [3] and <b>x</b>", comment, "brackets inside the comment");
+        }
+
+        public static void WithoutComment_LeavesEverythingElseAlone()
+        {
+            Assert.Equal(Dutch, ReplyCheck.WithoutComment(Dutch, out var comment), "no marker");
+            Assert.True(comment == null, "no marker, no comment");
+
+            // Replies the check refuses are never half taken apart.
+            var twice = Dutch + " [[TC: one]] [[TC: two]]";
+            Assert.Equal(twice, ReplyCheck.WithoutComment(twice, out comment), "two markers");
+            Assert.True(comment == null, "two markers, no comment");
+            var first = "[[TC: first]] " + Dutch;
+            Assert.Equal(first, ReplyCheck.WithoutComment(first, out comment), "a marker that is not at the end");
+            Assert.True(comment == null, "not at the end, no comment");
+
+            Assert.Equal(Dutch, ReplyCheck.WithoutComment(Dutch + " [[TC: ]]", out comment), "an empty marker is removed");
+            Assert.True(comment == null, "an empty marker gives no comment");
+
+            Assert.True(ReplyCheck.WithoutComment(null, out comment) == null && comment == null, "null");
+            Assert.Equal("", ReplyCheck.WithoutComment("", out comment), "empty");
+        }
+
+        public static void ProofreadContract_FixesTheFormatTheParserReads()
+        {
+            var t = OutputContract.ProofreadText;
+            Assert.True(t.StartsWith(OutputContract.Heading, StringComparison.Ordinal), "starts with its heading");
+            foreach (var part in new[] { "[SEGMENT 0001] OK", "[SEGMENT 0001] ISSUE", "Issue:", "Evidence:", "Suggestion:", "Source query:" })
+                Assert.True(t.Contains(part), "names " + part);
+            Assert.True(t.IndexOf('—') < 0, "no em dash");
+            Assert.True(t.IndexOf('⟦') < 0, "not the older bracket form");
+        }
+
         public static void DefaultTranslationPrompt_OldCopyIsRefreshed_EditedCopyIsNot()
         {
             const string oldLine = "- When a term has no established equivalent, keep the source term and add a brief explanation in parentheses if needed";
