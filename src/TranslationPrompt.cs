@@ -329,7 +329,7 @@ namespace Supervertaler.Core
                 foreach (var seg in withMemory)
                 {
                     sb.AppendLine("Segment " + seg.Number
-                        + (seg.FuzzyMatchPercent > 0 ? " — " + seg.FuzzyMatchPercent + "% match" : ""));
+                        + (seg.FuzzyMatchPercent > 0 ? " – " + seg.FuzzyMatchPercent + "% match" : ""));
 
                     if (!string.IsNullOrWhiteSpace(seg.FuzzySourceText))
                     {

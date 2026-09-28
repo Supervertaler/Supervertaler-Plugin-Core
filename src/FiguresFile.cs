@@ -159,10 +159,10 @@ namespace Supervertaler.Core
                     var img = i < d.Images.Count ? d.Images[i] : null;
                     var said = "";
                     if (img != null && img.Descriptions != null && img.Descriptions.Count > 0) said = string.Join(" ", img.Descriptions);
-                    if (said.Length == 0) said = "—";
+                    if (said.Length == 0) said = "–";
                     var saw = !string.IsNullOrEmpty(v.Error) ? "*not analysed: " + v.Error + "*"
-                            : (string.IsNullOrWhiteSpace(v.Caption) ? "—" : v.Caption);
-                    var signs = v.SignsInDrawing != null && v.SignsInDrawing.Count > 0 ? string.Join(", ", v.SignsInDrawing) : "—";
+                            : (string.IsNullOrWhiteSpace(v.Caption) ? "–" : v.Caption);
+                    var signs = v.SignsInDrawing != null && v.SignsInDrawing.Count > 0 ? string.Join(", ", v.SignsInDrawing) : "–";
                     sb.AppendLine("| " + Cell(v.Label) + " | " + Cell(v.FileName) + " | " + Cell(said) + " | " + Cell(saw) + " | " + Cell(signs) + " |");
                 }
                 sb.AppendLine();
@@ -230,7 +230,7 @@ namespace Supervertaler.Core
                     // previewer, and both want the whole sentence.
                     var desc = "";
                     if (img.Descriptions != null && img.Descriptions.Count > 0) desc = string.Join(" ", img.Descriptions);
-                    if (string.IsNullOrWhiteSpace(desc)) desc = "—";
+                    if (string.IsNullOrWhiteSpace(desc)) desc = "–";
                     desc = desc.Replace("\r", " ").Replace("\n", " ").Replace("|", "\\|").Trim();
                     var part = (img.PartName ?? "").Replace("/word/", "").Replace("|", "\\|");
                     sb.AppendLine("| " + (img.Label ?? ("image " + img.Ordinal)) + " | " + part + " | " + desc + " |");
@@ -242,8 +242,8 @@ namespace Supervertaler.Core
 
             sb.AppendLine(TextOnlyMarker);
             sb.AppendLine();
-            sb.AppendLine("What each image **actually shows** — the parts visible in it, and any reference sign "
-                        + "printed in it but absent from the text — is not in this file. That needs the AI to look "
+            sb.AppendLine("What each image **actually shows** – the parts visible in it, and any reference sign "
+                        + "printed in it but absent from the text – is not in this file. That needs the AI to look "
                         + "at the images. Everything above comes from the documents' own text.");
             return sb.ToString();
         }
@@ -262,7 +262,7 @@ namespace Supervertaler.Core
         /// <summary>Table-cell safe: pipes escaped, newlines flattened.</summary>
         internal static string Cell(string s)
         {
-            if (string.IsNullOrEmpty(s)) return "—";
+            if (string.IsNullOrEmpty(s)) return "–";
             return s.Replace("\r", " ").Replace("\n", " ").Replace("|", "\\|").Trim();
         }
 
