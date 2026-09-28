@@ -82,6 +82,31 @@ namespace Supervertaler.Core.Tests
             Assert.True(OutputContract.Text.IndexOf('—') < 0, "no em dash");
         }
 
+        private const string Declaration = "Ik verklaar dat ik dit document naar waarheid heb vertaald.";
+        private const string DeclarationEn = "I declare that I have translated this document truthfully.";
+
+        public static void FirstPersonSource_TranslatedIntoEnglish_Passes()
+        {
+            Passes(Declaration, DeclarationEn, "a declaration in the first person");
+            Passes("J'ai traduit ce document.", "I translated this document.", "French j'");
+            Passes("Ik verklaar dat ik dit document naar waarheid heb vertaald",
+                DeclarationEn, "a full stop the source does not have is not a sentence");
+            Passes("Hierbij verklaar ik: ik heb dit document vertaald. Datum: 1 mei.",
+                "I hereby declare: I have translated this document. Date: 1 May.", "two sentences into two");
+        }
+
+        public static void FirstPersonSource_DoesNotExcuseAnAddedRemark()
+        {
+            // Condition (b): a sentence or a bracket the source does not have.
+            Refused(Declaration, DeclarationEn + " I kept the approved wording.", "an appended sentence");
+            Refused(Declaration, "I declare that I have translated this document truthfully (I kept the wording).",
+                "an appended bracket");
+            // Condition (a): no word for "I" in the source, however well the sentences line up.
+            Refused("De klep is gesloten.", "The valve is closed, I kept the wording.", "a pronoun-free source");
+            Refused("De EU-verordening is gewijzigd.", "The EU regulation has been amended, I changed the wording.",
+                "\"EU\" is not the Portuguese \"eu\"");
+        }
+
         public static void WithoutComment_TakesOffTheClosingMarker()
         {
             var reply = Dutch + " [[TC: \"areas\" read as regions, not surfaces. Please check.]]";

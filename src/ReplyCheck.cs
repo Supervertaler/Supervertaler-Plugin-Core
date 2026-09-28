@@ -73,6 +73,25 @@ namespace Supervertaler.Core
             @"\bI(?:'ve|\s+have)?\s+(?:followed|changed|kept|used|translated|rendered|chose|opted|left|retained|corrected|adjusted|replaced|preserved|assumed|added|omitted|removed)\b",
             RegexOptions.Compiled);
 
+        // The source's own word for "I", as a whole word. A text written in the
+        // first person - a declaration, a letter - says "I have translated" in
+        // English because the source says it, and is not the model talking (see
+        // SpeaksAsTheSource). Case-sensitive on purpose, lower case or capitalised
+        // only: "EU" (the Union) and "IO" (input/output) are not pronouns. Dutch
+        // "je" (you) and "ja" (yes) loosen it a little; the sentence count still
+        // holds for those.
+        private static readonly Regex SourceI = new Regex(
+            @"\b(?:[Ii]k|[Ii]ch|[Jj]e|[Jj]eg|[Jj]ag|[Ii]o|[Yy]o|[Ee]u|[Jj]a|[Яя])\b|\b[Jj]['’]",
+            RegexOptions.Compiled);
+
+        // A sentence ending with more text after it: . ! or ?, perhaps a closing
+        // quote or bracket, then a space and something else. The last sentence of
+        // a segment is not counted, so a translation that adds or drops the full
+        // stop at the end is not judged for it; "17.5" and "e.g" inside a word
+        // never match.
+        private static readonly Regex SentenceBreak = new Regex(
+            @"[.!?]+['""”’)\]]*(?=\s+\S)", RegexOptions.Compiled);
+
         // The model talking about the job's own machinery.
         private static readonly Regex Machinery = new Regex(
             @"\b(?:approved|fuzzy|TM)\s+match(?:es)?\b|\bmistranslat",
@@ -109,7 +128,7 @@ namespace Supervertaler.Core
             if (Lines(body) > Lines(source))
                 return "a line break the source does not have";
 
-            if (FirstPerson.IsMatch(body) && !FirstPerson.IsMatch(source))
+            if (FirstPerson.IsMatch(body) && !FirstPerson.IsMatch(source) && !SpeaksAsTheSource(source, body))
                 return "the model writing about its own choices";
 
             if (Machinery.IsMatch(body) && !Machinery.IsMatch(source))
@@ -187,6 +206,30 @@ namespace Supervertaler.Core
         private static string Plain(string text)
         {
             return TagMarker.Replace(text ?? "", "").Trim();
+        }
+
+        /// <summary>
+        /// Whether a reply's "I have translated" is the source's own first person,
+        /// translated, rather than the model talking about its work. Both must
+        /// hold: the source has its own word for "I", and the reply adds no
+        /// sentence and no bracket the source does not have. Either alone is too
+        /// loose - any source containing "ik" would excuse an appended remark, and
+        /// a same-count rule would excuse every aside. So "Ik verklaar dat ik ...
+        /// heb vertaald." passes, while the same translation followed by "I kept X
+        /// as in the TM." is still refused.
+        ///
+        /// <para>Known gaps: a source that leaves the pronoun out ("He traducido",
+        /// "Ho tradotto") is still refused, and a remark inside the same sentence
+        /// of a source that has "ik" gets through. Both rarer than the declaration
+        /// this is for. Proposed by the memoQ session, 2026-09-28.</para>
+        /// </summary>
+        private static bool SpeaksAsTheSource(string source, string body)
+        {
+            var src = Plain(source);
+            var reply = Plain(body);
+            return SourceI.IsMatch(src)
+                && SentenceBreak.Matches(reply).Count <= SentenceBreak.Matches(src).Count
+                && reply.Count(c => c == '(') <= src.Count(c => c == '(');
         }
 
         /// <summary>True when there is real text before <paramref name="index"/>, tags aside.</summary>
