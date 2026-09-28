@@ -99,6 +99,7 @@ namespace Supervertaler.Core.Models
                     case PromptLogFeature.QuickLauncher: baseLabel = "QuickLauncher"; break;
                     case PromptLogFeature.PromptGeneration: baseLabel = "AutoPrompt"; break;
                     case PromptLogFeature.ConnectionTest: baseLabel = "Connection Test"; break;
+                    case PromptLogFeature.SuperMemory: baseLabel = "SuperMemory"; break;
                     case PromptLogFeature.AutoTag: baseLabel = "AutoTagger"; break;
                     case PromptLogFeature.SuperBench: baseLabel = "SuperBench"; break;
                     // Without a label the usage ledger records the call
