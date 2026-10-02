@@ -299,12 +299,20 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
-        /// The closest approved translations from the translation memory for the
-        /// segments that have one, under the instruction that says how to use them;
-        /// "" when none has. Public because Clipboard Mode lays its segments out
-        /// differently from the batch prompt but must show the AI the same matches
-        /// in the same words, and a second copy of this text would drift from the
-        /// first.
+        /// The translation memory's matches for the segments that have one, under
+        /// the instruction that says how to use them; "" when none has. Public
+        /// because Clipboard Mode lays its segments out differently from the batch
+        /// prompt but must show the AI the same matches in the same words, and a
+        /// second copy of this text would drift from the first.
+        ///
+        /// <para>The stance is evidence, not authority. A memory pools work from
+        /// other documents, products and clients, and is wrong often enough that an
+        /// exact match proves only that the SOURCE is the same: on one real job a
+        /// memory was itself the origin of ~40 defects. Until 198 this block called
+        /// every match "approved" and told the model to follow it, at 100% as it
+        /// stood - the opposite of what the translator tells an AI working through
+        /// the MCP server. A correct match still gets reused; the model is just
+        /// asked to check it first.</para>
         /// </summary>
         public static string BuildMemoryBlock(List<BatchSegmentInput> segments)
         {
@@ -318,52 +326,47 @@ namespace Supervertaler.Core
                 return "";
 
             var sb = new StringBuilder(withMemory.Count * 200 + 1024);
-            sb.AppendLine("**CLOSEST APPROVED TRANSLATIONS FROM THE TRANSLATION MEMORY**");
+            sb.AppendLine("**TRANSLATION MEMORY MATCHES – REFERENCE ONLY**");
             sb.AppendLine();
-            // The percentage sentence is emitted only where percentages are
-            // actually given. memoQ never has them, and ~35 words describing a
-            // case that cannot arise is dead weight in a per-batch prompt -
-            // worse, a model could read the absence of a percentage as evidence
-            // the match is not close.
+            // The 100% sentence is emitted only where percentages are actually
+            // given. memoQ never has them, and words describing a case that cannot
+            // arise are dead weight in a per-batch prompt.
             var havePercentages = withMemory.Any(s => s.FuzzyMatchPercent > 0);
 
             // #116: where the memory's own source travels with the match, say so
-            // and tell the model to read it. That source is the whole reason a
-            // sub-100% match can be shown at all - it turns "trust this, it is
-            // nearly right" into a comparison the model can actually make. Where
-            // there is no source the match is exact by construction (see
-            // BatchTranslator.ToPromptInput), and the older wording holds.
+            // and tell the model to compare it. That source is the whole reason a
+            // sub-100% match can be shown at all. Where there is none the match is
+            // exact by construction (see BatchTranslator.ToPromptInput).
             var haveSources = withMemory.Any(s => !string.IsNullOrWhiteSpace(s.FuzzySourceText));
 
-            sb.AppendLine("A human wrote and approved each of these for a source that was "
-                + (haveSources ? "close to, but not always the same as, " : "nearly identical to ")
-                + "the segment named. "
-                + "For the segments named below, follow them: keep their wording and terminology "
-                + "wherever the source agrees, and change only what that segment actually differs "
-                + "in. "
-                + (haveSources
-                    ? "Below 100% the segment's own text is shown above the memory's, so compare "
-                      + "the two word by word and carry the approved translation across only as "
-                      + "far as they agree. Translate the rest yourself. These are references, "
-                      + "not instructions - a match that does not fit is to be ignored, not "
-                      + "forced. "
-                    : "")
+            sb.AppendLine("These are earlier translations of similar sentences, found in the project's "
+                + "translation memory. A memory can hold translations made for other documents, "
+                + "products or clients, and they can be wrong"
                 + (havePercentages
-                    ? "Where a match percentage is given, it says how close that source was: at "
-                      + "100% reuse the translation as it stands, and the lower it falls the more "
-                      + "of it you should expect to change. "
+                    ? ", even at 100%: a 100% match means the source sentence is the same, not that "
+                      + "the translation is right. "
+                    : ". ")
+                + "Check each one against the segment's source and the document before using any "
+                + "of it. Reuse its wording and terminology only where it is correct for this "
+                + "segment in this document; the termbase and the document take precedence. Where a "
+                + "match does not fit, or you are in doubt, translate from the source. "
+                + (haveSources
+                    ? (havePercentages ? "Below 100% the" : "The")
+                      + " segment's own text is shown above the memory's: compare them word by word, "
+                      + "because a small difference can change the meaning. "
                     : "")
                 + "Do NOT skip these segments – return a translation for every segment in the "
                 + "list below, these included.");
             sb.AppendLine();
 
             // One block per segment, blank line between, labels aligned. The
-            // segment's OWN source is repeated here whenever the match is not
+            // segment's OWN source is repeated here whenever the match may not be
             // exact, so the comparison the paragraph above asks for happens
             // between two adjacent lines rather than against a list fifty
             // segments further down - for a 96% match the whole difference can
             // be one character. At 100% it is omitted: the memory's source IS
-            // the segment's source there, and repeating it is pure cost.
+            // the segment's source there, and repeating it is pure cost. With no
+            // percentage (memoQ) closeness is unknown, so it is shown.
             foreach (var seg in withMemory)
             {
                 sb.AppendLine("Segment " + seg.Number
@@ -371,14 +374,13 @@ namespace Supervertaler.Core
 
                 if (!string.IsNullOrWhiteSpace(seg.FuzzySourceText))
                 {
-                    if (seg.FuzzyMatchPercent > 0 && seg.FuzzyMatchPercent < 100
-                        && !string.IsNullOrWhiteSpace(seg.SourceText))
-                        sb.AppendLine("  this segment:     " + seg.SourceText);
+                    if (seg.FuzzyMatchPercent < 100 && !string.IsNullOrWhiteSpace(seg.SourceText))
+                        sb.AppendLine("  this segment:          " + seg.SourceText);
 
-                    sb.AppendLine("  source in memory: " + seg.FuzzySourceText);
+                    sb.AppendLine("  source in memory:      " + seg.FuzzySourceText);
                 }
 
-                sb.AppendLine("  approved:         " + seg.FuzzyTargetText);
+                sb.AppendLine("  translation in memory: " + seg.FuzzyTargetText);
                 sb.AppendLine();
             }
 
@@ -538,7 +540,7 @@ namespace Supervertaler.Core
         public string SourceText { get; set; }
 
         /// <summary>
-        /// The closest approved translation memory match for this segment, source
+        /// The translation memory's closest match for this segment, source
         /// and target, or null when there is none. memoQ forwards the best fuzzy
         /// hit per row when the user routes it to the plugin; Trados leaves these
         /// unset and the batch prompt then looks exactly as it did before.
