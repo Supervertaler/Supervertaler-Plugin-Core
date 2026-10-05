@@ -219,28 +219,56 @@ namespace Supervertaler.Core
             }
         };
 
+        // The direct short lists' current models under one key, then open-weight
+        // models offered here only. IDs checked against openrouter.ai/api/v1/models
+        // on 2026-10-02. Superseded entries (Claude Sonnet 5 and Opus 5, GPT-5.5,
+        // Gemini 3 Flash) left the list but not the price list, so anyone with one
+        // saved keeps it. Qwen 3.6 Plus (Free) left because OpenRouter withdrew it:
+        // choosing it failed.
         public static readonly LlmModelInfo[] OpenRouterModels =
         {
             new LlmModelInfo
             {
-                Id = "anthropic/claude-sonnet-5", DisplayName = "Claude Sonnet 5",
-                Description = "Recommended – best balance of speed, quality, and cost",
+                Id = "anthropic/claude-sonnet-5.5", DisplayName = "Claude Sonnet 5.5",
+                Description = "Recommended – newest Sonnet, near-Opus quality at Sonnet cost, 1M context",
                 Provider = LlmProvider.OpenRouter
             },
             new LlmModelInfo
             {
-                Id = "anthropic/claude-opus-5", DisplayName = "Claude Opus 5",
-                Description = "Highest quality – Anthropic's flagship Opus, 1M context",
+                Id = "anthropic/claude-opus-5.5", DisplayName = "Claude Opus 5.5",
+                Description = "Premium – Anthropic's newest Opus, 1M context. Top choice for hard legal/technical work",
                 Provider = LlmProvider.OpenRouter
             },
             new LlmModelInfo
             {
-                Id = "openai/gpt-5.5", DisplayName = "GPT-5.5",
-                Description = "Premium quality – OpenAI's most advanced model",
+                Id = "anthropic/claude-fable-5.1", DisplayName = "Claude Fable 5.1",
+                Description = "Maximum capability – Anthropic's most capable model, at double Opus pricing",
+                Provider = LlmProvider.OpenRouter
+            },
+            // The GPT-5.6 routes reach the same reasoning models as the direct
+            // ones, so they need the same flags: no custom temperature, long timeout.
+            new LlmModelInfo
+            {
+                Id = "openai/gpt-5.6-sol", DisplayName = "GPT-5.6 Sol",
+                Description = "Premium quality – OpenAI's flagship, for complex translation and AutoPrompt",
                 Provider = LlmProvider.OpenRouter,
-                SupportsTemperature = false,  // routes to OpenAI GPT-5.5, which rejects custom temperature
-                // Same reasoning family as the direct route, so it needs the same
-                // long timeout – see the gpt-5.5 entry above.
+                SupportsTemperature = false,
+                IsReasoningModel = true
+            },
+            new LlmModelInfo
+            {
+                Id = "openai/gpt-5.6-terra", DisplayName = "GPT-5.6 Terra",
+                Description = "Balanced – a strong default for everyday translation work",
+                Provider = LlmProvider.OpenRouter,
+                SupportsTemperature = false,
+                IsReasoningModel = true
+            },
+            new LlmModelInfo
+            {
+                Id = "openai/gpt-5.6-luna", DisplayName = "GPT-5.6 Luna",
+                Description = "Fast and cheap – for high-volume batch work",
+                Provider = LlmProvider.OpenRouter,
+                SupportsTemperature = false,
                 IsReasoningModel = true
             },
             new LlmModelInfo
@@ -251,14 +279,14 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "google/gemini-3.1-pro-preview", DisplayName = "Gemini 3.1 Pro",
-                Description = "Google's most advanced model, large context",
+                Id = "google/gemini-3.8-flash", DisplayName = "Gemini 3.8 Flash",
+                Description = "Google's newest Flash – strong quality at low cost, 1M context",
                 Provider = LlmProvider.OpenRouter
             },
             new LlmModelInfo
             {
-                Id = "google/gemini-3-flash-preview", DisplayName = "Gemini 3 Flash",
-                Description = "Fast and affordable – great for large batch jobs",
+                Id = "google/gemini-3.1-pro-preview", DisplayName = "Gemini 3.1 Pro (Preview)",
+                Description = "Google's most capable model; still a preview",
                 Provider = LlmProvider.OpenRouter
             },
             new LlmModelInfo
@@ -281,8 +309,8 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "qwen/qwen3.6-plus:free", DisplayName = "Qwen 3.6 Plus (Free)",
-                Description = "Free – no API costs, good general-purpose quality",
+                Id = "qwen/qwen3.8-27b:free", DisplayName = "Qwen 3.8 27B (Free)",
+                Description = "Free and rate-limited – providers of free models may keep what you send, so not for confidential work",
                 Provider = LlmProvider.OpenRouter
             },
             new LlmModelInfo
