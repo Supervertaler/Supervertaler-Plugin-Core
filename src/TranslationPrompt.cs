@@ -436,10 +436,16 @@ namespace Supervertaler.Core
             var listLinesUsed = new Dictionary<int, Dictionary<int, int>>();
             int currentNumber = -1;
 
+            // A segment's lines are joined with a plain LF, and the reply's own CRs
+            // are dropped. Joined with AppendLine (CR LF on Windows), every multi-line
+            // translation carried carriage returns, which Trados saves as HARD returns
+            // where the source had soft ones - a user's client found them in a
+            // delivered Word file (2026-10-05).
             var lines = response.Split(new[] { '\n' }, StringSplitOptions.None);
 
-            foreach (var line in lines)
+            foreach (var rawLine in lines)
             {
+                var line = rawLine.TrimEnd('\r');
                 var match = SegmentMarker.Match(line);
                 if (match.Success)
                 {
@@ -458,7 +464,7 @@ namespace Supervertaler.Core
                         }
                         else
                         {
-                            map[n].AppendLine();
+                            map[n].Append('\n');
                         }
                         map[n].Append(match.Groups[2].Value);
                         linesIn[n]++;
@@ -469,7 +475,7 @@ namespace Supervertaler.Core
                 if (currentNumber >= 0)
                 {
                     // Continuation line – append to current translation
-                    map[currentNumber].AppendLine();
+                    map[currentNumber].Append('\n');
                     map[currentNumber].Append(line);
                     linesIn[currentNumber]++;
                 }

@@ -74,6 +74,32 @@ namespace Supervertaler.Core.Tests
             Assert.Equal("Klaar.", r[2], "segment 2");
         }
 
+        /// <summary>
+        /// A segment's lines come back joined with a plain LF, and no CR survives,
+        /// whatever line endings the reply used. Compared RAW: the helpers above
+        /// strip CRs from what they compare, which is how a CR LF join went
+        /// unnoticed - and Trados saves a CR as a HARD return where the source had
+        /// a soft one (a user's client found them in a delivered Word file,
+        /// 2026-10-05).
+        /// </summary>
+        public static void ALineBreakInASegment_IsAPlainLineFeed()
+        {
+            var sent = new List<BatchSegmentInput>
+            {
+                new BatchSegmentInput { Number = 1, SourceText = "Rated voltage\n(V)" },
+                new BatchSegmentInput { Number = 2, SourceText = "230" }
+            };
+            foreach (var reply in new[] { "1. Nominale spanning\n(V)\n2. 230", "1. Nominale spanning\r\n(V)\r\n2. 230\r\n" })
+            {
+                var r = TranslationPrompt.ParseBatchResponse(reply, sent).ToDictionary(p => p.Number, p => p.Translation);
+                Assert.Equal("Nominale spanning\n(V)", r[1], "LF join, no CR");
+                Assert.Equal("230", r[2], "no stray CR");
+            }
+            var w = TranslationPrompt.ParseBatchResponse("1. Een\r\nregel twee\r\n2. Twee", 0)
+                .ToDictionary(p => p.Number, p => p.Translation);
+            Assert.Equal("Een\nregel twee", w[1], "without the sources too");
+        }
+
         public static void AnOrdinaryReply_ParsesAsBefore()
         {
             var r = Parse("Here are the translations:\n1. Een\n2. Twee\nregel twee\n3.Drie",
