@@ -147,8 +147,8 @@ namespace Supervertaler.Core
             if (exists == true) return (team, team, null);
             return (root, team, exists == null
                 ? "The team folder \"" + team + "\" did not answer within " + (int)TeamFolderTimeout.TotalSeconds +
-                  " seconds, so your own data folder is used until Trados Studio is restarted."
-                : "The team folder \"" + team + "\" cannot be found, so your own data folder is used until Trados Studio is restarted.");
+                  " seconds, so your own data folder is used until you restart."
+                : "The team folder \"" + team + "\" cannot be found, so your own data folder is used until you restart.");
         }
 
         /// <summary>True or false, or null when the folder did not answer in time.</summary>
