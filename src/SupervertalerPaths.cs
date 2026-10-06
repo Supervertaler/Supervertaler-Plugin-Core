@@ -58,28 +58,120 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// Prompt library: <c>.md</c> files with YAML frontmatter, one per prompt,
-        /// under the shared root.
+        /// under the shared root - or in the team folder when one is set.
         ///
         /// Shared deliberately and from the start — Workbench and the Trados
         /// plugin already read the same folder, and the memoQ plugin now makes
         /// three. A plain folder of Markdown is also why a prompt picker can be
         /// written in something other than C# without agreeing a format first.
         /// </summary>
-        public static string PromptLibraryDir => Path.Combine(Root, "prompt_library");
+        public static string PromptLibraryDir => Path.Combine(ContentRoot, "prompt_library");
+
+        /// <summary>Memory banks: one folder per bank, plus <c>_shared</c>. In the
+        /// team folder when one is set.</summary>
+        public static string MemoryBanksDir => Path.Combine(ContentRoot, "memory-banks");
 
         /// <summary>Shared resources folder (the Supervertaler database lives here).</summary>
         public static string ResourcesDir => Path.Combine(Root, "resources");
 
-        /// <summary>Forgets the cached root. For code that has just relocated the folder.</summary>
+        // ── Team folder ──────────────────────────────────────────────────────
+        //
+        // A team shares memory banks and prompts by pointing everyone's team
+        // folder at the same place. Only those two live there: the licence,
+        // settings, API keys (encrypted for one Windows user), the termbase
+        // database (SQLite, not for several writers on a network share), logs and
+        // usage stay in each person's own data folder. Set in config.json as
+        // "team_folder", next to "user_data_path", so every product on the
+        // computer follows it. Read once per session, like the root: switching
+        // halfway would leave parts of a product on the old banks.
+
+        private static string _contentRoot;
+        private static string _teamFolder;
+        private static string _teamFolderProblem;
+
+        /// <summary>How long a team folder on a network share gets to answer
+        /// before the session falls back to the user's own data folder. A dead
+        /// share can otherwise hold a file check for tens of seconds.</summary>
+        internal static readonly TimeSpan TeamFolderTimeout = TimeSpan.FromSeconds(3);
+
+        /// <summary>The team folder set in config.json, or null when none is.</summary>
+        public static string TeamFolder
+        {
+            get { lock (_lock) { EnsureContentRoot(); return _teamFolder; } }
+        }
+
+        /// <summary>Why the team folder set in config.json is not in use this
+        /// session (unreachable, missing), or null when it is in use or none is
+        /// set. Show it: falling back without saying so would hand the AI the
+        /// user's own banks while they believe they are using the team's.</summary>
+        public static string TeamFolderProblem
+        {
+            get { lock (_lock) { EnsureContentRoot(); return _teamFolderProblem; } }
+        }
+
+        /// <summary>Where memory banks and the prompt library live this session:
+        /// the team folder when one is set and answers, otherwise <see cref="Root"/>.</summary>
+        public static string ContentRoot
+        {
+            get { lock (_lock) { EnsureContentRoot(); return _contentRoot; } }
+        }
+
+        private static void EnsureContentRoot()
+        {
+            if (_contentRoot != null) return;
+            string configured = null;
+            try
+            {
+                if (File.Exists(ConfigFile))
+                    configured = ExtractJsonString(File.ReadAllText(ConfigFile, Encoding.UTF8), "team_folder");
+            }
+            catch { configured = null; }
+
+            var decided = DecideContentRoot(Root, configured, FolderAnswers);
+            _contentRoot = decided.ContentRoot;
+            _teamFolder = decided.TeamFolder;
+            _teamFolderProblem = decided.Problem;
+        }
+
+        /// <summary>The decision on its own, for tests: which folder banks and
+        /// prompts come from, given the root, the configured team folder (null or
+        /// blank = none) and a way to ask whether a folder exists.</summary>
+        internal static (string ContentRoot, string TeamFolder, string Problem) DecideContentRoot(
+            string root, string configuredTeamFolder, Func<string, bool?> folderExists)
+        {
+            var team = string.IsNullOrWhiteSpace(configuredTeamFolder) ? null : configuredTeamFolder.Trim();
+            if (team == null) return (root, null, null);
+            if (!Path.IsPathRooted(team))
+                return (root, team, "The team folder \"" + team + "\" is not a full path, so your own data folder is used.");
+            var exists = folderExists(team);
+            if (exists == true) return (team, team, null);
+            return (root, team, exists == null
+                ? "The team folder \"" + team + "\" did not answer within " + (int)TeamFolderTimeout.TotalSeconds +
+                  " seconds, so your own data folder is used until Trados Studio is restarted."
+                : "The team folder \"" + team + "\" cannot be found, so your own data folder is used until Trados Studio is restarted.");
+        }
+
+        /// <summary>True or false, or null when the folder did not answer in time.</summary>
+        private static bool? FolderAnswers(string path)
+        {
+            try
+            {
+                var check = System.Threading.Tasks.Task.Run(() => Directory.Exists(path));
+                return check.Wait(TeamFolderTimeout) ? check.Result : (bool?)null;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Forgets the cached root and team folder. For code that has just relocated the folder.</summary>
         public static void Reset()
         {
-            lock (_lock) _root = null;
+            lock (_lock) { _root = null; _contentRoot = null; _teamFolder = null; _teamFolderProblem = null; }
         }
 
         /// <summary>Overrides the root, for a caller that has just chosen or moved it.</summary>
         public static void Set(string path)
         {
-            lock (_lock) _root = path;
+            lock (_lock) { _root = path; _contentRoot = null; }
         }
 
         private static string Resolve()
@@ -108,7 +200,7 @@ namespace Supervertaler.Core
         ///
         /// Hand-rolled rather than pulled from a serializer: this runs before
         /// anything else is initialised, in two different plugin sandboxes, and
-        /// the file has exactly one key worth reading. Carried across from the
+        /// the file has two flat string keys worth reading. Carried across from the
         /// Trados implementation unchanged so the two cannot diverge on a
         /// malformed file.
         /// </summary>

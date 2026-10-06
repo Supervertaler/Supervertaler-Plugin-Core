@@ -15,7 +15,7 @@ namespace Supervertaler.Core
     /// </summary>
     public static class MemoryBanks
     {
-        public static string Root => Path.Combine(SupervertalerPaths.Root, "memory-banks");
+        public static string Root => SupervertalerPaths.MemoryBanksDir;
 
         /// <summary>Names that are not banks: tooling, deletions, and Obsidian's own state.</summary>
         private static readonly HashSet<string> NotBanks =
