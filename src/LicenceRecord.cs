@@ -52,6 +52,16 @@ namespace Supervertaler.Core
         public string MachineFingerprint { get; set; } = "";
 
         /// <summary>
+        /// When this account's record was made because the data folder's
+        /// licence was activated for another account (UTC, on the trial
+        /// anchor's clock). Kept in the record, not in a process, so every
+        /// product on the computer gets the same grace from it. Absent from
+        /// every other record, and from the file entirely when absent.
+        /// </summary>
+        [DataMember(Name = "foreignMetAt", EmitDefaultValue = false)]
+        public DateTime? ForeignMetAt { get; set; }
+
+        /// <summary>
         /// The "now" all trial arithmetic uses, from the trial anchor. Not
         /// stored: recomputed on every load.
         /// </summary>

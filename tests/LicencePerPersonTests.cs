@@ -29,10 +29,19 @@ namespace Supervertaler.Core.Tests
             VariantName = "Annual",
             Status = "active",
             ActivatedAt = DateTime.UtcNow.AddDays(-100),
-            LastValidatedAt = DateTime.UtcNow.AddDays(-1),
+            LastValidatedAt = DateTime.UtcNow.AddDays(-2),
             TrialStartedAt = DateTime.UtcNow.AddDays(-200),
             MachineFingerprint = fingerprint,
         };
+
+        /// <summary>Moves this account's first meeting a day and an hour into the past.</summary>
+        private static void ADayLater(Scene s)
+        {
+            var mine = Read(s.PersonalPath);
+            Assert.True(mine.ForeignMetAt.HasValue, "the first meeting is recorded in the file");
+            mine.ForeignMetAt = mine.ForeignMetAt.Value.AddHours(-25);
+            Put(s.PersonalPath, mine);
+        }
 
         private static LicenceRecord OnTrialFor(string fingerprint) => new LicenceRecord
         {
@@ -53,8 +62,9 @@ namespace Supervertaler.Core.Tests
 
         /// <summary>
         /// The rule: a folder holding someone else's activation licenses only
-        /// them. The first session is Unknown - never a refusal - and every later
-        /// one is this account's own: here a fresh trial, as after renaming a computer.
+        /// them. For a day from the first meeting every session is Unknown -
+        /// never a refusal - in whichever product; after that this account has
+        /// its own: here a fresh trial, as after renaming a computer.
         /// </summary>
         public static void AnotherAccountsActivation_LicensesNobodyElse()
         {
@@ -68,6 +78,10 @@ namespace Supervertaler.Core.Tests
                 Assert.True(first.ForeignActivationFound, "and is told why");
                 Assert.True(!first.HasKey, "their key is not this account's");
 
+                var sameDay = s.Open();
+                Assert.Equal(LicenceState.Unknown, sameDay.State, "a product started later that day: the same grace");
+
+                ADayLater(s);
                 var next = s.Open();
                 Assert.Equal(LicenceState.Trial, next.State, "every later session: this account's own trial");
                 Assert.Equal(14, next.TrialDaysRemaining, "a whole one, from a clean anchor");
@@ -83,9 +97,9 @@ namespace Supervertaler.Core.Tests
         /// <summary>
         /// The customer whose computer was renamed before this build: older
         /// builds re-signed their trial anchor with the old trial start, so
-        /// there is no trial left. The first session still works and says why.
+        /// there is no trial left. The first day still works and says why.
         /// </summary>
-        public static void ARenamedComputer_WithItsTrialLongOver_IsUnknownOnce_ThenExpired()
+        public static void ARenamedComputer_WithItsTrialLongOver_IsUnknownForADay_ThenExpired()
         {
             using (var s = new Scene())
             {
@@ -99,9 +113,75 @@ namespace Supervertaler.Core.Tests
                 Assert.True(!first.IsActivatedHereWith(OtherKey), "a failed attempt at a key re-reads the file");
                 Assert.Equal(LicenceState.Unknown, first.State, "and does not end the Unknown session");
 
+                Assert.Equal(LicenceState.Unknown, s.Open().State, "nor is another product that day paused");
+
+                ADayLater(s);
                 var next = s.Open();
                 Assert.Equal(LicenceState.Expired, next.State, "after that, the trial it had");
                 Assert.True(next.ForeignActivationFound, "and told why, at every start");
+            }
+        }
+
+        /// <summary>The first meeting's date is in the file; one in the future, written by hand, grants nothing.</summary>
+        public static void AFirstMeetingDatedInTheFuture_CountsForNothing()
+        {
+            using (var s = new Scene())
+            {
+                Put(s.SharedPath, ActivatedFor(Someone));
+                s.Open();
+
+                var mine = Read(s.PersonalPath);
+                mine.ForeignMetAt = DateTime.UtcNow.AddDays(30);
+                Put(s.PersonalPath, mine);
+
+                Assert.Equal(LicenceState.Trial, s.Open().State, "its own trial, not another Unknown day");
+            }
+        }
+
+        /// <summary>
+        /// An older build sharing the folder activates over this account's
+        /// licence.json while it is open. Nothing this account writes from then
+        /// on may land on theirs: it moves to its own file, taking its record.
+        /// </summary>
+        public static void AnOlderBuildActivatingOverThisAccountsLicence_IsNeverWrittenOver()
+        {
+            using (var s = new Scene())
+            {
+                Put(s.SharedPath, ActivatedFor(Scene.Fingerprint, OtherKey, "instance-mine"));
+                var licence = s.Open();
+                Assert.Equal(LicenceState.Licensed, licence.State, "before");
+
+                Put(s.SharedPath, ActivatedFor(Someone));
+                var theirs = File.ReadAllBytes(s.SharedPath);
+
+                var reply = SupervertalerLicence.ParseLemonSqueezyResponse(Replies.Validated("active"));
+                Assert.Equal(LicenceState.Licensed, licence.ApplyValidationReply(reply, OtherKey, "instance-mine"), "still its own licence");
+
+                Assert.True(File.ReadAllBytes(s.SharedPath).SequenceEqual(theirs), "theirs untouched");
+                Assert.Equal("instance-mine", Read(s.PersonalPath).InstanceId, "its activation carried to its own file");
+                var next = s.Open();
+                Assert.Equal(LicenceState.Licensed, next.State, "and found there at the next start");
+                Assert.True(!next.ForeignActivationFound, "with nothing to tell: it has its own");
+            }
+        }
+
+        /// <summary>Whatever changed on disk since the last read, a save never lands on another account's record.</summary>
+        public static void ASave_NeverWritesOverAnotherAccountsRecord()
+        {
+            using (var s = new Scene())
+            {
+                Put(s.SharedPath, ActivatedFor(Someone));
+                Put(s.PersonalPath, ActivatedFor(Scene.Fingerprint, OtherKey, "instance-mine"));
+                var licence = s.Open();
+                Assert.Equal(LicenceState.Licensed, licence.State, "before");
+
+                Put(s.PersonalPath, ActivatedFor(Someone));
+                var planted = File.ReadAllBytes(s.PersonalPath);
+
+                var reply = SupervertalerLicence.ParseLemonSqueezyResponse(Replies.Validated("active"));
+                licence.ApplyValidationReply(reply, OtherKey, "instance-mine");
+
+                Assert.True(File.ReadAllBytes(s.PersonalPath).SequenceEqual(planted), "not written over");
             }
         }
 
@@ -223,8 +303,9 @@ namespace Supervertaler.Core.Tests
                     $"--open \"{s.SharedPath}\" \"{s.LegacyPath}\" \"{s.AnchorKey}\" \"{s.LegacyAnchorKey}\" \"{s.GoFile}\"",
                     s.GoFile);
 
-                Assert.True(results.All(r => !r.StartsWith("Licensed") && r.EndsWith(" False")),
-                    "neither licensed by it, neither holding its key: " + string.Join(" | ", results));
+                Assert.True(results.All(r => r.StartsWith("Unknown ") && r.EndsWith(" False")),
+                    "both on the first day's grace - not only whichever made the file - and neither holding its key: " +
+                    string.Join(" | ", results));
                 var ends = results.Select(r => long.Parse(r.Split(' ')[1])).ToArray();
                 Assert.True(Math.Abs(ends[0] - ends[1]) < TimeSpan.FromSeconds(5).Ticks, "one trial, not two");
                 Assert.True(File.ReadAllBytes(s.SharedPath).SequenceEqual(theirs), "theirs untouched");
@@ -264,6 +345,23 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        public static void OfSeveralStrandedActivations_TheStalestIsChosen()
+        {
+            using (var s = new Scene())
+            {
+                Put(s.SharedPath, ActivatedFor(Someone));
+                var stale = ActivatedFor(Someone.Replace("someone", "another"), Key, "instance-stalest");
+                stale.LastValidatedAt = DateTime.UtcNow.AddDays(-10);
+                var stalePath = LicenceFile.PersonalPath(s.SharedPath, stale.MachineFingerprint);
+                Put(stalePath, stale);
+
+                var found = s.Open().FindStrandedActivation(Key);
+                Assert.True(found.HasValue, "found");
+                Assert.Equal("instance-stalest", found.Value.InstanceId, "the one unconfirmed longest");
+                Assert.Equal(stalePath, found.Value.Path, "where");
+            }
+        }
+
         public static void ClearingAReleasedActivation_ClearsThatOneOnly()
         {
             using (var s = new Scene())
@@ -295,6 +393,28 @@ namespace Supervertaler.Core.Tests
                 "a key with no limit never runs out");
             Assert.True(!SupervertalerLicence.ParseLemonSqueezyResponse(Replies.NotFound).NoActivationsLeft,
                 "no licence block, no conclusion");
+        }
+
+        /// <summary>
+        /// The counts only serve the release path, so no shape of them may make
+        /// a reply unreadable: a validation reply that could not be read would,
+        /// after the offline window, expire every licensed customer at once.
+        /// </summary>
+        public static void TheActivationCounts_NeverMakeAReplyUnreadable()
+        {
+            var asText = SupervertalerLicence.ParseLemonSqueezyResponse(
+                Replies.Validated("active").Replace("\"activation_limit\":2", "\"activation_limit\":\"2\"")
+                                           .Replace("\"activation_usage\":1", "\"activation_usage\":2.0"));
+            Assert.True(asText.Understood, "counts written as text or decimals: still understood");
+            Assert.True(asText.NoActivationsLeft, "and still read");
+
+            var odd = SupervertalerLicence.ParseLemonSqueezyResponse(
+                Replies.Validated("active").Replace("\"activation_limit\":2", "\"activation_limit\":{\"seats\":2}"));
+            Assert.True(odd.Understood, "a shape nobody expected: still understood");
+            Assert.True(!odd.NoActivationsLeft, "and no conclusion drawn from it");
+
+            var deactivatedAsText = SupervertalerLicence.ParseLemonSqueezyResponse(Replies.Deactivated(true).Replace(":true", ":\"true\""));
+            Assert.True(deactivatedAsText.Deactivated, "a confirmation written as text");
         }
 
         public static void AReleaseIsConfirmedOnlyByTheServerSayingSo()
@@ -340,6 +460,31 @@ namespace Supervertaler.Core.Tests
                     Assert.True(!old.IsActivated, "the released activation is cleared where it was recorded");
                     Assert.Equal(Someone, old.MachineFingerprint, "and the file is still theirs");
                     Assert.Equal(LicenceState.Licensed, s.Open(server.Url).State, "the next start agrees");
+                }
+            }
+        }
+
+        /// <summary>
+        /// A colleague's activation, confirmed within the day, is in use: it is
+        /// left alone, and the person entering the key is told why and when a
+        /// renamed computer's old activation would qualify.
+        /// </summary>
+        public static void AnActivationConfirmedWithinTheDay_IsLeftAlone()
+        {
+            using (var s = new Scene())
+            {
+                var live = ActivatedFor(Someone);
+                live.LastValidatedAt = DateTime.UtcNow.AddHours(-1);
+                Put(s.SharedPath, live);
+                var theirs = File.ReadAllBytes(s.SharedPath);
+                using (var server = new FakeLicenceServer((endpoint, form) => Replies.LimitReached))
+                {
+                    var (ok, message) = s.Open(server.Url).ActivateAsync(Key).GetAwaiter().GetResult();
+
+                    Assert.True(!ok, "refused");
+                    Assert.Equal(SupervertalerLicence.StrandedInUseMessage, message, "and told why");
+                    Assert.Equal("activate ", string.Join("|", server.Requests), "nothing released");
+                    Assert.True(File.ReadAllBytes(s.SharedPath).SequenceEqual(theirs), "theirs untouched");
                 }
             }
         }

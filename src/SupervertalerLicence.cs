@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -85,6 +86,17 @@ namespace Supervertaler.Core
             "This licence key is not a Supervertaler licence. Please check you entered the right key.";
         private const int OfflineCacheDays = 30;
         private static readonly TimeSpan AbandonedTempAge = TimeSpan.FromMinutes(10);
+
+        /// <summary>
+        /// One day, in two places that rely on each other. An account that
+        /// meets another account's activation is Unknown for sessions started
+        /// within it; and an activation recorded for another account may be
+        /// released only once it has gone unconfirmed for as long. After a
+        /// rename the old activation is never confirmed again, so by the time
+        /// the grace ends it can always be released: no lockout in between. A
+        /// colleague's live activation, confirmed at every start, is left alone.
+        /// </summary>
+        internal static readonly TimeSpan ForeignGrace = TimeSpan.FromHours(24);
         private static readonly HttpClient Http = new HttpClient();
 
         // ─── State ──────────────────────────────────────────────────
@@ -247,13 +259,16 @@ namespace Supervertaler.Core
         /// It is also what a customer meets after renaming their computer or
         /// reinstalling Windows: the licence is theirs, activated under the old
         /// name. Entering the key again activates it here, and a key with no
-        /// activations left makes room by releasing the one recorded here (see
+        /// activations left makes room by releasing the one recorded here once
+        /// that has gone unconfirmed for <see cref="ForeignGrace"/> (see
         /// <see cref="ActivateAsync"/>).
         ///
-        /// The session that first meets it is Unknown to the end, like the one
-        /// that finds a damaged file, so nobody loses a working day to it. The
-        /// product should say what happened - and say it again at later starts,
-        /// once it matters, until a key is activated here.
+        /// Every session that starts within <see cref="ForeignGrace"/> of the
+        /// first meeting is Unknown to the end, in every product on the
+        /// computer, so nobody loses a working day to it - nor to which product
+        /// happened to start first. The product should say what happened - and
+        /// say it again at later starts, once it matters, until a key is
+        /// activated here.
         /// </summary>
         public bool ForeignActivationFound
         {
@@ -358,16 +373,23 @@ namespace Supervertaler.Core
         private void LoadPersonal(bool foreignActivation)
         {
             _foreignActivation = foreignActivation;
-            _unreadable = false;
+            _unreadable = _unknownForTheSession;
 
             var path = MyPath;
             LicenceFile.SweepAbandonedTemporaryFiles(path, AbandonedTempAge);
 
             var status = LicenceFile.TryRead(path, out var rec, out var bytes);
-            var created = false;
             if (status == LicenceFile.ReadStatus.Missing)
             {
                 rec = FreshRecord();
+
+                // The first meeting with another account's activation: the
+                // customer whose computer was renamed or reinstalled, as often
+                // as a colleague sharing the folder. Recorded in the file, so
+                // whichever product starts later that day gets the same grace.
+                if (foreignActivation)
+                    rec.ForeignMetAt = rec.EffectiveNow;
+
                 switch (LicenceFile.Write(path, LicenceFile.Serialise(rec), replaceExisting: false))
                 {
                     case LicenceFile.WriteStatus.AlreadyExists:
@@ -376,11 +398,13 @@ namespace Supervertaler.Core
                         break;
                     case LicenceFile.WriteStatus.Written:
                         status = LicenceFile.ReadStatus.Ok;
-                        created = true;
                         break;
                     default:
                         // Not written, and logged. This session runs on the
-                        // record in hand, and the next start tries again.
+                        // record in hand, and the next start tries again - but
+                        // without the grace: one that lived only in memory
+                        // would begin afresh at every start.
+                        rec.ForeignMetAt = null;
                         status = LicenceFile.ReadStatus.Ok;
                         break;
                 }
@@ -399,16 +423,14 @@ namespace Supervertaler.Core
                     }
                     _rec = Prepare(rec);
 
-                    // The first meeting with another account's activation: the
-                    // customer whose computer was renamed or reinstalled, as
-                    // often as a colleague sharing the folder. Neither is
-                    // locked out by it in the middle of a day's work.
-                    if (created && foreignActivation)
+                    // Neither is locked out by it in the middle of a day's work,
+                    // whichever product they open.
+                    if (!_rec.IsActivated && InForeignGrace(_rec))
                     {
                         _unreadable = true;
                         _unknownForTheSession = true;
                         WriteLog("This data folder's licence was activated for another computer or Windows account; " +
-                            "this one has a licence record of its own from now on.");
+                            "this one has a licence record of its own, and the licence state is unknown until a day after that was found.");
                     }
                     break;
 
@@ -429,6 +451,19 @@ namespace Supervertaler.Core
             }
 
             DamagedFileFound = File.Exists(DamagedPath);
+        }
+
+        /// <summary>
+        /// Whether a record was made for meeting another account's activation
+        /// less than <see cref="ForeignGrace"/> ago. Measured on the anchor's
+        /// clock, so winding the computer's clock back does not stretch it, and
+        /// a date in the future - written by hand - counts for nothing.
+        /// </summary>
+        private static bool InForeignGrace(LicenceRecord rec)
+        {
+            if (!rec.ForeignMetAt.HasValue) return false;
+            var age = rec.EffectiveNow - rec.ForeignMetAt.Value.ToUniversalTime();
+            return age >= TimeSpan.Zero && age < ForeignGrace;
         }
 
         /// <summary>
@@ -601,18 +636,29 @@ namespace Supervertaler.Core
 
                 if (!IsMine(rec))
                 {
-                    // licence.json could not be read at startup, and turns out
-                    // to be someone else's: this person's own file from now on.
                     if (_owner == Owner.NotYetKnown)
                     {
+                        // licence.json could not be read at startup, and turns
+                        // out to be someone else's: this person's own file from now on.
                         _owner = Owner.Personal;
                         LoadPersonal(rec.IsActivated);
                     }
+                    else if (_owner == Owner.Shared)
+                    {
+                        // licence.json now holds someone else's record - an older
+                        // build sharing the folder activated over this person's.
+                        // They move to a file of their own, taking the record
+                        // they had, so nothing written from here on lands on
+                        // the other person's. If the other product of theirs
+                        // moved first, its file is the one read.
+                        _owner = Owner.Personal;
+                        LicenceFile.Write(MyPath, LicenceFile.Serialise(_rec), replaceExisting: false);
+                        LoadPersonal(rec.IsActivated);
+                    }
 
-                    // Otherwise someone else's record is where this person's
-                    // should be - an older build sharing the folder activated
-                    // over it. This session keeps the record it has, and the
-                    // next start gives this person a file of their own.
+                    // Otherwise someone else's record under this person's own
+                    // name, put there by hand since startup: it is not read,
+                    // and Save will not write over it.
                     return;
                 }
 
@@ -639,6 +685,14 @@ namespace Supervertaler.Core
         {
             try
             {
+                // Never over another account's record, whatever has changed on
+                // disk since the last read. Every writer comes through here.
+                if (LicenceFile.TryRead(MyPath, out var onDisk, out _) == LicenceFile.ReadStatus.Ok && !IsMine(onDisk))
+                {
+                    WriteLog("The licence file holds another computer or Windows account's record; it was not written over.");
+                    return;
+                }
+
                 LicenceFile.Write(MyPath, LicenceFile.Serialise(_rec), replaceExisting: true);
             }
             catch (Exception ex)
@@ -694,11 +748,13 @@ namespace Supervertaler.Core
         /// Activates a licence key on this computer and Windows account.
         ///
         /// A key with no activations left, when one of them is recorded in this
-        /// data folder for another computer or account, gets room by releasing
-        /// that one. It is the way back in after a computer is renamed or
-        /// Windows is reinstalled, when the old activation can no longer be
-        /// deactivated from where it was made. Entering the key is the
-        /// authority here, as it is for deactivating.
+        /// data folder for another computer or account and has gone unconfirmed
+        /// for <see cref="ForeignGrace"/>, gets room by releasing that one - the
+        /// stalest, if there are several. It is the way back in after a computer
+        /// is renamed or Windows is reinstalled, when the old activation can no
+        /// longer be deactivated from where it was made. Entering the key is the
+        /// authority here, as it is for deactivating; the day keeps it from
+        /// taking a colleague's activation that is in use.
         /// </summary>
         public async Task<(bool Ok, string Message)> ActivateAsync(string key)
         {
@@ -733,6 +789,13 @@ namespace Supervertaler.Core
                 if (!result.Activated && result.NoActivationsLeft && !result.FromAnotherStore)
                 {
                     var stranded = FindStrandedActivation(key);
+
+                    // Confirmed within the day: in use, most likely a colleague's.
+                    // A renamed computer's old activation is never confirmed
+                    // again, so it qualifies by the time its grace runs out.
+                    if (stranded != null && DateTime.UtcNow - stranded.Value.LastValidatedUtc < ForeignGrace)
+                        return (false, StrandedInUseMessage);
+
                     if (stranded != null
                         && await ReleaseAsync(key, stranded.Value.InstanceId).ConfigureAwait(false))
                     {
@@ -800,18 +863,26 @@ namespace Supervertaler.Core
             return ParseLemonSqueezyResponse(json);
         }
 
+        internal const string StrandedInUseMessage =
+            "This licence key has no activations left. One of them is recorded in this data folder for another " +
+            "computer or Windows account and was confirmed less than a day ago, so it has been left alone.\n\n" +
+            "If that was this computer under an earlier name, enter the key again tomorrow: it will then be " +
+            "released to make room.";
+
         /// <summary>
-        /// An activation of <paramref name="key"/> recorded in this licence
-        /// folder for another computer or Windows account, if there is one.
-        /// Reads every person's file, so it runs only when a key has run out of
-        /// activations - never at startup.
+        /// The activation of <paramref name="key"/> recorded in this licence
+        /// folder for another computer or Windows account that has gone
+        /// longest without being confirmed, if there is one. Reads every
+        /// person's file, so it runs only when a key has run out of activations
+        /// - never at startup.
         /// </summary>
-        internal (string Path, string InstanceId)? FindStrandedActivation(string key)
+        internal (string Path, string InstanceId, DateTime LastValidatedUtc)? FindStrandedActivation(string key)
         {
             key = key?.Trim();
             string mine;
             lock (_lock) mine = MyPath;
 
+            (string Path, string InstanceId, DateTime LastValidatedUtc)? stalest = null;
             foreach (var path in LicenceFile.AllRecordPaths(SharedPath))
             {
                 if (string.Equals(path, mine, StringComparison.OrdinalIgnoreCase))
@@ -822,10 +893,12 @@ namespace Supervertaler.Core
                     && !IsMine(rec)
                     && string.Equals(rec.LicenseKey?.Trim(), key, StringComparison.OrdinalIgnoreCase))
                 {
-                    return (path, rec.InstanceId);
+                    var confirmed = rec.LastValidatedAt.ToUniversalTime();
+                    if (stalest == null || confirmed < stalest.Value.LastValidatedUtc)
+                        stalest = (path, rec.InstanceId, confirmed);
                 }
             }
-            return null;
+            return stalest;
         }
 
         /// <summary>
@@ -1071,7 +1144,6 @@ namespace Supervertaler.Core
 
                     result.Valid = response.Valid;
                     result.Activated = response.Activated;
-                    result.Deactivated = response.Deactivated;
                     result.Error = response.Error;
 
                     // "Understood" means the body parsed AND carried a
@@ -1085,12 +1157,6 @@ namespace Supervertaler.Core
                     if (response.LicenseKey != null)
                     {
                         result.Status = response.LicenseKey.Status ?? "";
-
-                        // A key with no limit sends none, and is never out of activations.
-                        var limit = response.LicenseKey.ActivationLimit;
-                        var usage = response.LicenseKey.ActivationUsage;
-                        result.NoActivationsLeft = limit.HasValue && limit.Value > 0
-                            && usage.HasValue && usage.Value >= limit.Value;
 
                         if (!string.IsNullOrWhiteSpace(response.LicenseKey.ExpiresAt)
                             && DateTime.TryParse(response.LicenseKey.ExpiresAt, null,
@@ -1120,7 +1186,35 @@ namespace Supervertaler.Core
                 result.Error = "Failed to parse licence server response.";
             }
 
+            // Only releasing an activation needs these, so they are read on
+            // their own, leniently, and never by the serializer above: a shape
+            // it could not take would make every validation reply unreadable,
+            // and once the offline window ran out every licensed customer would
+            // be expired at once. Not found means not out of activations and
+            // not deactivated, which both leave everything as it is. A key with
+            // no limit sends none.
+            try
+            {
+                var limit = ReadCount(json, "activation_limit");
+                var usage = ReadCount(json, "activation_usage");
+                result.NoActivationsLeft = limit > 0 && usage >= limit;
+                result.Deactivated = Regex.IsMatch(json ?? "", @"""deactivated""\s*:\s*""?true\b");
+            }
+            catch
+            {
+                result.NoActivationsLeft = false;
+                result.Deactivated = false;
+            }
+
             return result;
+        }
+
+        /// <summary>A whole number however it is written (5, "5" or 5.0), or -1.</summary>
+        private static long ReadCount(string json, string name)
+        {
+            var m = Regex.Match(json ?? "", @"""" + name + @"""\s*:\s*""?(\d+)(?:\.0+)?""?[\s,}]");
+            return m.Success && long.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : -1;
         }
 
         internal class LemonSqueezyResult
@@ -1162,9 +1256,6 @@ namespace Supervertaler.Core
             [DataMember(Name = "activated")]
             public bool Activated { get; set; }
 
-            [DataMember(Name = "deactivated")]
-            public bool Deactivated { get; set; }
-
             [DataMember(Name = "error")]
             public string Error { get; set; }
 
@@ -1186,12 +1277,6 @@ namespace Supervertaler.Core
 
             [DataMember(Name = "expires_at")]
             public string ExpiresAt { get; set; }
-
-            [DataMember(Name = "activation_limit")]
-            public int? ActivationLimit { get; set; }
-
-            [DataMember(Name = "activation_usage")]
-            public int? ActivationUsage { get; set; }
         }
 
         [DataContract]
