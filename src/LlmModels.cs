@@ -52,60 +52,47 @@ namespace Supervertaler.Core
         public const string ProviderOpenRouter = "openrouter";
         public const string ProviderCustomOpenAi = "custom_openai";
 
+        // The OpenAI model a new installation starts on. Named, not taken from the
+        // list's position: the list below is ordered by price, most capable
+        // first, so its first entry is not the one to recommend.
+        public const string DefaultOpenAiModelId = "gpt-6.1-sol";
+
+        // OpenAI's three current tiers, most capable to cheapest - the three it
+        // offers as its own main choices (developers.openai.com/api/docs/models,
+        // checked 2026-10-07; Michael chose them the same day). All 1.05M context,
+        // 128k max output, reasoning models that are sent no temperature.
+        // Superseded models leave this list but not the price list: anyone with
+        // GPT-5.6 Sol, Terra or Luna, or GPT-5.4 Mini, saved keeps it - it shows in
+        // the custom model ID field and still works - and is still costed.
+        //
+        // They differ in how the tool-using chat can reach them on
+        // /v1/chat/completions (see LlmClient): Astra takes tools as they are,
+        // Luna only with reasoning_effort "none", 6.1 Sol not at all.
         public static readonly LlmModelInfo[] OpenAiModels =
         {
-            // GPT-6.1 Sol (released 29 September 2026): $2/$10, 1.05M context,
-            // 128k max output, reasoning always on. ID checked against OpenAI's
-            // model page, the Bedrock model card and openrouter.ai/api/v1/models
-            // on 2026-10-07. OpenAI allows it tools only on /v1/responses, and
-            // refuses reasoning_effort "none" - the GPT-5.6 way round that - so
-            // a tool-using chat falls back to plain chat on it (see
-            // LlmClient.RefusesToolsOnChatCompletions). GPT-5.6 Sol stays below:
-            // it keeps the tools. First in the list because memoQ offers the
-            // first entry when nothing is configured; Trados names its default.
+            new LlmModelInfo
+            {
+                Id = "gpt-6-astra", DisplayName = "GPT-6 Astra",
+                Description = "Premium – OpenAI's most capable model ($10/$50), 1M context. For the hardest work when cost is secondary",
+                Provider = LlmProvider.OpenAi,
+                SupportsTemperature = false,
+                IsReasoningModel = true
+            },
             new LlmModelInfo
             {
                 Id = "gpt-6.1-sol", DisplayName = "GPT-6.1 Sol",
-                Description = "Premium quality – OpenAI's newest Sol, $2/$10 per 1M tokens, 1M context",
-                Provider = LlmProvider.OpenAi,
-                SupportsTemperature = false,
-                IsReasoningModel = true
-            },
-            // GPT-5.6 family (released 9 July 2026): one generation, three
-            // durable capability tiers. Model IDs confirmed against the OpenAI
-            // model list in the account dashboard. 1.05M context, 128k max
-            // output. All three are reasoning models – they think before
-            // answering, so they get the long request timeout, and like GPT-5.5
-            // they only accept the default temperature.
-            new LlmModelInfo
-            {
-                Id = "gpt-5.6-sol", DisplayName = "GPT-5.6 Sol",
-                Description = "Premium quality – OpenAI's flagship, for complex translation and AutoPrompt. Same price as GPT-5.5 but supersedes it",
+                Description = "Recommended – close to Astra's quality at a fifth of its price ($2/$10), 1M context",
                 Provider = LlmProvider.OpenAi,
                 SupportsTemperature = false,
                 IsReasoningModel = true
             },
             new LlmModelInfo
             {
-                Id = "gpt-5.6-terra", DisplayName = "GPT-5.6 Terra",
-                Description = "Balanced – GPT-5.5-class quality at half the price; a strong default for everyday translation work",
+                Id = "gpt-6-luna", DisplayName = "GPT-6 Luna",
+                Description = "Budget – $0.10/$0.50 per 1M tokens, for high-volume work where cost matters most",
                 Provider = LlmProvider.OpenAi,
                 SupportsTemperature = false,
                 IsReasoningModel = true
-            },
-            new LlmModelInfo
-            {
-                Id = "gpt-5.6-luna", DisplayName = "GPT-5.6 Luna",
-                Description = "Fast and cheap – for high-volume batch work where cost matters more than the last few percent of quality",
-                Provider = LlmProvider.OpenAi,
-                SupportsTemperature = false,
-                IsReasoningModel = true
-            },
-            new LlmModelInfo
-            {
-                Id = "gpt-5.4-mini", DisplayName = "GPT-5.4 Mini",
-                Description = "Recommended for most tasks – fast, affordable, and high quality for everyday translation work",
-                Provider = LlmProvider.OpenAi
             }
         };
 
@@ -238,9 +225,9 @@ namespace Supervertaler.Core
 
         // The direct short lists' current models under one key, then open-weight
         // models offered here only. IDs checked against openrouter.ai/api/v1/models
-        // on 2026-10-02. Superseded entries (Claude Sonnet 5 and Opus 5, GPT-5.5,
-        // Gemini 3 Flash) left the list but not the price list, so anyone with one
-        // saved keeps it. Qwen 3.6 Plus (Free) left because OpenRouter withdrew it:
+        // on 2026-10-02, the GPT-6 ones on 2026-10-07. Superseded entries (Claude
+        // Sonnet 5 and Opus 5, GPT-5.5, GPT-5.6, GPT-5.4 Mini, Gemini 3 Flash)
+        // left the list but not the price list, so anyone with one saved keeps it. Qwen 3.6 Plus (Free) left because OpenRouter withdrew it:
         // choosing it failed.
         public static readonly LlmModelInfo[] OpenRouterModels =
         {
@@ -262,46 +249,31 @@ namespace Supervertaler.Core
                 Description = "Maximum capability – Anthropic's most capable model, at double Opus pricing",
                 Provider = LlmProvider.OpenRouter
             },
-            // The GPT-6.1 and GPT-5.6 routes reach the same reasoning models as
-            // the direct ones, so they need the same flags: no custom temperature,
-            // long timeout.
+            // The GPT-6 routes reach the same reasoning models as the direct ones,
+            // so they need the same flags: no custom temperature, long timeout.
+            new LlmModelInfo
+            {
+                Id = "openai/gpt-6-astra", DisplayName = "GPT-6 Astra",
+                Description = "OpenAI's most capable model, 1M context. For the hardest work when cost is secondary",
+                Provider = LlmProvider.OpenRouter,
+                SupportsTemperature = false,
+                IsReasoningModel = true
+            },
             new LlmModelInfo
             {
                 Id = "openai/gpt-6.1-sol", DisplayName = "GPT-6.1 Sol",
-                Description = "Premium quality – OpenAI's newest Sol, 1M context",
+                Description = "Close to Astra's quality at a fifth of its price, 1M context",
                 Provider = LlmProvider.OpenRouter,
                 SupportsTemperature = false,
                 IsReasoningModel = true
             },
             new LlmModelInfo
             {
-                Id = "openai/gpt-5.6-sol", DisplayName = "GPT-5.6 Sol",
-                Description = "Premium quality – OpenAI's flagship, for complex translation and AutoPrompt",
+                Id = "openai/gpt-6-luna", DisplayName = "GPT-6 Luna",
+                Description = "OpenAI's cheapest – for high-volume work",
                 Provider = LlmProvider.OpenRouter,
                 SupportsTemperature = false,
                 IsReasoningModel = true
-            },
-            new LlmModelInfo
-            {
-                Id = "openai/gpt-5.6-terra", DisplayName = "GPT-5.6 Terra",
-                Description = "Balanced – a strong default for everyday translation work",
-                Provider = LlmProvider.OpenRouter,
-                SupportsTemperature = false,
-                IsReasoningModel = true
-            },
-            new LlmModelInfo
-            {
-                Id = "openai/gpt-5.6-luna", DisplayName = "GPT-5.6 Luna",
-                Description = "Fast and cheap – for high-volume batch work",
-                Provider = LlmProvider.OpenRouter,
-                SupportsTemperature = false,
-                IsReasoningModel = true
-            },
-            new LlmModelInfo
-            {
-                Id = "openai/gpt-5.4-mini", DisplayName = "GPT-5.4 Mini",
-                Description = "Fast, affordable, and high quality for everyday translation",
-                Provider = LlmProvider.OpenRouter
             },
             new LlmModelInfo
             {
@@ -371,6 +343,18 @@ namespace Supervertaler.Core
                 case ProviderCustomOpenAi: return new LlmModelInfo[0]; // Custom models are user-defined
                 default: return new LlmModelInfo[0];
             }
+        }
+
+        /// <summary>
+        /// The model to select for a provider when none is chosen: the first of its
+        /// short list, except OpenAI, whose list runs most capable - and dearest -
+        /// first. Null for a provider without a list.
+        /// </summary>
+        public static string DefaultModelId(string providerKey)
+        {
+            if (providerKey == ProviderOpenAi) return DefaultOpenAiModelId;
+            var models = GetModelsForProvider(providerKey);
+            return models.Length > 0 ? models[0].Id : null;
         }
 
         /// <summary>

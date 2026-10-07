@@ -4,9 +4,9 @@ using System.Linq;
 namespace Supervertaler.Core.Tests
 {
     /// <summary>
-    /// GPT-6.1 Sol (released 2026-09-29) as OpenAI's model page gives it
-    /// (checked 2026-10-07): $2 input, $0.10 cached input, $10 output per 1M
-    /// tokens; reasoning always on; no function tools on Chat Completions.
+    /// The OpenAI short list - OpenAI's three current tiers - and what the cost
+    /// figures and the tool-using chat rest on, as OpenAI's model pages give them
+    /// (checked 2026-10-07).
     /// </summary>
     [Tests]
     internal static class OpenAiModelTests
@@ -14,44 +14,91 @@ namespace Supervertaler.Core.Tests
         private static void Costs(string model, int regular, int read, int output, decimal expected, string what) =>
             Assert.Equal(expected, TokenEstimator.ComputeActualCost(model, regular, read, 0, output), model + ": " + what);
 
-        public static void Gpt61Sol_IsOnBothShortLists_AsAReasoningModel()
+        public static void TheShortList_IsAstraSolLuna_MostCapableFirst()
         {
-            foreach (var (list, id) in new[] { (LlmModels.OpenAiModels, "gpt-6.1-sol"), (LlmModels.OpenRouterModels, "openai/gpt-6.1-sol") })
+            Assert.True(LlmModels.OpenAiModels.Select(m => m.Id).SequenceEqual(new[] { "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna" }),
+                "Astra, 6.1 Sol, Luna: " + string.Join(", ", LlmModels.OpenAiModels.Select(m => m.Id)));
+            foreach (var id in new[] { "openai/gpt-6-astra", "openai/gpt-6.1-sol", "openai/gpt-6-luna" })
+                Assert.True(LlmModels.OpenRouterModels.Any(m => m.Id == id), id + " is on the OpenRouter list");
+            Assert.True(!LlmModels.OpenRouterModels.Any(m => m.Id.StartsWith("openai/gpt-5", StringComparison.Ordinal)),
+                "no GPT-5 left on the OpenRouter list");
+        }
+
+        public static void TheDefault_IsGpt61Sol_AndOnTheList()
+        {
+            Assert.Equal("gpt-6.1-sol", LlmModels.DefaultOpenAiModelId, "OpenAI default");
+            Assert.True(LlmModels.FindModel(LlmModels.DefaultOpenAiModelId) != null, "the default is a listed model");
+        }
+
+        public static void DefaultModelId_IsNamedForOpenAi_AndTheFirstEntryElsewhere()
+        {
+            // A provider switch selects this, so for OpenAI it must not be Astra,
+            // the first - and dearest - entry.
+            Assert.Equal("gpt-6.1-sol", LlmModels.DefaultModelId(LlmModels.ProviderOpenAi), "OpenAI");
+            foreach (var key in LlmModels.AllProviderKeys)
             {
-                var m = list.FirstOrDefault(x => x.Id == id);
-                Assert.True(m != null, id + " is on its short list");
-                Assert.True(m.IsReasoningModel, id + " gets the reasoning timeout");
-                Assert.True(!m.SupportsTemperature, id + " is sent no temperature");
+                if (key == LlmModels.ProviderOpenAi) continue;
+                var models = LlmModels.GetModelsForProvider(key);
+                Assert.Equal(models.Length > 0 ? models[0].Id : null, LlmModels.DefaultModelId(key), key);
+            }
+            Assert.Equal(null, LlmModels.DefaultModelId("no-such-provider"), "unknown provider");
+        }
+
+        public static void EveryGpt6Entry_IsAReasoningModel_SentNoTemperature()
+        {
+            foreach (var m in LlmModels.OpenAiModels.Concat(LlmModels.OpenRouterModels.Where(x => x.Id.StartsWith("openai/", StringComparison.Ordinal))))
+            {
+                Assert.True(m.IsReasoningModel, m.Id + " gets the reasoning timeout");
+                Assert.True(!m.SupportsTemperature, m.Id + " is sent no temperature");
             }
         }
 
-        public static void Gpt61Sol_IsTheFirstOpenAiEntry_WithGpt56SolKept()
+        public static void SupersededModels_StayPriced()
         {
-            // memoQ offers the first entry when nothing is configured.
-            Assert.Equal("gpt-6.1-sol", LlmModels.OpenAiModels[0].Id, "first OpenAI entry");
-            Assert.True(LlmModels.OpenAiModels.Any(m => m.Id == "gpt-5.6-sol"), "GPT-5.6 Sol stays: it keeps the chat's tools");
+            foreach (var model in new[] { "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini" })
+                Assert.True(TokenEstimator.HasPricing(model), model + " is still costed for anyone who has it saved");
         }
 
-        public static void Gpt61Sol_IsPricedAsPublished()
+        public static void TheThree_ArePricedAsPublished()
         {
+            Costs("gpt-6-astra", 1_000_000, 0, 0, 10.00m, "input $10/MTok");
+            Costs("gpt-6-astra", 0, 0, 1_000_000, 50.00m, "output $50/MTok");
+            Costs("gpt-6-astra", 0, 1_000_000, 0, 1.00m, "cached input $1/MTok (0.1x)");
             Costs("gpt-6.1-sol", 1_000_000, 0, 0, 2.00m, "input $2/MTok");
             Costs("gpt-6.1-sol", 0, 0, 1_000_000, 10.00m, "output $10/MTok");
             Costs("gpt-6.1-sol", 0, 1_000_000, 0, 0.10m, "cached input $0.10/MTok (0.05x)");
+            Costs("gpt-6-luna", 1_000_000, 0, 0, 0.10m, "input $0.10/MTok");
+            Costs("gpt-6-luna", 0, 0, 1_000_000, 0.50m, "output $0.50/MTok");
+            Costs("gpt-6-luna", 0, 1_000_000, 0, 0.01m, "cached input $0.01/MTok (0.1x)");
         }
 
-        public static void OtherOpenAiModels_KeepTheirHalfPriceCacheReads()
+        public static void OlderOpenAiModels_KeepTheirHalfPriceCacheReads()
         {
-            Costs("gpt-5.6-sol", 0, 1_000_000, 0, 2.50m, "cached input 0.5x of $5");
+            Costs("gpt-5.4-mini", 0, 1_000_000, 0, 0.375m, "cached input 0.5x of $0.75");
         }
 
-        public static void Gpt6_GoesOutWithoutTools_Gpt56KeepsThem()
+        public static void ToolRules_MatchWhatEachModelAccepts()
         {
-            Assert.True(LlmClient.RefusesToolsOnChatCompletions("gpt-6.1-sol"), "direct id");
-            Assert.True(LlmClient.RefusesToolsOnChatCompletions("openai/gpt-6.1-sol"), "OpenRouter id");
-            Assert.True(LlmClient.RefusesToolsOnChatCompletions("GPT-6-Sol"), "case-insensitive, whole GPT-6 family");
-            Assert.True(!LlmClient.RefusesToolsOnChatCompletions("gpt-5.6-sol"), "GPT-5.6 keeps tools (reasoning_effort none)");
-            Assert.True(!LlmClient.RefusesToolsOnChatCompletions("claude-opus-5-5"), "Claude keeps tools");
+            // Takes tools as they are: no opt-out, no fallback.
+            foreach (var id in new[] { "gpt-6-astra", "openai/gpt-6-astra", "claude-opus-5-5" })
+            {
+                Assert.True(!LlmClient.RefusesToolsOnChatCompletions(id), id + " keeps its tools");
+                Assert.True(!LlmClient.RequiresReasoningEffortNoneWithTools(id), id + " is not sent reasoning_effort none");
+            }
+            // Takes tools only with reasoning_effort "none".
+            foreach (var id in new[] { "gpt-6-luna", "openai/gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol", "GPT-5.6-Terra" })
+            {
+                Assert.True(!LlmClient.RefusesToolsOnChatCompletions(id), id + " keeps its tools");
+                Assert.True(LlmClient.RequiresReasoningEffortNoneWithTools(id), id + " is sent reasoning_effort none with tools");
+            }
+            // Takes no tools on Chat Completions, and refuses "none".
+            foreach (var id in new[] { "gpt-6.1-sol", "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro" })
+            {
+                Assert.True(LlmClient.RefusesToolsOnChatCompletions(id), id + " goes out as plain chat");
+                Assert.True(!LlmClient.RequiresReasoningEffortNoneWithTools(id), id + " is never sent reasoning_effort none");
+            }
             Assert.True(!LlmClient.RefusesToolsOnChatCompletions(null), "no model, no change");
+            Assert.True(!LlmClient.RequiresReasoningEffortNoneWithTools(null), "no model, no change");
         }
     }
 }

@@ -167,7 +167,7 @@ namespace Supervertaler.Core
                           int ollamaTimeoutMinutes = 0)
         {
             _provider = provider ?? LlmModels.ProviderOpenAi;
-            _model = model ?? "gpt-5.4-mini";
+            _model = model ?? LlmModels.DefaultOpenAiModelId;
             _apiKey = apiKey ?? "";
             _baseUrl = baseUrl;
             _maxTokens = maxTokens;
@@ -1997,11 +1997,19 @@ namespace Supervertaler.Core
         /// Substring match so OpenRouter-style ids ("openai/gpt-5.6-sol") are
         /// covered too. GPT-5.5 and earlier accept tools with reasoning and are
         /// deliberately left alone.
+        ///
+        /// GPT-6 Luna and GPT-6 Sol have the same rule, in OpenAI's words:
+        /// "Chat Completions supports function calling only with reasoning_effort
+        /// set to none" (model pages, checked 2026-10-07). GPT-6 Astra takes tools
+        /// with reasoning and refuses "none", so it must not match; nor must
+        /// GPT-6.1 Sol, which refuses both (see RefusesToolsOnChatCompletions).
+        /// "gpt-6-sol" does not occur in "gpt-6.1-sol".
         /// </summary>
-        private static bool RequiresReasoningEffortNoneWithTools(string model)
+        internal static bool RequiresReasoningEffortNoneWithTools(string model)
         {
             if (string.IsNullOrEmpty(model)) return false;
-            return model.ToLowerInvariant().Contains("gpt-5.6");
+            var lower = model.ToLowerInvariant();
+            return lower.Contains("gpt-5.6") || lower.Contains("gpt-6-luna") || lower.Contains("gpt-6-sol");
         }
 
         /// <summary>
@@ -2013,16 +2021,16 @@ namespace Supervertaler.Core
         /// plain chat - it answers from the context in its prompt instead of
         /// looking things up - rather than failing on every message.
         ///
-        /// Matched on "gpt-6", although only 6.1 Sol is confirmed: guessing wrong
-        /// this way costs a GPT-6 model its lookups, the other way an error on
-        /// every message. Substring match, so the OpenRouter ids
-        /// ("openai/gpt-6.1-sol") are covered as well. Calling tools on these
-        /// models means moving the tool loop to /v1/responses.
+        /// Only 6.1 Sol: the other GPT-6 models take tools here, Astra as they
+        /// are and Luna and GPT-6 Sol with reasoning_effort "none" (OpenAI's model
+        /// pages, checked 2026-10-07). Substring match, so the OpenRouter ids
+        /// ("openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro") are covered as well.
+        /// Calling tools on it means moving the tool loop to /v1/responses.
         /// </summary>
         internal static bool RefusesToolsOnChatCompletions(string model)
         {
             if (string.IsNullOrEmpty(model)) return false;
-            return model.ToLowerInvariant().Contains("gpt-6");
+            return model.ToLowerInvariant().Contains("gpt-6.1-sol");
         }
 
         private int GetOllamaTimeout()
@@ -2094,7 +2102,7 @@ namespace Supervertaler.Core
             if (!SupportsToolUse(_provider))
                 return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName);
 
-            // So do models that refuse tools on the endpoint we call (GPT-6.x).
+            // So do models that refuse tools on the endpoint we call (GPT-6.1 Sol).
             // The caller's prompt was written for a chat with tools and may say
             // so; told nothing, a model asked about something only a tool could
             // fetch can answer as if it had fetched it.
@@ -2395,9 +2403,10 @@ namespace Supervertaler.Core
                 // Tools
                 sb.Append(",\"tools\":").Append(toolDefinitionsJson);
 
-                // GPT-5.6 refuses tools together with reasoning on this endpoint,
-                // and applies a reasoning default of its own, so opt out here or
-                // every tool-using chat 400s. See the helper for the full story.
+                // GPT-5.6, GPT-6 Luna and GPT-6 Sol refuse tools together with
+                // reasoning on this endpoint, and apply a reasoning default of
+                // their own, so opt out here or every tool-using chat 400s. See
+                // the helper for the full story.
                 if (RequiresReasoningEffortNoneWithTools(_model))
                     sb.Append(",\"reasoning_effort\":\"none\"");
 
