@@ -31,12 +31,67 @@ namespace Supervertaler.Core
     ///
     /// The Trados plugin's own licence file is only ever read, as the source of
     /// a one-time copy. Nothing here writes to a product-named location.
+    ///
+    /// A licence counts only for the computer and Windows account that
+    /// activated it, so a data folder that several people use - or that one
+    /// person uses from more than one computer - holds one file per person.
+    /// <c>licence.json</c> belongs to whoever's record it holds; everyone else
+    /// has a file of their own beside it (<see cref="PersonalPath"/>). Each
+    /// person writes only their own file, so they cannot overwrite each other,
+    /// and every build that reads only <c>licence.json</c> still finds its
+    /// owner's licence exactly where it was. The one exception is clearing an
+    /// activation the licence server has just confirmed released, which is
+    /// written back to the file that recorded it.
     /// </summary>
     internal static class LicenceFile
     {
         /// <summary>The shared licence file.</summary>
         internal static string SharedPath =>
             Path.Combine(SupervertalerPaths.Root, "licence", "licence.json");
+
+        private const string PersonalPrefix = "licence-";
+
+        /// <summary>
+        /// The licence file of the person with <paramref name="fingerprint"/>,
+        /// when <c>licence.json</c> beside <paramref name="sharedPath"/> is
+        /// someone else's. Named by the start of the fingerprint, which is
+        /// already a hash: it says nothing about the person.
+        /// </summary>
+        internal static string PersonalPath(string sharedPath, string fingerprint)
+        {
+            var name = new StringBuilder();
+            foreach (var c in fingerprint ?? "")
+            {
+                if (name.Length == 16) break;
+                if (char.IsLetterOrDigit(c) || c == '-') name.Append(char.ToLowerInvariant(c));
+            }
+            return Path.Combine(Path.GetDirectoryName(sharedPath), PersonalPrefix + name + ".json");
+        }
+
+        /// <summary>
+        /// Every licence file in the folder: the shared one and each person's.
+        /// Read only to find an activation of a key that has run out of them.
+        /// </summary>
+        internal static string[] AllRecordPaths(string sharedPath)
+        {
+            var paths = new System.Collections.Generic.List<string> { sharedPath };
+            try
+            {
+                var dir = Path.GetDirectoryName(sharedPath);
+                if (Directory.Exists(dir))
+                {
+                    foreach (var file in Directory.GetFiles(dir, PersonalPrefix + "*.json"))
+                    {
+                        // The pattern also matches longer extensions on some
+                        // file systems; temporary and set-aside files are not records.
+                        if (file.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                            paths.Add(file);
+                    }
+                }
+            }
+            catch { }
+            return paths.ToArray();
+        }
 
         /// <summary>
         /// Where the Trados plugin kept its licence before it was shared. Read

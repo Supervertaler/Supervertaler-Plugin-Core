@@ -163,10 +163,17 @@ namespace Supervertaler.Core.Tests
         public string LegacyAnchorKey => AnchorKey + @"\Trados";
         public string GoFile => Path.Combine(Dir, "go");
 
+        /// <summary>This computer and account's own file, when licence.json is someone else's.</summary>
+        public string PersonalPath => LicenceFile.PersonalPath(SharedPath, Fingerprint);
+
         public static string Fingerprint => MachineId.GetFingerprint();
 
-        public SupervertalerLicence Open() =>
-            new SupervertalerLicence(SharedPath, LegacyPath, AnchorKey, LegacyAnchorKey);
+        // Nothing listens on the discard port, so a test that reaches for the
+        // network fails at once rather than talking to the real licence server.
+        private const string NoServer = "http://127.0.0.1:9/v1/licenses";
+
+        public SupervertalerLicence Open(string licenceServer = NoServer) =>
+            new SupervertalerLicence(SharedPath, LegacyPath, AnchorKey, LegacyAnchorKey, licenceServer);
 
         /// <summary>Writes a licence file the way the Trados plugin did: in place, with a BOM.</summary>
         public static void WriteTradosStyle(string path, LicenceRecord record)

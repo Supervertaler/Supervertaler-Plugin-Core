@@ -29,6 +29,10 @@ namespace Supervertaler.Core
     ///   - The first product to start copies the Trados plugin's licence file
     ///     into the shared location. It is a copy: the Trados-named file stays
     ///     where it was and is never written again.
+    ///   - A licence counts only for the computer and Windows account that
+    ///     activated it. A data folder used by more than one of them holds a
+    ///     licence record for each, and each has its own trial and its own
+    ///     activation (see <see cref="LicenceFile"/>).
     ///
     /// No UI: every message box stays in the products. And no permission
     /// either - see <see cref="LicenceState"/> for the two rules every product
@@ -65,7 +69,7 @@ namespace Supervertaler.Core
 
         // ─── Constants ──────────────────────────────────────────────
 
-        private const string BaseUrl = "https://api.lemonsqueezy.com/v1/licenses";
+        private const string LicenceServer = "https://api.lemonsqueezy.com/v1/licenses";
 
         /// <summary>
         /// The Lemon Squeezy store that sells Supervertaler licences. A key is a
@@ -87,31 +91,53 @@ namespace Supervertaler.Core
 
         // Null means the live locations, resolved on every use so that a data
         // folder moved mid-session is written to where it now is. The tests
-        // set them, and must never touch the real ones.
+        // set them, and must never touch the real ones - nor the real licence
+        // server, which they replace with a stand-in of their own.
         private readonly string _sharedPathOverride;
         private readonly string _legacyPathOverride;
+        private readonly string _baseUrl;
         private readonly string _anchorKey;
         private readonly string _legacyAnchorKey;
 
         private readonly object _lock = new object();
         private LicenceRecord _rec;
 
+        // This computer and Windows account. Read once, so a session never
+        // changes whose licence it is reading.
+        private readonly string _fingerprint;
+
+        // Whose record licence.json holds. Not yet known only when it could
+        // not be read at startup; until then this person's file is taken to
+        // be licence.json, as it always was.
+        private enum Owner { NotYetKnown, Shared, Personal }
+        private Owner _owner;
+
+        // licence.json held an activation for another computer or account.
+        private bool _foreignActivation;
+
         // This session found a licence file it could not read. State is
         // Unknown until a successful activation or deactivation replaces it.
         private bool _unreadable;
 
-        // This session found the file damaged, as opposed to merely unopenable:
-        // re-reading the fresh record written in its place must not end the
-        // Unknown session.
-        private bool _damagedThisSession;
+        // This session is Unknown to the end, whatever later re-reads find:
+        // it found the file damaged (the record read afterwards is the fresh
+        // one written over it), or it met another account's activation for
+        // the first time. Only activating a key ends it early.
+        private bool _unknownForTheSession;
 
         private string SharedPath => _sharedPathOverride ?? LicenceFile.SharedPath;
         private string LegacyPath => _legacyPathOverride ?? LicenceFile.LegacyTradosPath;
 
+        // This person's licence file: licence.json if it holds their record,
+        // otherwise their own file beside it.
+        private string MyPath => _owner == Owner.Personal
+            ? LicenceFile.PersonalPath(SharedPath, _fingerprint)
+            : SharedPath;
+
         // A damaged licence file is kept here before a fresh record replaces it,
         // so a key it held can still be recovered by hand. Its presence is also
         // what keeps DamagedFileFound true until a key is activated.
-        private string DamagedPath => SharedPath + ".damaged";
+        private string DamagedPath => MyPath + ".damaged";
 
         /// <summary>
         /// Raised when the state changes: activation, deactivation, or a
@@ -121,12 +147,15 @@ namespace Supervertaler.Core
         public event EventHandler StateChanged;
 
         internal SupervertalerLicence(
-            string sharedPath, string legacyPath, string anchorKey, string legacyAnchorKey)
+            string sharedPath, string legacyPath, string anchorKey, string legacyAnchorKey,
+            string licenceServer = null)
         {
             _sharedPathOverride = sharedPath;
             _legacyPathOverride = legacyPath;
+            _baseUrl = licenceServer ?? LicenceServer;
             _anchorKey = anchorKey;
             _legacyAnchorKey = legacyAnchorKey;
+            _fingerprint = MachineId.GetFingerprint();
             Load();
         }
 
@@ -209,6 +238,28 @@ namespace Supervertaler.Core
         /// </summary>
         public bool DamagedFileFound { get; private set; }
 
+        /// <summary>
+        /// True when this data folder's licence was activated for another
+        /// computer or Windows account, and this one has no activation of its
+        /// own. A licence counts only for the computer and account that
+        /// activated it, so this one is on its own trial, or past it.
+        ///
+        /// It is also what a customer meets after renaming their computer or
+        /// reinstalling Windows: the licence is theirs, activated under the old
+        /// name. Entering the key again activates it here, and a key with no
+        /// activations left makes room by releasing the one recorded here (see
+        /// <see cref="ActivateAsync"/>).
+        ///
+        /// The session that first meets it is Unknown to the end, like the one
+        /// that finds a damaged file, so nobody loses a working day to it. The
+        /// product should say what happened - and say it again at later starts,
+        /// once it matters, until a key is activated here.
+        /// </summary>
+        public bool ForeignActivationFound
+        {
+            get { lock (_lock) return _foreignActivation && !_rec.IsActivated; }
+        }
+
         // For the Trados plugin's trial registration, which reports the start it has.
         internal DateTime TrialStartedUtc
         {
@@ -245,41 +296,52 @@ namespace Supervertaler.Core
         {
             LicenceFile.SweepAbandonedTemporaryFiles(path, AbandonedTempAge);
 
-            var fingerprint = MachineId.GetFingerprint();
-
             var status = LicenceFile.TryRead(path, out var rec, out var bytes);
             var legacyDamaged = false;
             if (status == LicenceFile.ReadStatus.Missing)
-                status = CreateSharedFile(path, fingerprint, out rec, out legacyDamaged);
+                status = CreateSharedFile(path, out rec, out legacyDamaged);
 
             switch (status)
             {
                 case LicenceFile.ReadStatus.Ok:
-                    _rec = Prepare(rec, fingerprint);
+                    if (!IsMine(rec))
+                    {
+                        // Another computer or account's licence. It stays
+                        // theirs, and this one's record lives in its own file.
+                        _owner = Owner.Personal;
+                        LoadPersonal(rec.IsActivated);
+                        return;
+                    }
+                    _owner = Owner.Shared;
+                    _rec = Prepare(rec);
                     if (legacyDamaged)
                     {
                         _unreadable = true;
-                        _damagedThisSession = true;
+                        _unknownForTheSession = true;
                         WriteLog("The Trados licence file could not be read as a licence; a fresh shared record was written.");
                     }
                     break;
 
                 case LicenceFile.ReadStatus.Damaged:
                     // Set aside, not overwritten: it may hold the only copy of a
-                    // paying customer's key. A fresh record takes its place so
-                    // the next session knows where it stands; this one does not.
+                    // paying customer's key. A fresh record takes its place - so
+                    // the file is this person's from now on - and the next
+                    // session knows where it stands; this one does not.
+                    _owner = Owner.Shared;
                     SetAside(bytes);
-                    _rec = FreshRecord(fingerprint);
+                    _rec = FreshRecord();
                     _unreadable = true;
-                    _damagedThisSession = true;
+                    _unknownForTheSession = true;
                     LicenceFile.Write(path, LicenceFile.Serialise(_rec), replaceExisting: true);
                     WriteLog("The licence file could not be read as a licence; it was set aside and a fresh record written.");
                     break;
 
                 default:
-                    // There, but could not be opened. Nothing is written, so
-                    // nothing is lost; the next start tries again.
-                    _rec = FreshRecord(fingerprint);
+                    // There, but could not be opened - so whose it is cannot be
+                    // known yet either. Nothing is written, so nothing is lost;
+                    // a later re-read or the next start tries again.
+                    _owner = Owner.NotYetKnown;
+                    _rec = FreshRecord();
                     _unreadable = true;
                     WriteLog("The licence file could not be opened; carrying on with the licence state unknown.");
                     break;
@@ -287,6 +349,96 @@ namespace Supervertaler.Core
 
             DamagedFileFound = File.Exists(DamagedPath);
         }
+
+        /// <summary>
+        /// Reads this computer and account's own licence file, kept beside a
+        /// licence.json that holds someone else's record, and creates it on
+        /// their first start with this data folder. Caller has set the owner.
+        /// </summary>
+        private void LoadPersonal(bool foreignActivation)
+        {
+            _foreignActivation = foreignActivation;
+            _unreadable = false;
+
+            var path = MyPath;
+            LicenceFile.SweepAbandonedTemporaryFiles(path, AbandonedTempAge);
+
+            var status = LicenceFile.TryRead(path, out var rec, out var bytes);
+            var created = false;
+            if (status == LicenceFile.ReadStatus.Missing)
+            {
+                rec = FreshRecord();
+                switch (LicenceFile.Write(path, LicenceFile.Serialise(rec), replaceExisting: false))
+                {
+                    case LicenceFile.WriteStatus.AlreadyExists:
+                        // The other product on this computer was first.
+                        status = LicenceFile.TryRead(path, out rec, out bytes);
+                        break;
+                    case LicenceFile.WriteStatus.Written:
+                        status = LicenceFile.ReadStatus.Ok;
+                        created = true;
+                        break;
+                    default:
+                        // Not written, and logged. This session runs on the
+                        // record in hand, and the next start tries again.
+                        status = LicenceFile.ReadStatus.Ok;
+                        break;
+                }
+            }
+
+            switch (status)
+            {
+                case LicenceFile.ReadStatus.Ok:
+                    if (!IsMine(rec))
+                    {
+                        // Someone else's record under this person's name can only
+                        // have been put there by hand. It licenses nobody.
+                        rec = FreshRecord();
+                        LicenceFile.Write(path, LicenceFile.Serialise(rec), replaceExisting: true);
+                        WriteLog("A licence file held a record for another computer or Windows account; a fresh record was written.");
+                    }
+                    _rec = Prepare(rec);
+
+                    // The first meeting with another account's activation: the
+                    // customer whose computer was renamed or reinstalled, as
+                    // often as a colleague sharing the folder. Neither is
+                    // locked out by it in the middle of a day's work.
+                    if (created && foreignActivation)
+                    {
+                        _unreadable = true;
+                        _unknownForTheSession = true;
+                        WriteLog("This data folder's licence was activated for another computer or Windows account; " +
+                            "this one has a licence record of its own from now on.");
+                    }
+                    break;
+
+                case LicenceFile.ReadStatus.Damaged:
+                    SetAside(bytes);
+                    _rec = FreshRecord();
+                    _unreadable = true;
+                    _unknownForTheSession = true;
+                    LicenceFile.Write(path, LicenceFile.Serialise(_rec), replaceExisting: true);
+                    WriteLog("The licence file could not be read as a licence; it was set aside and a fresh record written.");
+                    break;
+
+                default:
+                    _rec = FreshRecord();
+                    _unreadable = true;
+                    WriteLog("The licence file could not be opened; carrying on with the licence state unknown.");
+                    break;
+            }
+
+            DamagedFileFound = File.Exists(DamagedPath);
+        }
+
+        /// <summary>
+        /// Whether a record is this computer and account's: it carries their
+        /// fingerprint, or none at all, in which case the first reader claims
+        /// it. A licence counts only for the fingerprint that activated it.
+        /// </summary>
+        private bool IsMine(LicenceRecord rec) =>
+            string.IsNullOrWhiteSpace(rec.MachineFingerprint)
+            || string.Equals(rec.MachineFingerprint, _fingerprint, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// Keeps the bytes of a damaged licence file beside the shared one. Only
@@ -305,7 +457,7 @@ namespace Supervertaler.Core
         {
             try { File.Delete(DamagedPath); } catch { }
             DamagedFileFound = File.Exists(DamagedPath);
-            _damagedThisSession = false;
+            _unknownForTheSession = false;
         }
 
         /// <summary>
@@ -334,7 +486,7 @@ namespace Supervertaler.Core
         /// it first, reads theirs instead.
         /// </summary>
         private LicenceFile.ReadStatus CreateSharedFile(
-            string path, string fingerprint, out LicenceRecord rec, out bool legacyDamaged)
+            string path, out LicenceRecord rec, out bool legacyDamaged)
         {
             legacyDamaged = false;
 
@@ -354,12 +506,12 @@ namespace Supervertaler.Core
                     // Copied aside, since the Trados file itself is never written.
                     legacyDamaged = true;
                     SetAside(legacyBytes);
-                    rec = FreshRecord(fingerprint);
+                    rec = FreshRecord();
                     first = LicenceFile.Serialise(rec);
                     break;
 
                 default:
-                    rec = FreshRecord(fingerprint);
+                    rec = FreshRecord();
                     first = LicenceFile.Serialise(rec);
                     break;
             }
@@ -378,46 +530,58 @@ namespace Supervertaler.Core
         }
 
         /// <summary>A record for a computer with no readable licence file: the trial, from the anchor.</summary>
-        private LicenceRecord FreshRecord(string fingerprint)
+        private LicenceRecord FreshRecord()
         {
             var now = DateTime.UtcNow;
-            var anchored = TrialAnchor.Reconcile(_anchorKey, _legacyAnchorKey, fingerprint, now, now);
+            var anchored = TrialAnchor.Reconcile(_anchorKey, _legacyAnchorKey, _fingerprint, now, now);
             return new LicenceRecord
             {
                 TrialStartedAt = anchored.Start,
                 EffectiveNow = anchored.EffectiveNow,
-                MachineFingerprint = fingerprint,
+                MachineFingerprint = _fingerprint,
             };
         }
 
         /// <summary>
-        /// Readies a record read from disk: reconciles its trial start with the
-        /// anchor, which can only ever pull it earlier, and fixes the clock the
-        /// trial is measured against. Trial arithmetic uses the time of loading,
-        /// so a trial never ends in the middle of a session.
+        /// Readies this person's record read from disk: reconciles its trial
+        /// start with the anchor, which can only ever pull it earlier, and fixes
+        /// the clock the trial is measured against. Trial arithmetic uses the
+        /// time of loading, so a trial never ends in the middle of a session.
+        ///
+        /// Never given someone else's record: its trial start would be written
+        /// into this account's anchor, and could only ever move it earlier.
         /// </summary>
-        private LicenceRecord Prepare(LicenceRecord rec, string fingerprint)
+        private LicenceRecord Prepare(LicenceRecord rec)
         {
             var now = DateTime.UtcNow;
             rec.EffectiveNow = now;
+            var changed = false;
 
             if (rec.TrialStartedAt > now)
                 rec.TrialStartedAt = now;
 
+            // Claimed by writing it, so a second account sharing the folder
+            // does not claim the same record before this one saves.
             if (string.IsNullOrWhiteSpace(rec.MachineFingerprint))
-                rec.MachineFingerprint = fingerprint;
+            {
+                rec.MachineFingerprint = _fingerprint;
+                changed = true;
+            }
 
             if (rec.TrialStartedAt != DateTime.MinValue)
             {
                 var anchored = TrialAnchor.Reconcile(
-                    _anchorKey, _legacyAnchorKey, fingerprint, rec.TrialStartedAt, now);
+                    _anchorKey, _legacyAnchorKey, _fingerprint, rec.TrialStartedAt, now);
                 rec.EffectiveNow = anchored.EffectiveNow;
                 if (anchored.Start < rec.TrialStartedAt)
                 {
                     rec.TrialStartedAt = anchored.Start;
-                    LicenceFile.Write(SharedPath, LicenceFile.Serialise(rec), replaceExisting: true);
+                    changed = true;
                 }
             }
+
+            if (changed)
+                LicenceFile.Write(MyPath, LicenceFile.Serialise(rec), replaceExisting: true);
 
             return rec;
         }
@@ -432,17 +596,37 @@ namespace Supervertaler.Core
         {
             try
             {
-                if (LicenceFile.TryRead(SharedPath, out var rec, out _) != LicenceFile.ReadStatus.Ok)
+                if (LicenceFile.TryRead(MyPath, out var rec, out _) != LicenceFile.ReadStatus.Ok)
                     return;
 
-                _rec = Prepare(rec, MachineId.GetFingerprint());
+                if (!IsMine(rec))
+                {
+                    // licence.json could not be read at startup, and turns out
+                    // to be someone else's: this person's own file from now on.
+                    if (_owner == Owner.NotYetKnown)
+                    {
+                        _owner = Owner.Personal;
+                        LoadPersonal(rec.IsActivated);
+                    }
+
+                    // Otherwise someone else's record is where this person's
+                    // should be - an older build sharing the folder activated
+                    // over it. This session keeps the record it has, and the
+                    // next start gives this person a file of their own.
+                    return;
+                }
+
+                if (_owner == Owner.NotYetKnown)
+                    _owner = Owner.Shared;
+                _rec = Prepare(rec);
 
                 // A file that could not be opened at startup and now can be:
                 // the state is known again. A damaged one is different - the
                 // record read now is the fresh one written over it, and the
                 // session stays Unknown so a customer looking for their key is
-                // not locked out by a failed attempt to enter it.
-                if (!_damagedThisSession)
+                // not locked out by a failed attempt to enter it. So does the
+                // first meeting with another account's activation.
+                if (!_unknownForTheSession)
                     _unreadable = false;
             }
             catch (Exception ex)
@@ -455,7 +639,7 @@ namespace Supervertaler.Core
         {
             try
             {
-                LicenceFile.Write(SharedPath, LicenceFile.Serialise(_rec), replaceExisting: true);
+                LicenceFile.Write(MyPath, LicenceFile.Serialise(_rec), replaceExisting: true);
             }
             catch (Exception ex)
             {
@@ -470,7 +654,10 @@ namespace Supervertaler.Core
             if (_unreadable)
                 return LicenceState.Unknown;
 
-            if (_rec.IsActivated && IsStatusActive() && IsCacheValid())
+            // Only this computer and account's own activation licenses it. The
+            // record is always theirs by the time it gets here; this is the
+            // rule stated where the answer is decided.
+            if (_rec.IsActivated && IsMine(_rec) && IsStatusActive() && IsCacheValid())
                 return LicenceState.Licensed;
 
             // Activated, but not confirmed within the offline window.
@@ -503,7 +690,16 @@ namespace Supervertaler.Core
 
         // ─── Activation ─────────────────────────────────────────────
 
-        /// <summary>Activates a licence key on this computer.</summary>
+        /// <summary>
+        /// Activates a licence key on this computer and Windows account.
+        ///
+        /// A key with no activations left, when one of them is recorded in this
+        /// data folder for another computer or account, gets room by releasing
+        /// that one. It is the way back in after a computer is renamed or
+        /// Windows is reinstalled, when the old activation can no longer be
+        /// deactivated from where it was made. Entering the key is the
+        /// authority here, as it is for deactivating.
+        /// </summary>
         public async Task<(bool Ok, string Message)> ActivateAsync(string key)
         {
             if (string.IsNullOrWhiteSpace(key))
@@ -531,17 +727,22 @@ namespace Supervertaler.Core
 
             try
             {
-                var fingerprint = MachineId.GetFingerprint();
+                var result = await PostActivateAsync(key).ConfigureAwait(false);
 
-                var content = new FormUrlEncodedContent(new[]
+                var released = false;
+                if (!result.Activated && result.NoActivationsLeft && !result.FromAnotherStore)
                 {
-                    new KeyValuePair<string, string>("license_key", key),
-                    new KeyValuePair<string, string>("instance_name", fingerprint),
-                });
-
-                var response = await Http.PostAsync(BaseUrl + "/activate", content).ConfigureAwait(false);
-                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var result = ParseLemonSqueezyResponse(json);
+                    var stranded = FindStrandedActivation(key);
+                    if (stranded != null
+                        && await ReleaseAsync(key, stranded.Value.InstanceId).ConfigureAwait(false))
+                    {
+                        ClearReleasedActivation(stranded.Value.Path, stranded.Value.InstanceId);
+                        released = true;
+                        WriteLog("A key with no activations left was entered; its activation for another " +
+                            "computer or Windows account, recorded in this data folder, was released to make room.");
+                        result = await PostActivateAsync(key).ConfigureAwait(false);
+                    }
+                }
 
                 if (!result.Activated)
                     return (false, result.Error ?? "Activation failed. Please check your licence key.");
@@ -564,14 +765,17 @@ namespace Supervertaler.Core
                     _rec.ActivatedAt = DateTime.UtcNow;
                     _rec.LastValidatedAt = DateTime.UtcNow;
                     _rec.ExpiresAt = result.ExpiresAt;
-                    _rec.MachineFingerprint = fingerprint;
+                    _rec.MachineFingerprint = _fingerprint;
                     _unreadable = false;
                     ClearDamage();
                     Save();
                 }
 
                 OnStateChanged();
-                return (true, "Licence activated successfully.");
+                return (true, released
+                    ? "Licence activated.\n\nThis key had no activations left, so its earlier activation in this " +
+                      "data folder, for another computer or Windows account, was released to make room."
+                    : "Licence activated successfully.");
             }
             catch (HttpRequestException ex)
             {
@@ -581,6 +785,63 @@ namespace Supervertaler.Core
             {
                 return (false, "An error occurred during activation: " + ex.Message);
             }
+        }
+
+        private async Task<LemonSqueezyResult> PostActivateAsync(string key)
+        {
+            var content = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("license_key", key),
+                new KeyValuePair<string, string>("instance_name", _fingerprint),
+            });
+
+            var response = await Http.PostAsync(_baseUrl + "/activate", content).ConfigureAwait(false);
+            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return ParseLemonSqueezyResponse(json);
+        }
+
+        /// <summary>
+        /// An activation of <paramref name="key"/> recorded in this licence
+        /// folder for another computer or Windows account, if there is one.
+        /// Reads every person's file, so it runs only when a key has run out of
+        /// activations - never at startup.
+        /// </summary>
+        internal (string Path, string InstanceId)? FindStrandedActivation(string key)
+        {
+            key = key?.Trim();
+            string mine;
+            lock (_lock) mine = MyPath;
+
+            foreach (var path in LicenceFile.AllRecordPaths(SharedPath))
+            {
+                if (string.Equals(path, mine, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (LicenceFile.TryRead(path, out var rec, out _) == LicenceFile.ReadStatus.Ok
+                    && rec.IsActivated
+                    && !IsMine(rec)
+                    && string.Equals(rec.LicenseKey?.Trim(), key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (path, rec.InstanceId);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Clears an activation the licence server has confirmed released from
+        /// the file that recorded it - that activation only, so a change its
+        /// owner made in the meantime is left alone. The one write to a file
+        /// that is not this person's own.
+        /// </summary>
+        internal static void ClearReleasedActivation(string path, string instanceId)
+        {
+            if (LicenceFile.TryRead(path, out var rec, out _) != LicenceFile.ReadStatus.Ok
+                || !string.Equals(rec.InstanceId, instanceId, StringComparison.Ordinal))
+                return;
+
+            rec.ClearActivation();
+            LicenceFile.Write(path, LicenceFile.Serialise(rec), replaceExisting: true);
         }
 
         /// <summary>
@@ -667,7 +928,7 @@ namespace Supervertaler.Core
                     new KeyValuePair<string, string>("instance_id", instance),
                 });
 
-                var response = await Http.PostAsync(BaseUrl + "/validate", content).ConfigureAwait(false);
+                var response = await Http.PostAsync(_baseUrl + "/validate", content).ConfigureAwait(false);
                 var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 var result = ParseLemonSqueezyResponse(json);
 
@@ -739,10 +1000,14 @@ namespace Supervertaler.Core
             }
         }
 
-        /// <summary>Gives back an activation. Failures are ignored: there is nothing to do about them here.</summary>
-        private static async Task ReleaseAsync(string key, string instanceId)
+        /// <summary>
+        /// Gives back an activation. True only if the licence server confirmed
+        /// it; a failure is otherwise ignored, as there is nothing to do about
+        /// it here.
+        /// </summary>
+        private async Task<bool> ReleaseAsync(string key, string instanceId)
         {
-            if (string.IsNullOrEmpty(instanceId)) return;
+            if (string.IsNullOrEmpty(instanceId)) return false;
             try
             {
                 var content = new FormUrlEncodedContent(new[]
@@ -750,11 +1015,14 @@ namespace Supervertaler.Core
                     new KeyValuePair<string, string>("license_key", key),
                     new KeyValuePair<string, string>("instance_id", instanceId),
                 });
-                await Http.PostAsync(BaseUrl + "/deactivate", content).ConfigureAwait(false);
+                var response = await Http.PostAsync(_baseUrl + "/deactivate", content).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                return ParseLemonSqueezyResponse(json).Deactivated;
             }
             catch
             {
                 // Offline or refused: the seat stays taken on the server.
+                return false;
             }
         }
 
@@ -803,6 +1071,7 @@ namespace Supervertaler.Core
 
                     result.Valid = response.Valid;
                     result.Activated = response.Activated;
+                    result.Deactivated = response.Deactivated;
                     result.Error = response.Error;
 
                     // "Understood" means the body parsed AND carried a
@@ -816,6 +1085,12 @@ namespace Supervertaler.Core
                     if (response.LicenseKey != null)
                     {
                         result.Status = response.LicenseKey.Status ?? "";
+
+                        // A key with no limit sends none, and is never out of activations.
+                        var limit = response.LicenseKey.ActivationLimit;
+                        var usage = response.LicenseKey.ActivationUsage;
+                        result.NoActivationsLeft = limit.HasValue && limit.Value > 0
+                            && usage.HasValue && usage.Value >= limit.Value;
 
                         if (!string.IsNullOrWhiteSpace(response.LicenseKey.ExpiresAt)
                             && DateTime.TryParse(response.LicenseKey.ExpiresAt, null,
@@ -862,6 +1137,15 @@ namespace Supervertaler.Core
             public bool Understood;
             public bool Valid;
             public bool Activated;
+
+            /// <summary>A deactivation the server confirmed.</summary>
+            public bool Deactivated;
+
+            /// <summary>
+            /// The key's activations are all in use, by the server's own count.
+            /// The one refusal that releasing a stranded activation can cure.
+            /// </summary>
+            public bool NoActivationsLeft;
             public string Error;
             public string Status;
             public string VariantName;
@@ -877,6 +1161,9 @@ namespace Supervertaler.Core
 
             [DataMember(Name = "activated")]
             public bool Activated { get; set; }
+
+            [DataMember(Name = "deactivated")]
+            public bool Deactivated { get; set; }
 
             [DataMember(Name = "error")]
             public string Error { get; set; }
@@ -899,6 +1186,12 @@ namespace Supervertaler.Core
 
             [DataMember(Name = "expires_at")]
             public string ExpiresAt { get; set; }
+
+            [DataMember(Name = "activation_limit")]
+            public int? ActivationLimit { get; set; }
+
+            [DataMember(Name = "activation_usage")]
+            public int? ActivationUsage { get; set; }
         }
 
         [DataContract]
