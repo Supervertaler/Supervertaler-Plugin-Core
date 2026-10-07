@@ -136,14 +136,15 @@ namespace Supervertaler.Core
             }
 
             // OpenAI auto-cache: 50% off cache reads, no separate cache-write surcharge.
-            // The GPT-6 models read for much less (OpenAI's model pages, checked
-            // 2026-10-07): 0.05x on GPT-6.1 Sol ($0.10 against $2), 0.1x on Astra,
-            // Luna and GPT-6 Sol. At 0.5x their cache reads were costed at five to
-            // ten times the bill. Their 1.25x cache writes are left out: Chat
-            // Completions reports no write count to apply them to.
+            // The GPT-6 and GPT-5.6 models read for much less (OpenAI's model pages,
+            // checked 2026-10-07): 0.05x on GPT-6.1 Sol ($0.10 against $2), 0.1x on
+            // Astra, Luna, GPT-6 Sol and all three GPT-5.6. At 0.5x their cache
+            // reads were costed at five to ten times the bill. Their 1.25x cache
+            // writes are left out: Chat Completions reports no write count to
+            // apply them to.
             if (lc.Contains("gpt-6.1-sol"))
                 return (0.05m, 1m);
-            if (lc.Contains("gpt-6"))
+            if (lc.Contains("gpt-6") || lc.Contains("gpt-5.6"))
                 return (0.1m, 1m);
             if (lc.StartsWith("gpt-") || lc.StartsWith("openai/") || lc.StartsWith("o4-"))
                 return (0.5m, 1m);

@@ -107,9 +107,12 @@ namespace Supervertaler.Core
                 { "gpt-6-astra", (10.00m, 50.00m) },
                 { "gpt-6.1-sol", (2.00m, 10.00m) },
                 { "gpt-6-luna", (0.10m, 0.50m) },
-                { "gpt-5.6-sol", (5.00m, 30.00m) },
-                { "gpt-5.6-terra", (2.50m, 15.00m) },
-                { "gpt-5.6-luna", (1.00m, 6.00m) },
+                // GPT-5.6 as OpenAI's model pages gave it on 2026-10-07. Sol's is
+                // a promotional price, "available at least through November 21,
+                // 2026", with no word on what follows: check it after that date.
+                { "gpt-5.6-sol", (4.00m, 20.00m) },
+                { "gpt-5.6-terra", (2.00m, 12.00m) },
+                { "gpt-5.6-luna", (0.20m, 1.20m) },
                 { "gpt-5.5", (5.00m, 30.00m) },
                 { "gpt-5.4-mini", (0.75m, 4.50m) },
                 { "claude-fable-5-1", (10.00m, 50.00m) },

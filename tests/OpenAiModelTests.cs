@@ -72,6 +72,21 @@ namespace Supervertaler.Core.Tests
             Costs("gpt-6-luna", 0, 1_000_000, 0, 0.01m, "cached input $0.01/MTok (0.1x)");
         }
 
+        public static void Gpt56_IsPricedAsOpenAiListsItNow()
+        {
+            // Off the short list, but costed for anyone who kept one. Sol's is a
+            // promotional price, at least until 21 November 2026.
+            Costs("gpt-5.6-sol", 1_000_000, 0, 0, 4.00m, "input $4/MTok");
+            Costs("gpt-5.6-sol", 0, 0, 1_000_000, 20.00m, "output $20/MTok");
+            Costs("gpt-5.6-sol", 0, 1_000_000, 0, 0.40m, "cached input $0.40/MTok (0.1x)");
+            Costs("gpt-5.6-terra", 1_000_000, 0, 0, 2.00m, "input $2/MTok");
+            Costs("gpt-5.6-terra", 0, 0, 1_000_000, 12.00m, "output $12/MTok");
+            Costs("gpt-5.6-terra", 0, 1_000_000, 0, 0.20m, "cached input $0.20/MTok (0.1x)");
+            Costs("gpt-5.6-luna", 1_000_000, 0, 0, 0.20m, "input $0.20/MTok");
+            Costs("gpt-5.6-luna", 0, 0, 1_000_000, 1.20m, "output $1.20/MTok");
+            Costs("gpt-5.6-luna", 0, 1_000_000, 0, 0.02m, "cached input $0.02/MTok (0.1x)");
+        }
+
         public static void OlderOpenAiModels_KeepTheirHalfPriceCacheReads()
         {
             Costs("gpt-5.4-mini", 0, 1_000_000, 0, 0.375m, "cached input 0.5x of $0.75");
