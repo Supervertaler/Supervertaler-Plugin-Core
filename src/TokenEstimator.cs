@@ -135,7 +135,13 @@ namespace Supervertaler.Core
                 return (0.1m, 1.25m);
             }
 
-            // OpenAI auto-cache: 50% off cache reads, no separate cache-write surcharge
+            // OpenAI auto-cache: 50% off cache reads, no separate cache-write surcharge.
+            // GPT-6.1 Sol reads at $0.10 against $2 input, 0.05x (OpenAI's model page,
+            // checked 2026-10-07); at 0.5x its cache reads were costed at ten times
+            // the bill. Its $2.50 cache writes are left out: Chat Completions reports
+            // no write count to apply them to.
+            if (lc.Contains("gpt-6.1-sol"))
+                return (0.05m, 1m);
             if (lc.StartsWith("gpt-") || lc.StartsWith("openai/") || lc.StartsWith("o4-"))
                 return (0.5m, 1m);
 

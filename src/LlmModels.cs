@@ -54,6 +54,23 @@ namespace Supervertaler.Core
 
         public static readonly LlmModelInfo[] OpenAiModels =
         {
+            // GPT-6.1 Sol (released 29 September 2026): $2/$10, 1.05M context,
+            // 128k max output, reasoning always on. ID checked against OpenAI's
+            // model page, the Bedrock model card and openrouter.ai/api/v1/models
+            // on 2026-10-07. OpenAI allows it tools only on /v1/responses, and
+            // refuses reasoning_effort "none" - the GPT-5.6 way round that - so
+            // a tool-using chat falls back to plain chat on it (see
+            // LlmClient.RefusesToolsOnChatCompletions). GPT-5.6 Sol stays below:
+            // it keeps the tools. First in the list because memoQ offers the
+            // first entry when nothing is configured; Trados names its default.
+            new LlmModelInfo
+            {
+                Id = "gpt-6.1-sol", DisplayName = "GPT-6.1 Sol",
+                Description = "Premium quality – OpenAI's newest Sol, $2/$10 per 1M tokens, 1M context",
+                Provider = LlmProvider.OpenAi,
+                SupportsTemperature = false,
+                IsReasoningModel = true
+            },
             // GPT-5.6 family (released 9 July 2026): one generation, three
             // durable capability tiers. Model IDs confirmed against the OpenAI
             // model list in the account dashboard. 1.05M context, 128k max
@@ -245,8 +262,17 @@ namespace Supervertaler.Core
                 Description = "Maximum capability – Anthropic's most capable model, at double Opus pricing",
                 Provider = LlmProvider.OpenRouter
             },
-            // The GPT-5.6 routes reach the same reasoning models as the direct
-            // ones, so they need the same flags: no custom temperature, long timeout.
+            // The GPT-6.1 and GPT-5.6 routes reach the same reasoning models as
+            // the direct ones, so they need the same flags: no custom temperature,
+            // long timeout.
+            new LlmModelInfo
+            {
+                Id = "openai/gpt-6.1-sol", DisplayName = "GPT-6.1 Sol",
+                Description = "Premium quality – OpenAI's newest Sol, 1M context",
+                Provider = LlmProvider.OpenRouter,
+                SupportsTemperature = false,
+                IsReasoningModel = true
+            },
             new LlmModelInfo
             {
                 Id = "openai/gpt-5.6-sol", DisplayName = "GPT-5.6 Sol",

@@ -1942,9 +1942,11 @@ namespace Supervertaler.Core
             // timeout; a user hit exactly this when gpt-5.5 fell through to the
             // 120 s default because only the o-series prefixes were matched.
             // (The Workbench's Python client has always matched "gpt-5" this
-            // way, which is why the same bug never surfaced there.)
+            // way, which is why the same bug never surfaced there.) "gpt-6" for
+            // the same reason: GPT-6 and 6.1 reason always, with no way to turn
+            // it off.
             var lower = model.ToLowerInvariant();
-            return lower.Contains("reasoning") || lower.Contains("gpt-5")
+            return lower.Contains("reasoning") || lower.Contains("gpt-5") || lower.Contains("gpt-6")
                 || lower.StartsWith("o1") || lower.StartsWith("o3") || lower.StartsWith("o4");
         }
 
@@ -1963,21 +1965,22 @@ namespace Supervertaler.Core
             var info = LlmModels.FindModel(model);
             if (info != null) return info.SupportsTemperature;
             var lower = model.ToLowerInvariant();
-            if (lower.StartsWith("gpt-5") && !lower.Contains("mini") && !lower.Contains("nano"))
+            if ((lower.StartsWith("gpt-5") || lower.StartsWith("gpt-6"))
+                && !lower.Contains("mini") && !lower.Contains("nano"))
                 return false;
             return true;
         }
 
         /// <summary>
         /// Returns true if the model requires max_completion_tokens instead of max_tokens.
-        /// GPT-5.x and reasoning models all use the newer parameter.
+        /// GPT-5.x, GPT-6.x and reasoning models all use the newer parameter.
         /// </summary>
         private static bool UsesMaxCompletionTokens(string model)
         {
             if (string.IsNullOrEmpty(model)) return false;
             if (IsReasoningModel(model)) return true;
             var lower = model.ToLowerInvariant();
-            return lower.StartsWith("gpt-5");
+            return lower.StartsWith("gpt-5") || lower.StartsWith("gpt-6");
         }
 
         /// <summary>
@@ -1999,6 +2002,27 @@ namespace Supervertaler.Core
         {
             if (string.IsNullOrEmpty(model)) return false;
             return model.ToLowerInvariant().Contains("gpt-5.6");
+        }
+
+        /// <summary>
+        /// True when the model takes no function tools on /v1/chat/completions at
+        /// all. GPT-6.1 Sol: "Use the Responses API for tool calling. Chat
+        /// Completions is supported without tool calling." The GPT-5.6 escape,
+        /// reasoning_effort "none", is no help: "none and minimal reasoning
+        /// efforts are not supported". So a tool-using chat on it goes out as
+        /// plain chat - it answers from the context in its prompt instead of
+        /// looking things up - rather than failing on every message.
+        ///
+        /// Matched on "gpt-6", although only 6.1 Sol is confirmed: guessing wrong
+        /// this way costs a GPT-6 model its lookups, the other way an error on
+        /// every message. Substring match, so the OpenRouter ids
+        /// ("openai/gpt-6.1-sol") are covered as well. Calling tools on these
+        /// models means moving the tool loop to /v1/responses.
+        /// </summary>
+        internal static bool RefusesToolsOnChatCompletions(string model)
+        {
+            if (string.IsNullOrEmpty(model)) return false;
+            return model.ToLowerInvariant().Contains("gpt-6");
         }
 
         private int GetOllamaTimeout()
@@ -2069,6 +2093,19 @@ namespace Supervertaler.Core
             // Providers without tool support fall back to plain chat
             if (!SupportsToolUse(_provider))
                 return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName);
+
+            // So do models that refuse tools on the endpoint we call (GPT-6.x).
+            // The caller's prompt was written for a chat with tools and may say
+            // so; told nothing, a model asked about something only a tool could
+            // fetch can answer as if it had fetched it.
+            if (RefusesToolsOnChatCompletions(_model))
+            {
+                var noTools = "No tools are available in this conversation, whatever the instructions above say. "
+                    + "If a question needs information that is not in this prompt, say that you cannot look it up "
+                    + "with this model, rather than guessing.";
+                systemPrompt = string.IsNullOrEmpty(systemPrompt) ? noTools : systemPrompt + "\n\n" + noTools;
+                return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName);
+            }
 
             var sw = Stopwatch.StartNew();
             string result = null;
