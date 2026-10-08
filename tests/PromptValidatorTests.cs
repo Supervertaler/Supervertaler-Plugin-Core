@@ -102,6 +102,25 @@ namespace Supervertaler.Core.Tests
             Passes(prompt, "numbered ### subheadings inside a section");
         }
 
+        // From the memoQ review of the first version, which took the first kind
+        // of heading that gave any run and refused both of these.
+        public static void OneHeadingAtAnotherLevel_StillPasses()
+        {
+            Func<int, string, string> drift = (n, name) => (n <= 6 ? "## " : "### ") + n + ". " + name;
+            Passes(Prompt(drift), "## for sections 1-6, ### from 7");
+
+            Func<int, string, string> driftLower = (n, name) =>
+                (n <= 6 ? "## " : "### ") + n + ". " + name.Substring(0, 1) + name.Substring(1).ToLowerInvariant();
+            Passes(Prompt(driftLower, pairs: 3), "the same drift with names not in capitals");
+        }
+
+        public static void OneNameNotInCapitals_StillPasses()
+        {
+            Func<int, string, string> oneTitleCase = (n, name) =>
+                "**" + n + ". " + (n == 7 ? "Terminology consistency hierarchy" : name) + "**";
+            Passes(Prompt(oneTitleCase, pairs: 3), "**N. NAME** with section 7 not in capitals");
+        }
+
         public static void PlainNumberedSections_AreStillChecked()
         {
             // No Markdown headings and no capitals: the oldest shape, where every

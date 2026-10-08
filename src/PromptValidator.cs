@@ -166,13 +166,19 @@ namespace Supervertaler.Core
         /// complete prompt whose PREVIOUS CORRECT TRANSLATIONS section listed 31
         /// numbered pairs was refused as "stopping at section 31" with no OUTPUT
         /// FORMAT section (reported 5 Oct 2026). So candidates are tried in order
-        /// of how surely they are headings, and the first kind that yields a run
-        /// from 1 is used:
+        /// of how surely they are headings:
         ///   1. Markdown headings at the level of the first "1." heading, the
         ///      "## 1. ROLE" form the generator asks for;
         ///   2. lines whose name is in capitals, as every section name the
         ///      generator asks for is ("**12. PREVIOUS CORRECT TRANSLATIONS**");
         ///   3. any numbered line.
+        /// A kind is used only if its run reaches an OUTPUT FORMAT section. A
+        /// model that drifts on one heading ("### 7." among "## N.", "**7.
+        /// Examples**" among capitals) leaves the stricter kinds short, and
+        /// stopping there would refuse a complete prompt all over again. A prompt
+        /// that really is cut off has no OUTPUT FORMAT section in any of them, and
+        /// is reported against the most heading-like run, so the refusal names
+        /// the last real section.
         /// </summary>
         private static List<Section> FindSections(string[] lines)
         {
@@ -195,20 +201,25 @@ namespace Supervertaler.Core
                 });
             }
 
+            var runs = new List<List<Section>>();
             var firstHeadings = found.Where(s => s.Number == 1 && s.Level > 0).ToList();
             if (firstHeadings.Count > 0)
             {
                 var level = firstHeadings.Min(s => s.Level);
-                var headings = AscendingRun(found.Where(s => s.Level == level));
-                if (headings.Count > 0) return headings;
+                runs.Add(AscendingRun(found.Where(s => s.Level == level)));
             }
+            runs.Add(AscendingRun(found.Where(s => IsInCapitals(s.Title))));
+            runs.Add(AscendingRun(found));
 
-            var capitals = AscendingRun(found.Where(s => IsInCapitals(s.Title)));
-            if (capitals.Count > 0) return capitals;
-
-            var any = AscendingRun(found);
-            return any.Count > 0 ? any : found;
+            foreach (var run in runs)
+                if (run.Any(IsOutputFormat)) return run;
+            foreach (var run in runs)
+                if (run.Count > 0) return run;
+            return found;
         }
+
+        private static bool IsOutputFormat(Section s) =>
+            s.Title.IndexOf("OUTPUT FORMAT", StringComparison.OrdinalIgnoreCase) >= 0;
 
         /// <summary>1, 2, 3 ... taken in document order; anything out of step is skipped.</summary>
         private static List<Section> AscendingRun(IEnumerable<Section> candidates)
@@ -250,9 +261,7 @@ namespace Supervertaler.Core
             // NOT "the last section is OUTPUT FORMAT": complete prompts in the
             // library legitimately place TRANSLATOR COMMENT FORMAT after it. What a
             // truncated prompt lacks is the section altogether.
-            var hasOutputFormat = sections.Any(
-                x => x.Title.IndexOf("OUTPUT FORMAT", StringComparison.OrdinalIgnoreCase) >= 0);
-            if (!hasOutputFormat)
+            if (!sections.Any(IsOutputFormat))
             {
                 var last0 = sections[sections.Count - 1];
                 result.Failures.Add(
