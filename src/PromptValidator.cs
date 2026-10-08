@@ -29,6 +29,8 @@ namespace Supervertaler.Core
             public int Number;
             public string Title;
             public int LineIndex;
+            /// <summary>The number of leading '#', 0 when the line is not a Markdown heading.</summary>
+            public int Level;
         }
 
         public sealed class Result
@@ -48,7 +50,7 @@ namespace Supervertaler.Core
         // "16. PROJECT-SPECIFIC GLOSSARY", "## 16. GLOSSARY", "**16.** ..." - the
         // model is asked for a numbered list of sections and decorates it variously.
         private static readonly Regex SectionHeader = new Regex(
-            @"^[ \t]*#{0,6}[ \t]*\*{0,2}(?<n>\d{1,2})\.[ \t]*\*{0,2}(?<title>[^\r\n]*)$",
+            @"^[ \t]*(?<level>#{0,6})[ \t]*\*{0,2}(?<n>\d{1,2})\.[ \t]*\*{0,2}(?<title>[^\r\n]*)$",
             RegexOptions.Compiled);
 
         // "section 16", "Section 16", "sections 15 and 16" (first number only -
@@ -156,9 +158,21 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
-        /// Section headers, in document order. Only lines whose number continues
-        /// or starts a plausible run are taken, so a glossary row that happens to
-        /// begin "12. " does not register as a section.
+        /// Section headers, in document order.
+        ///
+        /// Every numbered line is a candidate, and a numbered list inside a
+        /// section is made of them too. Taken in document order, a list that runs
+        /// past the section numbers replaces the real headings after it: a
+        /// complete prompt whose PREVIOUS CORRECT TRANSLATIONS section listed 31
+        /// numbered pairs was refused as "stopping at section 31" with no OUTPUT
+        /// FORMAT section (reported 5 Oct 2026). So candidates are tried in order
+        /// of how surely they are headings, and the first kind that yields a run
+        /// from 1 is used:
+        ///   1. Markdown headings at the level of the first "1." heading, the
+        ///      "## 1. ROLE" form the generator asks for;
+        ///   2. lines whose name is in capitals, as every section name the
+        ///      generator asks for is ("**12. PREVIOUS CORRECT TRANSLATIONS**");
+        ///   3. any numbered line.
         /// </summary>
         private static List<Section> FindSections(string[] lines)
         {
@@ -168,33 +182,59 @@ namespace Supervertaler.Core
                 var m = SectionHeader.Match(lines[i]);
                 if (!m.Success) continue;
 
-                var title = m.Groups["title"].Value.Trim();
-                // A section header names something; a numbered list item inside a
-                // section usually runs on into prose. Require a title that is not
-                // empty and does not read as a sentence continuing below.
+                // "**12. NAME**" leaves its closing asterisks on the title.
+                var title = m.Groups["title"].Value.Trim().TrimEnd('*').Trim();
                 if (title.Length == 0) continue;
 
                 found.Add(new Section
                 {
                     Number = int.Parse(m.Groups["n"].Value),
                     Title = title,
-                    LineIndex = i
+                    LineIndex = i,
+                    Level = m.Groups["level"].Value.Length
                 });
             }
 
-            // Keep the longest ascending run starting at 1: the numbered sections.
-            // Anything else numbered in the body (enumerated rules, examples) is noise.
-            var run = new List<Section>();
-            var expected = 1;
-            foreach (var s in found)
+            var firstHeadings = found.Where(s => s.Number == 1 && s.Level > 0).ToList();
+            if (firstHeadings.Count > 0)
             {
-                if (s.Number == expected)
-                {
-                    run.Add(s);
-                    expected++;
-                }
+                var level = firstHeadings.Min(s => s.Level);
+                var headings = AscendingRun(found.Where(s => s.Level == level));
+                if (headings.Count > 0) return headings;
             }
-            return run.Count > 0 ? run : found;
+
+            var capitals = AscendingRun(found.Where(s => IsInCapitals(s.Title)));
+            if (capitals.Count > 0) return capitals;
+
+            var any = AscendingRun(found);
+            return any.Count > 0 ? any : found;
+        }
+
+        /// <summary>1, 2, 3 ... taken in document order; anything out of step is skipped.</summary>
+        private static List<Section> AscendingRun(IEnumerable<Section> candidates)
+        {
+            var run = new List<Section>();
+            foreach (var s in candidates)
+            {
+                if (s.Number == run.Count + 1) run.Add(s);
+            }
+            return run;
+        }
+
+        /// <summary>
+        /// "TRANSLATION MANDATE (NON-NEGOTIABLE) - faithful ..." is in capitals: the
+        /// name, before any description, has letters and none of them lower case.
+        /// "Source: Afdeling / Augustus 2026" is not.
+        /// </summary>
+        private static bool IsInCapitals(string title)
+        {
+            var name = title.Replace("*", "").Replace("`", "").Trim();
+            foreach (var sep in new[] { " – ", " - ", " (", ":" })
+            {
+                var at = name.IndexOf(sep, StringComparison.Ordinal);
+                if (at > 0) name = name.Substring(0, at);
+            }
+            return name.Count(char.IsLetter) >= 2 && !name.Any(char.IsLower);
         }
 
         private static void CheckHasOutputFormat(string[] lines, List<Section> sections, Result result)
