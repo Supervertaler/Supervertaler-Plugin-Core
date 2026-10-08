@@ -114,15 +114,31 @@ namespace Supervertaler.Core
         /// <summary>
         /// Reads a text file with delete sharing, so this read never makes
         /// someone else's <see cref="Write"/> fail. A byte-order mark, if any,
-        /// decides the encoding; otherwise UTF-8. Throws as File.ReadAllText does.
+        /// decides the encoding; otherwise UTF-8. A file someone holds without
+        /// sharing - a scanner, a sync tool - is waited out on the same schedule
+        /// as a write. Throws as File.ReadAllText does: at once for a missing
+        /// file, otherwise once the wait runs out.
         /// </summary>
         internal static string ReadAllText(string path)
         {
-            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete))
-            using (var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            for (int attempt = 0; ; attempt++)
             {
-                return reader.ReadToEnd();
+                try
+                {
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete))
+                    using (var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+                    {
+                        return reader.ReadToEnd();
+                    }
+                }
+                catch (FileNotFoundException) { throw; }
+                catch (DirectoryNotFoundException) { throw; }
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException)
+                                           && attempt < RetryDelaysMs.Length)
+                {
+                    Thread.Sleep(RetryDelaysMs[attempt]);
+                }
             }
         }
 

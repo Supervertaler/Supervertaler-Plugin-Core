@@ -123,6 +123,35 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        /// <summary>A reader is as patient as a writer: a brief exclusive hold is waited out; a missing file is not.</summary>
+        public static void ReadAllText_WaitsOutABriefExclusiveHold_ButNotAMissingFile()
+        {
+            using (var f = new Folder())
+            {
+                var path = f.File("settings.json");
+                File.WriteAllText(path, "text");
+
+                var opened = new ManualResetEventSlim();
+                var holder = Task.Run(() =>
+                {
+                    using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    {
+                        opened.Set();
+                        Thread.Sleep(100);
+                    }
+                });
+                opened.Wait();
+                Assert.Equal("text", AtomicFile.ReadAllText(path), "read once the holder let go");
+                holder.Wait();
+
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                bool missing = false;
+                try { AtomicFile.ReadAllText(f.File("absent.json")); }
+                catch (FileNotFoundException) { missing = true; }
+                Assert.True(missing && clock.ElapsedMilliseconds < 50, "a missing file throws at once (" + clock.ElapsedMilliseconds + " ms)");
+            }
+        }
+
         /// <summary>Reading must never be what stops someone else's write.</summary>
         public static void ReadAllText_LetsAWriteThrough_AndHonoursAByteOrderMark()
         {
