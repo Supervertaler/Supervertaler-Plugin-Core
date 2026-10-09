@@ -28,13 +28,17 @@ namespace Supervertaler.Core
         /// read it, but it is not a bank you select: it is layered underneath
         /// whichever bank you do select, and loses to it where they disagree.
         /// </summary>
-        public static IReadOnlyList<string> List()
+        public static IReadOnlyList<string> List() => List(Root);
+
+        /// <summary><see cref="List()"/> under a given root, for tests and for
+        /// <see cref="BankFileStore"/>, which is built on one.</summary>
+        internal static IReadOnlyList<string> List(string root)
         {
             try
             {
-                if (!Directory.Exists(Root)) return new string[0];
+                if (!Directory.Exists(root)) return new string[0];
 
-                return Directory.GetDirectories(Root)
+                return Directory.GetDirectories(root)
                     .Select(Path.GetFileName)
                     .Where(n => !string.IsNullOrEmpty(n))
                     .Where(n => !NotBanks.Contains(n))

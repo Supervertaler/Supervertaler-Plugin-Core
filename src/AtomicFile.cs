@@ -143,6 +143,36 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
+        /// <see cref="ReadAllText"/> without the decoding: the file's exact bytes,
+        /// read with the same sharing and the same wait. For a caller that has to
+        /// know whether the file changed at all - a byte-order mark or a line
+        /// ending included - which decoded text cannot tell it.
+        /// </summary>
+        internal static byte[] ReadAllBytes(string path)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete))
+                    using (var ms = new MemoryStream())
+                    {
+                        fs.CopyTo(ms);
+                        return ms.ToArray();
+                    }
+                }
+                catch (FileNotFoundException) { throw; }
+                catch (DirectoryNotFoundException) { throw; }
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException)
+                                           && attempt < RetryDelaysMs.Length)
+                {
+                    Thread.Sleep(RetryDelaysMs[attempt]);
+                }
+            }
+        }
+
+        /// <summary>
         /// Removes temporary files a process left behind by being killed in the
         /// middle of a write to <paramref name="path"/>. Only ones old enough
         /// that no live write can still own them.
