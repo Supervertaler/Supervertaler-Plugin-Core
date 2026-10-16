@@ -62,11 +62,16 @@ namespace Supervertaler.Core
         /// on the end of a translation one: a prompt the translator chose cannot
         /// switch it off, and the format the host parses is written down once.
         ///
-        /// <para>Nothing a proofread returns is written into a target, so no
-        /// check stands behind this one. What it adds besides the format is the
-        /// register of a source query: written as a <c>[[TC: ...]]</c> comment is
-        /// written, to the client, so the translator can pass it on as it
-        /// stands.</para>
+        /// <para>What it adds besides the format is the register of a source
+        /// query - written as a <c>[[TC: ...]]</c> comment is written, to the
+        /// client, so the translator can pass it on as it stands - and the
+        /// <c>Corrected:</c> line: the whole translation with the fix made, so a
+        /// host can write the fix into the segment at the translator's request
+        /// instead of leaving them to retype advice. A host that does so checks
+        /// first that the segment still reads as it did when it was sent and that
+        /// the line carries the source's tags, and writes nothing otherwise
+        /// (Trados: Apply on the Reports tab). A host that only shows the report
+        /// can ignore the line.</para>
         /// </summary>
         public static readonly string ProofreadText = string.Join(Environment.NewLine, new[]
         {
@@ -82,11 +87,17 @@ namespace Supervertaler.Core
             "      Issue: <what is wrong>",
             "      Evidence: <the segment numbers that show it; leave this line out when there are none>",
             "      Suggestion: <how to fix it>",
-            "- Describe the fix. Never return a corrected translation of the whole segment.",
+            "      Corrected: <the segment's whole translation with the fix made>",
+            "- The Corrected line comes last. It is the translation exactly as given, with only the fixes named",
+            "  in the Issue line made: every other word, space and punctuation mark as it was, and every inline",
+            "  tag and placeholder kept exactly as written and where it was, unless its place is the problem.",
+            "  It may be written into the segment as it stands, so it holds the translation and nothing else.",
+            "  A translation that runs over several lines keeps its line breaks.",
             "- When the problem is in the SOURCE (a typo, a missing word, a contradiction), start the Issue line",
             "  with \"Source query:\" and write the rest as the translator's comment to the client: 5 to 20 words,",
             "  in English unless the instructions above say otherwise, stating the fact and the fix, with no",
-            "  reasoning and no \"I\". Say in the Suggestion line whether the translation needs to change.",
+            "  reasoning and no \"I\". Say in the Suggestion line whether the translation needs to change, and",
+            "  leave the Corrected line out when it does not.",
             "  Example: Issue: Source query: \"100 000 miljoen euro\" means EUR 100 billion. Please check.",
             "- Never put commentary anywhere else in the reply.",
         });

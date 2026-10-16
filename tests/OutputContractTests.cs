@@ -149,8 +149,15 @@ namespace Supervertaler.Core.Tests
         {
             var t = OutputContract.ProofreadText;
             Assert.True(t.StartsWith(OutputContract.Heading, StringComparison.Ordinal), "starts with its heading");
-            foreach (var part in new[] { "[SEGMENT 0001] OK", "[SEGMENT 0001] ISSUE", "Issue:", "Evidence:", "Suggestion:", "Source query:" })
+            foreach (var part in new[] { "[SEGMENT 0001] OK", "[SEGMENT 0001] ISSUE", "Issue:", "Evidence:", "Suggestion:", "Corrected:", "Source query:" })
                 Assert.True(t.Contains(part), "names " + part);
+            // The corrected translation is what a host writes into the segment
+            // (Trados: Apply), so the contract must ask for it and must no longer
+            // forbid it - the two lines once said the opposite of each other.
+            Assert.True(t.IndexOf("Never return a corrected translation", StringComparison.Ordinal) < 0,
+                "no longer forbids the corrected translation");
+            Assert.True(t.IndexOf("Suggestion:", StringComparison.Ordinal) < t.IndexOf("Corrected:", StringComparison.Ordinal),
+                "Corrected comes after Suggestion, last");
             Assert.True(t.IndexOf('—') < 0, "no em dash");
             Assert.True(t.IndexOf('⟦') < 0, "not the older bracket form");
         }
