@@ -925,6 +925,11 @@ namespace Supervertaler.Core
             sb.Append("]");
 
             sb.Append(",\"stream\":false");
+            // Thinking models (Gemma 4, Qwen 3.x) reason first unless told not to, and
+            // nothing here reads the reasoning: one paragraph on gemma4:26b-a4b took 213 s
+            // instead of 8 s, and the thinking counts against num_predict. Models that
+            // cannot think accept false (checked on Ollama 0.40.5).
+            sb.Append(",\"think\":false");
             sb.Append(",\"options\":{\"temperature\":0.3,\"num_predict\":").Append(tokens).Append("}");
             sb.Append("}");
 
@@ -1271,6 +1276,7 @@ namespace Supervertaler.Core
 
             sb.Append("]");
             sb.Append(",\"stream\":false");
+            sb.Append(",\"think\":false"); // see CallOllamaAsync
             sb.Append(",\"options\":{\"temperature\":0.3,\"num_predict\":").Append(tokens).Append("}");
             sb.Append("}");
 
