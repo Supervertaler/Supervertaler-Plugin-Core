@@ -39,6 +39,17 @@ namespace Supervertaler.Core
     }
 
     /// <summary>
+    /// A server on the translator's own machine read too little of the prompt for
+    /// the answer to be used. Every request of a job carries the same instructions,
+    /// so a caller working through batches stops at the first one rather than
+    /// having each of them read for minutes and be refused in turn.
+    /// </summary>
+    public sealed class PromptTooLargeException : InvalidOperationException
+    {
+        public PromptTooLargeException(string message) : base(message) { }
+    }
+
+    /// <summary>
     /// Universal LLM client for all supported providers.
     /// Uses System.Net.Http.HttpClient (built into .NET 4.8) – no external dependencies.
     /// Ported from Python Supervertaler's LLMClient in modules/llm_clients.py.
@@ -640,6 +651,8 @@ namespace Supervertaler.Core
             // per-model flag keeps this working for models released after this
             // build, whose metadata we cannot know in advance.
             if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            var local = _provider == LlmModels.ProviderCustomOpenAi;
+            if (local) timeoutMs = GetLocalServerTimeout();
 
             // OpenRouter passes cache_control through to Anthropic models when it's
             // expressed via the OpenAI-compatible content-array form. For OpenAI and
@@ -696,14 +709,25 @@ namespace Supervertaler.Core
                 using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     cts.CancelAfter(timeoutMs);
-                    var response = await Http.SendAsync(request, cts.Token);
-                    var body = await response.Content.ReadAsStringAsync();
+                    HttpResponseMessage response;
+                    string body;
+                    try
+                    {
+                        response = await Http.SendAsync(request, cts.Token);
+                        body = await response.Content.ReadAsStringAsync();
+                    }
+                    catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+                    {
+                        throw TimedOut(OpenAiProviderLabel(), timeoutMs, local, ex);
+                    }
 
                     if (!response.IsSuccessStatusCode)
                         throw new HttpRequestException(EnrichErrorMessage(OpenAiProviderLabel(), (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractOpenAiUsage(body);
                     LastFinishReason = ExtractJsonString(body, "finish_reason");
+                    if (local)
+                        EnsureWholePromptRead(OpenAiProviderLabel(), TokenEstimator.EstimateInputTokens(prompt, systemPrompt), LastUsage);
                     return ExtractOpenAiContent(body);
                 }
             }
@@ -909,14 +933,8 @@ namespace Supervertaler.Core
             string prompt, string systemPrompt, int? maxTokens,
             CancellationToken ct)
         {
-            var endpoint = _baseUrl ?? "http://localhost:11434";
-            var url = $"{endpoint.TrimEnd('/')}/api/chat";
-            var tokens = maxTokens ?? 8192;
-
             var sb = new StringBuilder();
-            sb.Append("{\"model\":").Append(JsonString(_model));
-            sb.Append(",\"messages\":[");
-
+            sb.Append("[");
             if (!string.IsNullOrEmpty(systemPrompt))
             {
                 sb.Append("{\"role\":\"system\",\"content\":").Append(JsonString(systemPrompt)).Append("},");
@@ -924,17 +942,40 @@ namespace Supervertaler.Core
             sb.Append("{\"role\":\"user\",\"content\":").Append(JsonString(prompt)).Append("}");
             sb.Append("]");
 
+            return await SendOllamaAsync(sb.ToString(),
+                TokenEstimator.EstimateInputTokens(prompt, systemPrompt), maxTokens ?? 8192, ct);
+        }
+
+        /// <summary>
+        /// Sends one /api/chat request, the messages already serialised, with what a
+        /// model on the translator's own machine needs and a cloud model does not: a
+        /// context window that holds the prompt, the model kept loaded between
+        /// requests, a time limit that fits a computer without a graphics card, and
+        /// a check that the whole prompt was read. Shared by the single-prompt and
+        /// chat calls so the two cannot drift.
+        /// </summary>
+        private async Task<string> SendOllamaAsync(
+            string messagesJson, int estimatedInputTokens, int tokens, CancellationToken ct)
+        {
+            var endpoint = (_baseUrl ?? "http://localhost:11434").TrimEnd('/');
+            var url = endpoint + "/api/chat";
+            var numCtx = OllamaContextToSend(endpoint, _model, OllamaContextFor(estimatedInputTokens, tokens));
+
+            var sb = new StringBuilder();
+            sb.Append("{\"model\":").Append(JsonString(_model));
+            sb.Append(",\"messages\":").Append(messagesJson);
             sb.Append(",\"stream\":false");
             // Thinking models (Gemma 4, Qwen 3.x) reason first unless told not to, and
             // nothing here reads the reasoning: one paragraph on gemma4:26b-a4b took 213 s
             // instead of 8 s, and the thinking counts against num_predict. Models that
             // cannot think accept false (checked on Ollama 0.40.5).
             sb.Append(",\"think\":false");
-            sb.Append(",\"options\":{\"temperature\":0.3,\"num_predict\":").Append(tokens).Append("}");
+            sb.Append(",\"keep_alive\":").Append(JsonString(OllamaKeepAlive));
+            sb.Append(",\"options\":{\"temperature\":0.3,\"num_predict\":").Append(tokens);
+            sb.Append(",\"num_ctx\":").Append(numCtx).Append("}");
             sb.Append("}");
 
-            // Timeout based on model size
-            var timeoutMs = GetOllamaTimeout();
+            var timeoutMs = GetLocalServerTimeout();
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, url))
             {
@@ -943,14 +984,28 @@ namespace Supervertaler.Core
                 using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     cts.CancelAfter(timeoutMs);
-                    var response = await Http.SendAsync(request, cts.Token);
-                    var body = await response.Content.ReadAsStringAsync();
+                    HttpResponseMessage response;
+                    string body;
+                    try
+                    {
+                        response = await Http.SendAsync(request, cts.Token);
+                        body = await response.Content.ReadAsStringAsync();
+                    }
+                    catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+                    {
+                        throw TimedOut("Ollama", timeoutMs, local: true, inner: ex);
+                    }
 
                     if (!response.IsSuccessStatusCode)
                         throw new HttpRequestException(EnrichErrorMessage("Ollama", (int)response.StatusCode, body, _model));
 
                     LastUsage = ExtractOllamaUsage(body);
                     LastFinishReason = ExtractJsonString(body, "done_reason");
+                    EnsureWholePromptRead("Ollama", estimatedInputTokens, LastUsage);
+
+                    // Only once it has worked: a size that failed must not become
+                    // the size every later request asks for.
+                    RememberOllamaContext(endpoint, _model, numCtx);
                     return ExtractOllamaContent(body);
                 }
             }
@@ -1009,6 +1064,8 @@ namespace Supervertaler.Core
             // per-model flag keeps this working for models released after this
             // build, whose metadata we cannot know in advance.
             if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            var local = _provider == LlmModels.ProviderCustomOpenAi;
+            if (local) timeoutMs = GetLocalServerTimeout();
 
             var sb = new StringBuilder();
             sb.Append("{\"model\":").Append(JsonString(_model));
@@ -1073,12 +1130,24 @@ namespace Supervertaler.Core
                 using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     cts.CancelAfter(timeoutMs);
-                    var response = await Http.SendAsync(request, cts.Token);
-                    var body = await response.Content.ReadAsStringAsync();
+                    HttpResponseMessage response;
+                    string body;
+                    try
+                    {
+                        response = await Http.SendAsync(request, cts.Token);
+                        body = await response.Content.ReadAsStringAsync();
+                    }
+                    catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+                    {
+                        throw TimedOut(OpenAiProviderLabel(), timeoutMs, local, ex);
+                    }
 
                     if (!response.IsSuccessStatusCode)
                         throw new HttpRequestException(EnrichErrorMessage(OpenAiProviderLabel(), (int)response.StatusCode, body, _model));
 
+                    if (local)
+                        EnsureWholePromptRead(OpenAiProviderLabel(),
+                            TokenEstimator.EstimateInputTokens(messages, systemPrompt), ExtractOpenAiUsage(body));
                     return ExtractOpenAiContent(body);
                 }
             }
@@ -1239,13 +1308,8 @@ namespace Supervertaler.Core
             List<ChatMessage> messages, string systemPrompt, int? maxTokens,
             CancellationToken ct)
         {
-            var endpoint = _baseUrl ?? "http://localhost:11434";
-            var url = $"{endpoint.TrimEnd('/')}/api/chat";
-            var tokens = maxTokens ?? 8192;
-
             var sb = new StringBuilder();
-            sb.Append("{\"model\":").Append(JsonString(_model));
-            sb.Append(",\"messages\":[");
+            sb.Append("[");
 
             if (!string.IsNullOrEmpty(systemPrompt))
             {
@@ -1275,31 +1339,9 @@ namespace Supervertaler.Core
             }
 
             sb.Append("]");
-            sb.Append(",\"stream\":false");
-            sb.Append(",\"think\":false"); // see CallOllamaAsync
-            sb.Append(",\"options\":{\"temperature\":0.3,\"num_predict\":").Append(tokens).Append("}");
-            sb.Append("}");
 
-            var timeoutMs = GetOllamaTimeout();
-
-            using (var request = new HttpRequestMessage(HttpMethod.Post, url))
-            {
-                request.Content = new StringContent(sb.ToString(), Encoding.UTF8, "application/json");
-
-                using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
-                {
-                    cts.CancelAfter(timeoutMs);
-                    var response = await Http.SendAsync(request, cts.Token);
-                    var body = await response.Content.ReadAsStringAsync();
-
-                    if (!response.IsSuccessStatusCode)
-                        throw new HttpRequestException(EnrichErrorMessage("Ollama", (int)response.StatusCode, body, _model));
-
-                    LastUsage = ExtractOllamaUsage(body);
-                    LastFinishReason = ExtractJsonString(body, "done_reason");
-                    return ExtractOllamaContent(body);
-                }
-            }
+            return await SendOllamaAsync(sb.ToString(),
+                TokenEstimator.EstimateInputTokens(messages, systemPrompt), maxTokens ?? 8192, ct);
         }
 
         // ─── Response Extraction ─────────────────────────────────────
@@ -2039,18 +2081,150 @@ namespace Supervertaler.Core
             return model.ToLowerInvariant().Contains("gpt-6.1-sol");
         }
 
-        private int GetOllamaTimeout()
-        {
-            if (_ollamaTimeoutMinutes > 0)
-                return _ollamaTimeoutMinutes * 60_000;
+        // ─── Servers on the translator's own machine ─────────────────
+        //
+        // Ollama, and OpenAI-compatible servers such as LM Studio. Measured on
+        // 2026-10-12/17 on a PC without a graphics card: a model reads a prompt at
+        // ~16 tokens a second, so the first request of a job, carrying the
+        // instructions, glossary and memory bank, took 18 minutes on
+        // gemma4:26b-a4b, and every later one 40-55 s, because Ollama keeps what it
+        // has read for as long as the model stays loaded with the same settings.
 
-            var lower = _model.ToLowerInvariant();
-            if (lower.Contains("14b") || lower.Contains("13b") || lower.Contains("20b"))
-                return 600_000;
-            if (lower.Contains("7b") || lower.Contains("8b") || lower.Contains("9b")
-                || lower.Contains("12b") || lower.Contains("11b") || lower.Contains("10b"))
-                return 300_000;
-            return 180_000;
+        /// <summary>
+        /// Time limit for one request when nobody set one. One value for every
+        /// model: what decides the time is the computer and the prompt's length,
+        /// not the model's name, and the old table by name gave the largest models
+        /// the SHORTEST limit (3 minutes for anything above 20B). memoQ has run on
+        /// this value since 2026-10-12.
+        /// </summary>
+        internal const int LocalServerDefaultTimeoutMinutes = 30;
+
+        private int GetLocalServerTimeout()
+        {
+            var minutes = _ollamaTimeoutMinutes > 0 ? _ollamaTimeoutMinutes : LocalServerDefaultTimeoutMinutes;
+            return minutes * 60_000;
+        }
+
+        /// <summary>
+        /// Our own time limit, reported as what it is. Left as a cancellation it
+        /// reads to every caller as the translator pressing Stop: Batch Translate
+        /// ended the run there without a word.
+        /// </summary>
+        private static TimeoutException TimedOut(string server, int timeoutMs, bool local, Exception inner)
+        {
+            var limit = timeoutMs >= 120_000 ? (timeoutMs / 60_000) + " minutes" : (timeoutMs / 1000) + " seconds";
+            var message = server + " did not answer within " + limit + ", so the request was abandoned.";
+            if (local)
+                message += " Without a graphics card, a model can take that long just to read a long prompt"
+                    + " the first time. A longer timeout in the AI settings, a smaller model or a shorter prompt helps.";
+            return new TimeoutException(message, inner);
+        }
+
+        /// <summary>
+        /// How long Ollama keeps the model loaded after a request. Its own default
+        /// is 5 minutes, and an unloaded model has to read the whole prompt again:
+        /// after an ordinary break the next segment took 13 minutes instead of 12
+        /// seconds (memoQ, 2026-10-13). Michael's first choice was "until the host
+        /// closes", but Trados Studio's normal close runs none of our shutdown
+        /// code (measured 2026-08-25, see SupervertalerBridge), so the model would
+        /// stay in memory until Ollama itself stopped. Four hours outlasts a break
+        /// and still lets the memory go the same day.
+        /// </summary>
+        internal const string OllamaKeepAlive = "4h";
+
+        /// <summary>The context sizes asked of Ollama: few and fixed, see <see cref="OllamaContextToSend"/>.</summary>
+        internal static readonly int[] OllamaContextSteps = { 8192, 16384, 32768, 65536, 131072 };
+
+        /// <summary>
+        /// The smallest step that holds the prompt and the answer. Without num_ctx
+        /// Ollama uses its own default, 4,096 on a PC without a graphics card, and
+        /// cuts a longer prompt to its first 5 and last ~2,046 tokens - which drops
+        /// the instructions, glossary and memory bank, since they come first, and
+        /// still translates the segments, with HTTP 200 and no warning. The
+        /// estimate is characters / 4, so it is doubled: a real translation prompt
+        /// came to 1.04 times it (16,600 tokens, 2026-10-17), but a glossary of
+        /// numbers and codes came to 2.0 (12,219 for 6,114). Doubling is needed
+        /// because the short-read check cannot see this case: when our own
+        /// num_ctx is what cuts, Ollama keeps about half of it, still above half
+        /// the estimate. Above the largest step, the largest step.
+        /// </summary>
+        internal static int OllamaContextFor(int estimatedInputTokens, int numPredict)
+        {
+            long needed = (long)estimatedInputTokens * 2 + numPredict;
+            foreach (var step in OllamaContextSteps)
+                if (needed <= step) return step;
+            return OllamaContextSteps[OllamaContextSteps.Length - 1];
+        }
+
+        private static readonly object OllamaContextLock = new object();
+        private static readonly Dictionary<string, int> OllamaContextInUse =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The context size to send: what this request needs, or the largest a
+        /// request to this model has already used successfully, whichever is
+        /// larger. A different num_ctx makes Ollama load the model again and throw
+        /// away everything it has read, so the chat's short prompts and a batch's
+        /// long one would otherwise cost a whole prompt reading each time they
+        /// alternate. For the life of the process only; it grows only after a
+        /// request worked (<see cref="RememberOllamaContext"/>).
+        /// </summary>
+        internal static int OllamaContextToSend(string endpoint, string model, int wanted)
+        {
+            lock (OllamaContextLock)
+            {
+                return OllamaContextInUse.TryGetValue(endpoint + "|" + model, out var inUse) && inUse > wanted
+                    ? inUse : wanted;
+            }
+        }
+
+        internal static void RememberOllamaContext(string endpoint, string model, int numCtx)
+        {
+            lock (OllamaContextLock)
+            {
+                var key = endpoint + "|" + model;
+                if (!OllamaContextInUse.TryGetValue(key, out var inUse) || numCtx > inUse)
+                    OllamaContextInUse[key] = numCtx;
+            }
+        }
+
+        /// <summary>
+        /// Below this, a prompt is not judged: nothing that short is cut by any
+        /// server's context window, and the estimate is too rough at that size.
+        /// </summary>
+        internal const int MinPromptTokensToJudge = 1500;
+
+        /// <summary>
+        /// True when the server says it read less than half of what was sent.
+        /// Nothing reported (0) is no evidence either way. Ollama reports the whole
+        /// prompt even when it serves it from its cache (memoQ checked, 2026-10-12;
+        /// 16,600 on every cached request, 2026-10-17).
+        /// </summary>
+        internal static bool ReadTooLittle(int estimatedInputTokens, int tokensRead)
+        {
+            return estimatedInputTokens >= MinPromptTokensToJudge
+                && tokensRead > 0
+                && tokensRead < estimatedInputTokens / 2;
+        }
+
+        /// <summary>
+        /// Refuses an answer made from part of the prompt. With num_ctx sized to
+        /// the request this means the model itself holds less than the prompt -
+        /// aya-expanse:8b holds 8,192 tokens, a prompt with the memory bank was
+        /// 16,446 - or, on an OpenAI-compatible server, that its context-length
+        /// setting does. The translation would otherwise look fine.
+        /// </summary>
+        private void EnsureWholePromptRead(string server, int estimatedInputTokens, ApiUsage usage)
+        {
+            if (usage == null) return;
+            var read = usage.TotalInputTokens;
+            if (!ReadTooLittle(estimatedInputTokens, read)) return;
+
+            throw new PromptTooLargeException(server + " read only " + read.ToString("N0") + " of the roughly "
+                + estimatedInputTokens.ToString("N0") + " prompt tokens it was sent, so " + _model
+                + " would have answered without most of the instructions, glossary and memory bank. The answer was"
+                + " not used. The model, or the server's context-length setting, holds fewer tokens than this"
+                + " prompt: choose a model that holds more, or send less – leaving out the memory bank usually does it.");
         }
 
         // ─── Tool Use Support ────────────────────────────────────────
@@ -2333,6 +2507,7 @@ namespace Supervertaler.Core
             // per-model flag keeps this working for models released after this
             // build, whose metadata we cannot know in advance.
             if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            if (_provider == LlmModels.ProviderCustomOpenAi) timeoutMs = GetLocalServerTimeout();
             const int maxToolRounds = 5;
 
             // Build mutable conversation
