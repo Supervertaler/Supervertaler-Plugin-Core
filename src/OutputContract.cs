@@ -73,34 +73,65 @@ namespace Supervertaler.Core
         /// (Trados: Apply on the Reports tab). A host that only shows the report
         /// can ignore the line.</para>
         /// </summary>
-        public static readonly string ProofreadText = string.Join(Environment.NewLine, new[]
+        public static readonly string ProofreadText = Proofread(withSource: true);
+
+        /// <summary>
+        /// <see cref="ProofreadText"/> for a check of the translation alone, sent
+        /// without its source: a final read after post-editing, for typos, words
+        /// left behind, grammar and punctuation, at roughly half the tokens. The
+        /// verdict format is the same, so the same parser reads it and the same
+        /// Corrected line can be applied. What goes is the source query, which a
+        /// request with no source cannot raise; a line says so, because a prompt
+        /// written for the full check may still ask for one.
+        /// </summary>
+        public static readonly string ProofreadTargetOnlyText = Proofread(withSource: false);
+
+        private static string Proofread(bool withSource)
         {
-            Heading,
-            "",
-            "Fixed. It applies whatever the instructions above say.",
-            "",
-            "- Give one verdict for every segment you are given, in the order given, each headed by the",
-            "  segment's number exactly as it was given: [SEGMENT 0001]. Nothing before the first verdict and",
-            "  nothing after the last: no preamble, no summary, no markdown, no code fences.",
-            "- A segment with nothing wrong is one line: [SEGMENT 0001] OK",
-            "- A segment with a problem is [SEGMENT 0001] ISSUE, followed by these lines, each on a line of its own:",
-            "      Issue: <what is wrong>",
-            "      Evidence: <the segment numbers that show it; leave this line out when there are none>",
-            "      Suggestion: <how to fix it>",
-            "      Corrected: <the segment's whole translation with the fix made>",
-            "- The Corrected line comes last. It is the translation exactly as given, with only the fixes named",
-            "  in the Issue line made: every other word, space and punctuation mark as it was, and every inline",
-            "  tag and placeholder kept exactly as written and where it was, unless its place is the problem.",
-            "  It may be written into the segment as it stands, so it holds the translation and nothing else.",
-            "  A translation that runs over several lines keeps its line breaks.",
-            "- When the problem is in the SOURCE (a typo, a missing word, a contradiction), start the Issue line",
-            "  with \"Source query:\" and write the rest as the translator's comment to the client: 5 to 20 words,",
-            "  in English unless the instructions above say otherwise, stating the fact and the fix, with no",
-            "  reasoning and no \"I\". Say in the Suggestion line whether the translation needs to change, and",
-            "  leave the Corrected line out when it does not.",
-            "  Example: Issue: Source query: \"100 000 miljoen euro\" means EUR 100 billion. Please check.",
-            "- Never put commentary anywhere else in the reply.",
-        });
+            var lines = new System.Collections.Generic.List<string>
+            {
+                Heading,
+                "",
+                "Fixed. It applies whatever the instructions above say.",
+                "",
+                "- Give one verdict for every segment you are given, in the order given, each headed by the",
+                "  segment's number exactly as it was given: [SEGMENT 0001]. Nothing before the first verdict and",
+                "  nothing after the last: no preamble, no summary, no markdown, no code fences.",
+                "- A segment with nothing wrong is one line: [SEGMENT 0001] OK",
+                "- A segment with a problem is [SEGMENT 0001] ISSUE, followed by these lines, each on a line of its own:",
+                "      Issue: <what is wrong>",
+                "      Evidence: <the segment numbers that show it; leave this line out when there are none>",
+                "      Suggestion: <how to fix it>",
+                "      Corrected: <the segment's whole translation with the fix made>",
+                "- The Corrected line comes last. It is the translation exactly as given, with only the fixes named",
+                "  in the Issue line made: every other word, space and punctuation mark as it was, and every inline",
+                "  tag and placeholder kept exactly as written and where it was, unless its place is the problem.",
+                "  It may be written into the segment as it stands, so it holds the translation and nothing else.",
+                "  A translation that runs over several lines keeps its line breaks.",
+            };
+            if (withSource)
+            {
+                lines.AddRange(new[]
+                {
+                    "- When the problem is in the SOURCE (a typo, a missing word, a contradiction), start the Issue line",
+                    "  with \"Source query:\" and write the rest as the translator's comment to the client: 5 to 20 words,",
+                    "  in English unless the instructions above say otherwise, stating the fact and the fix, with no",
+                    "  reasoning and no \"I\". Say in the Suggestion line whether the translation needs to change, and",
+                    "  leave the Corrected line out when it does not.",
+                    "  Example: Issue: Source query: \"100 000 miljoen euro\" means EUR 100 billion. Please check.",
+                });
+            }
+            else
+            {
+                lines.AddRange(new[]
+                {
+                    "- This request carries no source text, so no Issue line is a source query, and no issue may rest",
+                    "  on what the source might say.",
+                });
+            }
+            lines.Add("- Never put commentary anywhere else in the reply.");
+            return string.Join(Environment.NewLine, lines);
+        }
 
         /// <summary>
         /// Said once more, in front of the segment, when the first reply broke the

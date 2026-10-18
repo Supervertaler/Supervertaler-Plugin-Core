@@ -162,6 +162,30 @@ namespace Supervertaler.Core.Tests
             Assert.True(t.IndexOf('⟦') < 0, "not the older bracket form");
         }
 
+        public static void ProofreadTargetOnlyContract_SameFormat_NoSourceQuery()
+        {
+            var full = OutputContract.ProofreadText;
+            var t = OutputContract.ProofreadTargetOnlyText;
+            Assert.True(t.StartsWith(OutputContract.Heading, StringComparison.Ordinal), "starts with its heading");
+            foreach (var part in new[] { "[SEGMENT 0001] OK", "[SEGMENT 0001] ISSUE", "Issue:", "Evidence:", "Suggestion:", "Corrected:" })
+                Assert.True(t.Contains(part), "names " + part);
+
+            // The verdict format is the full check's, word for word, so one parser
+            // reads both and a Corrected line applies the same way.
+            const string formatEnd = "keeps its line breaks.";
+            var cut = full.IndexOf(formatEnd, StringComparison.Ordinal) + formatEnd.Length;
+            Assert.True(cut > formatEnd.Length, "the full contract still ends its format with the line breaks rule");
+            Assert.Equal(full.Substring(0, cut), t.Substring(0, cut), "same format as the full check");
+
+            // No source in the request, so nothing that asks for a source query.
+            Assert.True(t.IndexOf("Source query:", StringComparison.Ordinal) < 0, "asks for no source query");
+            Assert.True(t.IndexOf("SOURCE", StringComparison.Ordinal) < 0, "no source-problem rule");
+            Assert.True(t.Contains("no source text"), "says the request has no source");
+            Assert.True(t.EndsWith("- Never put commentary anywhere else in the reply.", StringComparison.Ordinal),
+                "ends as the full contract does");
+            Assert.True(t.IndexOf('—') < 0, "no em dash");
+        }
+
         public static void DefaultTranslationPrompt_OldCopyIsRefreshed_EditedCopyIsNot()
         {
             const string oldLine = "- When a term has no established equivalent, keep the source term and add a brief explanation in parentheses if needed";
