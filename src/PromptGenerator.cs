@@ -345,7 +345,8 @@ namespace Supervertaler.Core
             var tmInstruction = BuildTmSection(ctx.TmPairs);
 
             // Build document content excerpt
-            var documentContent = BuildDocumentContent(ctx.SourceSegments);
+            var documentContent = BuildDocumentContent(ctx);
+            var files = DocumentContent.Files(ctx.NumberedSegments);
 
             var sb = new StringBuilder();
             sb.AppendLine("You are a prompt engineering specialist for professional translation. Your task is to generate");
@@ -391,6 +392,25 @@ namespace Supervertaler.Core
                 sb.AppendLine("on using them - resolving cross-references such as \"according to claim 2\", keeping list");
                 sb.AppendLine("items grammatically parallel. Do NOT instruct it to output them, and do not treat a");
                 sb.AppendLine("marker as part of the sentence when judging tone, register or terminology.");
+                sb.AppendLine();
+            }
+
+            // A merged document: the CAT tool numbers each file from 1. The excerpt
+            // was numbered by nothing, so the model counted lines straight through
+            // and every segment it cited was off by the size of the files before it.
+            // There are three numberings in play - the excerpt's, the translator's
+            // grid (the same) and each batch's own 1..N - so say which one counts.
+            if (files.Count > 1)
+            {
+                sb.AppendLine($"SEGMENT NUMBERS: this document is made up of {files.Count} files, and the CAT tool numbers the");
+                sb.AppendLine("segments of each file separately, starting again at 1. The DOCUMENT CONTENT excerpt below is");
+                sb.AppendLine("headed by file and numbered the same way, so its numbers are the ones the translator sees.");
+                sb.AppendLine("Whenever the prompt you write refers to a particular segment - a defect to correct, passages");
+                sb.AppendLine("to keep aligned, a clash to flag - identify it by its file name and its number exactly as the");
+                sb.AppendLine("excerpt shows them (\"<file name>, segment 12\"), and quote a few words of its source text beside");
+                sb.AppendLine("the number. Never number segments yourself or count lines. The quote matters as much as the");
+                sb.AppendLine("number: the translating model receives each batch numbered from 1, not with these numbers,");
+                sb.AppendLine("so the quoted words are how it recognises the segment.");
                 sb.AppendLine();
             }
 
@@ -1079,6 +1099,22 @@ namespace Supervertaler.Core
             return sb.ToString().TrimEnd();
         }
 
+        /// <summary>The excerpt: plain lines as always, except in a document of
+        /// several files, which is headed by file and numbered as the CAT tool
+        /// numbers it (blank segments left out, as here).</summary>
+        private static string BuildDocumentContent(PromptGenerationContext ctx)
+        {
+            var numbered = ctx.NumberedSegments;
+            if (numbered == null)
+                return BuildDocumentContent(ctx.SourceSegments);
+            if (DocumentContent.Files(numbered).Count < 2)
+                return BuildDocumentContent(numbered.Select(s => s?.Text).ToList());
+
+            var sb = new StringBuilder();
+            DocumentContent.AppendNumbered(sb, numbered, skipBlank: true);
+            return sb.ToString().TrimEnd();
+        }
+
         private static string BuildDocumentContent(List<string> segments)
         {
             if (segments == null || segments.Count == 0)
@@ -1130,6 +1166,16 @@ namespace Supervertaler.Core
         public string SegmentUnit { get; set; } = "segments";
 
         public List<string> SourceSegments { get; set; }
+
+        /// <summary>
+        /// The same segments with the numbers and file names the CAT tool shows.
+        /// When set, the excerpt is built from these and <see cref="SourceSegments"/>
+        /// is not read. A one-file document reads exactly as it would from
+        /// SourceSegments; a document of several files is headed and numbered per
+        /// file, and the meta-prompt tells the model to cite segments that way.
+        /// Null (memoQ) keeps the excerpt as it was.
+        /// </summary>
+        public IList<DocumentSegment> NumberedSegments { get; set; }
 
         /// <summary>
         /// #113: the rendered gloss register, or null when this document has no

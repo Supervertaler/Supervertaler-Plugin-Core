@@ -90,6 +90,13 @@ namespace Supervertaler.Core
         /// <param name="customPromptContent">Optional custom prompt content (from library); already variable-substituted</param>
         /// <param name="termbaseTerms">Optional termbase terms to inject</param>
         /// <param name="customSystemPrompt">Optional system prompt override (replaces base prompt entirely)</param>
+        /// <param name="documentSegments">The document's source segments, numbered 1..N in the
+        /// DOCUMENT CONTENT block. Give <paramref name="numberedSegments"/> instead where the
+        /// CAT tool's own numbers are known.</param>
+        /// <param name="numberedSegments">The document's source segments with the numbers and
+        /// files the CAT tool shows, so a number in the prompt is one the translator can find:
+        /// a document of several files is headed and numbered per file. Never together with
+        /// <paramref name="documentSegments"/>.</param>
         public static string BuildSystemPrompt(string sourceLang, string targetLang,
             string customPromptContent = null,
             List<TermEntry> termbaseTerms = null,
@@ -98,8 +105,12 @@ namespace Supervertaler.Core
             int maxDocumentSegments = 500,
             bool includeTermMetadata = true,
             string kbContext = null,
-            StructureContextMode structureContext = StructureContextMode.Off)
+            StructureContextMode structureContext = StructureContextMode.Off,
+            IList<DocumentSegment> numberedSegments = null)
         {
+            if (documentSegments != null && numberedSegments != null)
+                throw new ArgumentException("Pass the document as documentSegments or as numberedSegments, not both.");
+
             var sb = new StringBuilder(4096);
 
             // Layer 1: Base system prompt (or user's custom override)
@@ -154,7 +165,9 @@ namespace Supervertaler.Core
             }
 
             // Document context (all source segments for document type analysis)
-            if (documentSegments != null && documentSegments.Count > 0)
+            var document = numberedSegments
+                ?? (documentSegments != null ? DocumentSegment.Sequential(documentSegments) : null);
+            if (document != null && document.Count > 0)
             {
                 sb.AppendLine();
                 sb.AppendLine();
@@ -164,37 +177,9 @@ namespace Supervertaler.Core
                 sb.AppendLine("assessment to inform your translation style, terminology choices, and register.");
                 sb.AppendLine();
 
-                var max = maxDocumentSegments > 0 ? maxDocumentSegments : 500;
-
-                if (documentSegments.Count <= max)
-                {
-                    for (int i = 0; i < documentSegments.Count; i++)
-                    {
-                        sb.Append(i + 1).Append(". ").AppendLine(documentSegments[i]);
-                    }
-                }
-                else
-                {
-                    // Truncate: first 80% of max + last 20% of max
-                    int firstCount = (int)(max * 0.8);
-                    int lastCount = max - firstCount;
-                    int omitted = documentSegments.Count - max;
-
-                    for (int i = 0; i < firstCount; i++)
-                    {
-                        sb.Append(i + 1).Append(". ").AppendLine(documentSegments[i]);
-                    }
-
-                    sb.AppendLine();
-                    sb.Append("[... ").Append(omitted).AppendLine(" segments omitted ...]");
-                    sb.AppendLine();
-
-                    int startLast = documentSegments.Count - lastCount;
-                    for (int i = startLast; i < documentSegments.Count; i++)
-                    {
-                        sb.Append(i + 1).Append(". ").AppendLine(documentSegments[i]);
-                    }
-                }
+                // Truncated past the cap: first 80% of it + last 20%.
+                DocumentContent.AppendNumbered(sb, document,
+                    maxDocumentSegments > 0 ? maxDocumentSegments : 500);
             }
 
             return sb.ToString().TrimEnd();
