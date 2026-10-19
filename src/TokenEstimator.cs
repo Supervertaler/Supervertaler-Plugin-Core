@@ -139,12 +139,18 @@ namespace Supervertaler.Core
             // The GPT-6 and GPT-5.6 models read for much less (OpenAI's model pages,
             // checked 2026-10-07): 0.05x on GPT-6.1 Sol ($0.10 against $2), 0.1x on
             // Astra, Luna, GPT-6 Sol and all three GPT-5.6. At 0.5x their cache
-            // reads were costed at five to ten times the bill. Their 1.25x cache
-            // writes are left out: Chat Completions reports no write count to
-            // apply them to.
+            // reads were costed at five to ten times the bill. Cache writes are
+            // 1.25x on every GPT-6 model (OpenAI's pricing page, checked
+            // 2026-10-19: $2.50 against $2.00 on 6.1 Sol and GPT-6 Sol, $12.50 on
+            // Astra, $0.125 on Luna). Only the Responses API reports a write count
+            // (input_tokens_details.cache_write_tokens), so in practice this costs
+            // GPT-6.1 Sol's tool chat; Chat Completions reports none. GPT-5.6 is not
+            // on that page any more and keeps 1x.
             if (lc.Contains("gpt-6.1-sol"))
-                return (0.05m, 1m);
-            if (lc.Contains("gpt-6") || lc.Contains("gpt-5.6"))
+                return (0.05m, 1.25m);
+            if (lc.Contains("gpt-6"))
+                return (0.1m, 1.25m);
+            if (lc.Contains("gpt-5.6"))
                 return (0.1m, 1m);
             if (lc.StartsWith("gpt-") || lc.StartsWith("openai/") || lc.StartsWith("o4-"))
                 return (0.5m, 1m);

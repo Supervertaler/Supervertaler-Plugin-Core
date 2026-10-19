@@ -70,6 +70,12 @@ namespace Supervertaler.Core.Tests
             Costs("gpt-6-luna", 1_000_000, 0, 0, 0.10m, "input $0.10/MTok");
             Costs("gpt-6-luna", 0, 0, 1_000_000, 0.50m, "output $0.50/MTok");
             Costs("gpt-6-luna", 0, 1_000_000, 0, 0.01m, "cached input $0.01/MTok (0.1x)");
+
+            // Cache writes, which only the Responses API reports (GPT-6.1 Sol's
+            // tool chat): 1.25x the input rate (OpenAI's pricing page, 2026-10-19).
+            Assert.Equal(2.50m, TokenEstimator.ComputeActualCost("gpt-6.1-sol", 0, 0, 1_000_000, 0), "gpt-6.1-sol: cache write $2.50/MTok");
+            Assert.Equal(12.50m, TokenEstimator.ComputeActualCost("gpt-6-astra", 0, 0, 1_000_000, 0), "gpt-6-astra: cache write $12.50/MTok");
+            Assert.Equal(0.125m, TokenEstimator.ComputeActualCost("gpt-6-luna", 0, 0, 1_000_000, 0), "gpt-6-luna: cache write $0.125/MTok");
         }
 
         public static void Gpt56_IsPricedAsOpenAiListsItNow()
@@ -109,7 +115,7 @@ namespace Supervertaler.Core.Tests
             // Takes no tools on Chat Completions, and refuses "none".
             foreach (var id in new[] { "gpt-6.1-sol", "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro" })
             {
-                Assert.True(LlmClient.RefusesToolsOnChatCompletions(id), id + " goes out as plain chat");
+                Assert.True(LlmClient.RefusesToolsOnChatCompletions(id), id + " takes no tools on Chat Completions (Responses API for OpenAI direct, plain chat elsewhere)");
                 Assert.True(!LlmClient.RequiresReasoningEffortNoneWithTools(id), id + " is never sent reasoning_effort none");
             }
             Assert.True(!LlmClient.RefusesToolsOnChatCompletions(null), "no model, no change");

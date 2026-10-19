@@ -168,8 +168,9 @@ namespace Supervertaler.Core
                 if (string.IsNullOrEmpty(r)) return false;
                 r = r.ToLowerInvariant();
                 // Anthropic: max_tokens. OpenAI family: length. Gemini: MAX_TOKENS.
-                // Ollama: reports done_reason "length".
-                return r == "max_tokens" || r == "length";
+                // Ollama: reports done_reason "length". OpenAI's Responses API:
+                // incomplete_details.reason "max_output_tokens".
+                return r == "max_tokens" || r == "length" || r == "max_output_tokens";
             }
         }
 
@@ -2073,7 +2074,8 @@ namespace Supervertaler.Core
         /// are and Luna and GPT-6 Sol with reasoning_effort "none" (OpenAI's model
         /// pages, checked 2026-10-07). Substring match, so the OpenRouter ids
         /// ("openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro") are covered as well.
-        /// Calling tools on it means moving the tool loop to /v1/responses.
+        /// Through OpenAI direct its tool chat runs on /v1/responses instead
+        /// (CallOpenAiResponsesWithToolsAsync, from 18/19.20.201).
         /// </summary>
         internal static bool RefusesToolsOnChatCompletions(string model)
         {
@@ -2282,11 +2284,14 @@ namespace Supervertaler.Core
             if (!SupportsToolUse(_provider))
                 return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName);
 
-            // So do models that refuse tools on the endpoint we call (GPT-6.1 Sol).
-            // The caller's prompt was written for a chat with tools and may say
-            // so; told nothing, a model asked about something only a tool could
+            // GPT-6.1 Sol takes tools only on the Responses API, which this client
+            // calls for OpenAI direct (CallOpenAiResponsesWithToolsAsync). Through
+            // any other provider it refuses tools, so the chat goes out as plain
+            // chat. The caller's prompt was written for a chat with tools and may
+            // say so; told nothing, a model asked about something only a tool could
             // fetch can answer as if it had fetched it.
-            if (RefusesToolsOnChatCompletions(_model))
+            bool viaResponses = _provider == LlmModels.ProviderOpenAi && RefusesToolsOnChatCompletions(_model);
+            if (RefusesToolsOnChatCompletions(_model) && !viaResponses)
             {
                 var noTools = "No tools are available in this conversation, whatever the instructions above say. "
                     + "If a question needs information that is not in this prompt, say that you cannot look it up "
@@ -2315,9 +2320,13 @@ namespace Supervertaler.Core
                         break;
                     default:
                         // OpenAI-compatible: OpenAI, Grok, Mistral, OpenRouter, Custom
-                        result = await CallOpenAiChatWithToolsAsync(
-                            messages, systemPrompt, toolDefinitionsJson, executor,
-                            maxTokens, cancellationToken, toolStatusCallback);
+                        result = viaResponses
+                            ? await CallOpenAiResponsesWithToolsAsync(
+                                messages, systemPrompt, toolDefinitionsJson, executor,
+                                maxTokens, cancellationToken, toolStatusCallback)
+                            : await CallOpenAiChatWithToolsAsync(
+                                messages, systemPrompt, toolDefinitionsJson, executor,
+                                maxTokens, cancellationToken, toolStatusCallback);
                         break;
                 }
                 return result;
@@ -2778,6 +2787,341 @@ namespace Supervertaler.Core
 
             // It's a string – extract it
             return ExtractJsonFieldStatic(json.Substring(msgIdx), "content");
+        }
+
+        // ─── OpenAI Responses API Tool Use ───────────────────────────
+
+        /// <summary>
+        /// The tool loop on /v1/responses, for a model that takes tools only there:
+        /// GPT-6.1 Sol, in OpenAI's words "Use the Responses API for tool calling.
+        /// Chat Completions is supported without tool calling." OpenAI direct
+        /// only; every other model and provider keeps Chat Completions (Michael,
+        /// 19 Oct 2026).
+        ///
+        /// <para>Stateless, with store false, so OpenAI keeps no copy of a
+        /// client's text for later retrieval (Michael's choice). Each request
+        /// therefore carries the whole conversation, and the items a tool-calling
+        /// response returned go back with the tool results exactly as they came:
+        /// the reasoning items too, with their encrypted content (include
+        /// reasoning.encrypted_content), which OpenAI requires with a reasoning
+        /// model's tool calls.</para>
+        ///
+        /// <para>Usage is what OpenAI reports, summed over the rounds, so the
+        /// prompt log shows real numbers: a reasoning model's thinking is billed
+        /// as output and no estimate can see it.</para>
+        /// </summary>
+        private async Task<string> CallOpenAiResponsesWithToolsAsync(
+            List<ChatMessage> messages,
+            string systemPrompt,
+            string toolDefinitionsJson,
+            ToolExecutor executor,
+            int? maxTokens,
+            CancellationToken ct,
+            Action<string> toolStatusCallback)
+        {
+            var url = ResolveOpenAiBaseUrl() + "/responses";
+            var tokens = maxTokens ?? _maxTokens;
+            var timeoutMs = _isReasoningModel ? 600_000 : _defaultTimeoutMs;
+            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            LastUsage = null;
+            LastFinishReason = null;
+
+            async Task<string> Post(string json, CancellationToken token)
+            {
+                using (var request = new HttpRequestMessage(HttpMethod.Post, url))
+                {
+                    request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+                    using (var cts = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    {
+                        cts.CancelAfter(Math.Max(timeoutMs, 120_000));
+                        var response = await Http.SendAsync(request, cts.Token);
+                        var body = await response.Content.ReadAsStringAsync();
+                        if (!response.IsSuccessStatusCode)
+                            throw new HttpRequestException(EnrichErrorMessage(OpenAiProviderLabel(), (int)response.StatusCode, body, _model));
+                        return body;
+                    }
+                }
+            }
+
+            var outcome = await RunResponsesToolLoopAsync(Post, _model, systemPrompt, messages,
+                toolDefinitionsJson, tokens, !_isReasoningModel && _supportsTemperature,
+                executor, toolStatusCallback, ct);
+            LastUsage = outcome.Usage;
+            LastFinishReason = outcome.FinishReason;
+            return outcome.Text;
+        }
+
+        /// <summary>What a Responses tool loop ended with.</summary>
+        internal sealed class ResponsesOutcome
+        {
+            public string Text;
+            /// <summary>"completed", or why the answer stopped short
+            /// (incomplete_details.reason, e.g. "max_output_tokens").</summary>
+            public string FinishReason;
+            /// <summary>Summed over every request of the loop; null when none
+            /// reported any.</summary>
+            public ApiUsage Usage;
+        }
+
+        /// <summary>
+        /// The Responses tool loop itself, with the HTTP POST passed in, so the
+        /// protocol - what is sent, what is read, what goes back - can be tested
+        /// on recorded replies without a server. At most five rounds of tool
+        /// calls, as the Chat Completions loop.
+        /// </summary>
+        internal static async Task<ResponsesOutcome> RunResponsesToolLoopAsync(
+            Func<string, CancellationToken, Task<string>> post,
+            string model, string instructions, List<ChatMessage> messages,
+            string chatCompletionsTools, int maxOutputTokens, bool sendTemperature,
+            ToolExecutor executor, Action<string> toolStatusCallback, CancellationToken ct)
+        {
+            const int maxToolRounds = 5;
+            var tools = ToResponsesTools(chatCompletionsTools);
+            var input = ResponsesInput(messages);
+            var outcome = new ResponsesOutcome();
+
+            for (int round = 0; round < maxToolRounds; round++)
+            {
+                var body = await post(ResponsesRequest(model, instructions, input, tools, maxOutputTokens, sendTemperature), ct);
+                outcome.Usage = AddUsage(outcome.Usage, ExtractResponsesUsage(body));
+
+                var status = TopLevelString(body, "status");
+                if (status == "failed")
+                {
+                    var error = TopLevelValue(body, "error");
+                    throw new InvalidOperationException("OpenAI could not answer: "
+                        + ((error != null ? TopLevelString(error, "message") : null) ?? "the response failed."));
+                }
+
+                var items = ExtractTopLevelObjects(TopLevelValue(body, "output") ?? "[]");
+                var calls = new List<ToolCall>();
+                foreach (var item in items)
+                {
+                    if (TopLevelString(item, "type") != "function_call") continue;
+                    var callId = TopLevelString(item, "call_id");
+                    var name = TopLevelString(item, "name");
+                    if (string.IsNullOrEmpty(callId) || string.IsNullOrEmpty(name)) continue;
+                    calls.Add(new ToolCall { Id = callId, Name = name, InputJson = TopLevelString(item, "arguments") ?? "{}" });
+                }
+
+                if (calls.Count > 0)
+                {
+                    // Back as they came - reasoning, calls and any text - then one
+                    // result per call, matched by call_id.
+                    input.AddRange(items);
+                    foreach (var tc in calls)
+                    {
+                        toolStatusCallback?.Invoke(tc.Name);
+                        var result = executor(tc.Name, tc.InputJson);
+                        input.Add("{\"type\":\"function_call_output\",\"call_id\":" + JsonString(tc.Id)
+                            + ",\"output\":" + JsonString(result ?? "") + "}");
+                    }
+                    continue;
+                }
+
+                outcome.Text = ResponsesText(items);
+                outcome.FinishReason = status == "incomplete"
+                    ? TopLevelString(TopLevelValue(body, "incomplete_details") ?? "{}", "reason") ?? "incomplete"
+                    : status;
+                return outcome;
+            }
+
+            throw new InvalidOperationException("Tool use loop exceeded maximum rounds.");
+        }
+
+        /// <summary>
+        /// Chat Completions function tools, {"type":"function","function":{...}},
+        /// as the Responses API takes them: {"type":"function","name":...,...}.
+        /// Each is marked strict false, as Chat Completions treats them: left
+        /// unmarked, the Responses API tries to turn a schema into strict mode,
+        /// which makes every optional parameter required. A tool already in the
+        /// Responses shape is passed on as it is.
+        /// </summary>
+        internal static string ToResponsesTools(string chatCompletionsTools)
+        {
+            if (string.IsNullOrWhiteSpace(chatCompletionsTools)) return "[]";
+            var tools = new List<string>();
+            foreach (var tool in ExtractTopLevelObjects(chatCompletionsTools))
+            {
+                var fn = TopLevelValue(tool, "function");
+                if (fn == null || !fn.StartsWith("{")) { tools.Add(tool); continue; }
+                var rest = fn.Substring(1).TrimStart();
+                var head = TopLevelValue(fn, "strict") == null
+                    ? "{\"type\":\"function\",\"strict\":false"
+                    : "{\"type\":\"function\"";
+                tools.Add(rest.StartsWith("}") ? head + "}" : head + "," + rest);
+            }
+            return "[" + string.Join(",", tools) + "]";
+        }
+
+        /// <summary>The conversation as Responses input items, images as data URLs.</summary>
+        internal static List<string> ResponsesInput(List<ChatMessage> messages)
+        {
+            var input = new List<string>();
+            foreach (var m in messages ?? new List<ChatMessage>())
+            {
+                if (m.Role == ChatRole.User)
+                {
+                    string content;
+                    if (m.HasImages)
+                    {
+                        var sb = new StringBuilder("[{\"type\":\"input_text\",\"text\":").Append(JsonString(m.Content)).Append('}');
+                        foreach (var img in m.Images)
+                            sb.Append(",{\"type\":\"input_image\",\"image_url\":\"data:").Append(img.MimeType)
+                              .Append(";base64,").Append(ToBase64(img.Data)).Append("\"}");
+                        content = sb.Append(']').ToString();
+                    }
+                    else content = JsonString(m.Content);
+                    input.Add("{\"role\":\"user\",\"content\":" + content + "}");
+                }
+                else
+                {
+                    input.Add("{\"role\":\"assistant\",\"content\":" + JsonString(m.Content) + "}");
+                }
+            }
+            return input;
+        }
+
+        internal static string ResponsesRequest(string model, string instructions, List<string> input,
+            string tools, int maxOutputTokens, bool sendTemperature)
+        {
+            var sb = new StringBuilder(4096);
+            sb.Append("{\"model\":").Append(JsonString(model));
+            if (!string.IsNullOrEmpty(instructions)) sb.Append(",\"instructions\":").Append(JsonString(instructions));
+            sb.Append(",\"input\":[").Append(string.Join(",", input)).Append(']');
+            sb.Append(",\"tools\":").Append(tools);
+            sb.Append(",\"store\":false,\"include\":[\"reasoning.encrypted_content\"]");
+            sb.Append(",\"max_output_tokens\":").Append(maxOutputTokens);
+            if (sendTemperature) sb.Append(",\"temperature\":0.3");
+            return sb.Append('}').ToString();
+        }
+
+        /// <summary>The answer's text: every output_text part of every message
+        /// item, in order, as OpenAI's own SDKs join them; a refusal's text when
+        /// that is all there is.</summary>
+        internal static string ResponsesText(List<string> items)
+        {
+            var text = new StringBuilder();
+            var refusal = new StringBuilder();
+            foreach (var item in items)
+            {
+                if (TopLevelString(item, "type") != "message") continue;
+                foreach (var part in ExtractTopLevelObjects(TopLevelValue(item, "content") ?? "[]"))
+                {
+                    var type = TopLevelString(part, "type");
+                    if (type == "output_text") text.Append(TopLevelString(part, "text"));
+                    else if (type == "refusal") refusal.Append(TopLevelString(part, "refusal"));
+                }
+            }
+            return text.Length > 0 ? text.ToString() : refusal.ToString();
+        }
+
+        /// <summary>
+        /// The Responses usage block: input_tokens includes the cached tokens
+        /// (input_tokens_details.cached_tokens) and those written to the cache
+        /// (cache_write_tokens); output_tokens includes the reasoning tokens,
+        /// billed as output. Null when there is none.
+        /// </summary>
+        internal static ApiUsage ExtractResponsesUsage(string body)
+        {
+            var usage = TopLevelValue(body, "usage");
+            if (usage == null || !usage.StartsWith("{")) return null;
+            int Num(string json, string key)
+            {
+                var v = json == null ? null : TopLevelValue(json, key);
+                return int.TryParse(v, out var n) ? n : 0;
+            }
+            var details = TopLevelValue(usage, "input_tokens_details");
+            var cached = Num(details, "cached_tokens");
+            var written = Num(details, "cache_write_tokens");
+            return new ApiUsage
+            {
+                CacheReadTokens = cached,
+                CacheWriteTokens = written,
+                RegularInputTokens = Math.Max(0, Num(usage, "input_tokens") - cached - written),
+                OutputTokens = Num(usage, "output_tokens")
+            };
+        }
+
+        private static ApiUsage AddUsage(ApiUsage total, ApiUsage more)
+        {
+            if (more == null) return total;
+            if (total == null) return more;
+            total.RegularInputTokens += more.RegularInputTokens;
+            total.CacheReadTokens += more.CacheReadTokens;
+            total.CacheWriteTokens += more.CacheWriteTokens;
+            total.OutputTokens += more.OutputTokens;
+            return total;
+        }
+
+        /// <summary>
+        /// The raw JSON of the value under <paramref name="key"/> at the top level
+        /// of the object <paramref name="json"/> - a string with its quotes, an
+        /// object, an array, a number, true, false or null - or null when the
+        /// object has no such key. Keys of nested objects are never matched: the
+        /// Responses API puts "type", "status" and "content" at every level of an
+        /// item, so a first-occurrence search would read the wrong one.
+        /// </summary>
+        internal static string TopLevelValue(string json, string key)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            int depth = 0, strStart = -1;
+            bool inString = false, escaped = false;
+            for (int i = 0; i < json.Length; i++)
+            {
+                char c = json[i];
+                if (inString)
+                {
+                    if (escaped) { escaped = false; continue; }
+                    if (c == '\\') { escaped = true; continue; }
+                    if (c != '"') continue;
+                    inString = false;
+                    if (depth != 1) continue;
+                    int j = i + 1;
+                    while (j < json.Length && char.IsWhiteSpace(json[j])) j++;
+                    if (j >= json.Length || json[j] != ':') continue;
+                    if (i - strStart - 1 != key.Length
+                        || string.CompareOrdinal(json, strStart + 1, key, 0, key.Length) != 0) continue;
+                    int v = j + 1;
+                    while (v < json.Length && char.IsWhiteSpace(json[v])) v++;
+                    return ReadJsonValue(json, v);
+                }
+                if (c == '"') { inString = true; strStart = i; }
+                else if (c == '{' || c == '[') depth++;
+                else if (c == '}' || c == ']') depth--;
+            }
+            return null;
+        }
+
+        /// <summary><see cref="TopLevelValue"/>, unescaped, for a string value;
+        /// null for any other.</summary>
+        internal static string TopLevelString(string json, string key)
+        {
+            var v = TopLevelValue(json, key);
+            return v != null && v.Length >= 2 && v[0] == '"' ? UnescapeJson(v.Substring(1, v.Length - 2)) : null;
+        }
+
+        private static string ReadJsonValue(string json, int start)
+        {
+            if (start >= json.Length) return null;
+            char c = json[start];
+            if (c == '{') return ExtractBracketedBlock(json, start, '{', '}');
+            if (c == '[') return ExtractBracketedBlock(json, start, '[', ']');
+            if (c == '"')
+            {
+                bool escaped = false;
+                for (int i = start + 1; i < json.Length; i++)
+                {
+                    if (escaped) { escaped = false; continue; }
+                    if (json[i] == '\\') { escaped = true; continue; }
+                    if (json[i] == '"') return json.Substring(start, i - start + 1);
+                }
+                return null;
+            }
+            int end = start;
+            while (end < json.Length && json[end] != ',' && json[end] != '}' && json[end] != ']' && !char.IsWhiteSpace(json[end])) end++;
+            return json.Substring(start, end - start);
         }
 
         // ─── Gemini Tool Use ─────────────────────────────────────────
