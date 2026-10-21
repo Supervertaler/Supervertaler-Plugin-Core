@@ -31,6 +31,18 @@ namespace Supervertaler.Core
         /// to true; set false only for models that reject custom temperatures.
         /// </summary>
         public bool SupportsTemperature { get; set; } = true;
+
+        /// <summary>
+        /// Gemini only: the thinkingLevel to send, or null to send none and take
+        /// Google's default. Gemini 3.x models reason before they answer and bill
+        /// that reasoning at the output rate, which for a translation - one short
+        /// answer - costs far more than the answer: on 21 Oct 2026 Gemini 3.8 Flash
+        /// spent 718 hidden tokens on a 21-token translation, and 3.1 Pro 1,070.
+        /// The lowest level a model accepts differs - "minimal" is a 400 on 3.8
+        /// Flash and 3.1 Pro, whose lowest is "low" - so each Gemini model states
+        /// its own, and a model added to the list has to decide.
+        /// </summary>
+        public string GeminiThinkingLevel { get; set; }
         public int DefaultTimeoutMs { get; set; } = 120_000;
         public int DefaultMaxTokens { get; set; } = 16384;
     }
@@ -137,19 +149,24 @@ namespace Supervertaler.Core
             {
                 Id = "gemini-3.8-flash", DisplayName = "Gemini 3.8 Flash",
                 Description = "Recommended – newest Flash, strong quality at $0.75/$3.75 per 1M tokens (until end 2026), 1M context",
-                Provider = LlmProvider.Gemini
+                Provider = LlmProvider.Gemini,
+                GeminiThinkingLevel = "low"
             },
             new LlmModelInfo
             {
                 Id = "gemini-3.5-flash-lite", DisplayName = "Gemini 3.5 Flash-Lite",
                 Description = "Budget – $0.30/$2.50 per 1M tokens, for high-volume work where cost matters most",
-                Provider = LlmProvider.Gemini
+                Provider = LlmProvider.Gemini,
+                GeminiThinkingLevel = "minimal"
             },
             new LlmModelInfo
             {
                 Id = "gemini-3.1-pro-preview", DisplayName = "Gemini 3.1 Pro (Preview)",
                 Description = "Top quality – Google's most capable, $2/$12 per 1M tokens; still a preview",
-                Provider = LlmProvider.Gemini
+                Provider = LlmProvider.Gemini,
+                // Its lowest level: Pro cannot go below "low", and still thinks at it
+                // (524 hidden tokens against 1,070 at its default, measured 21 Oct 2026).
+                GeminiThinkingLevel = "low"
             }
         };
 

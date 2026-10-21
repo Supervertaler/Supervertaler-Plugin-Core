@@ -879,6 +879,48 @@ namespace Supervertaler.Core
             }
         }
 
+        /// <summary>
+        /// The "generationConfig" object for a Gemini translation or chat request.
+        /// Gemini 3.x models think before they answer and bill that thinking at the
+        /// output rate, so the thinking level is pinned to the lowest the model
+        /// accepts (<see cref="LlmModelInfo.GeminiThinkingLevel"/>) - see there for
+        /// what leaving it cost. The tool-using chat does not use this: an agent
+        /// working through tools is the one place the reasoning may be wanted.
+        /// </summary>
+        internal static string GeminiGenerationConfig(string model, int maxOutputTokens)
+        {
+            var sb = new StringBuilder();
+            sb.Append("{\"maxOutputTokens\":").Append(maxOutputTokens);
+
+            var level = GeminiThinkingLevelFor(model);
+            if (level != null)
+                sb.Append(",\"thinkingConfig\":{\"thinkingLevel\":").Append(JsonString(level)).Append("}");
+
+            // The 3.5 models have never been sent a temperature (it was believed
+            // dropped; 3.5 Flash-Lite in fact accepts one - checked 21 Oct 2026),
+            // and Google advises leaving it alone on every Gemini 3 model. The rest
+            // keep the 0.3 they have always had; 3.8 Flash and 3.1 Pro accept it.
+            if (!model.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase))
+                sb.Append(",\"temperature\":0.3");
+
+            return sb.Append("}").ToString();
+        }
+
+        /// <summary>
+        /// The thinkingLevel to send for a Gemini model, or null for none. A listed
+        /// model says so itself; a model that is not on the list (typed in, or
+        /// fetched in Advanced mode) has no entry to say, and a level it does not
+        /// accept is a 400, so only the 3.5 family the rule has always covered is
+        /// pinned and every other unlisted model gets Google's default.
+        /// </summary>
+        internal static string GeminiThinkingLevelFor(string model)
+        {
+            if (string.IsNullOrEmpty(model)) return null;
+            var info = LlmModels.FindModel(model);
+            if (info != null) return info.GeminiThinkingLevel;
+            return model.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase) ? "minimal" : null;
+        }
+
         private async Task<string> CallGeminiAsync(
             string prompt, string systemPrompt, int? maxTokens,
             CancellationToken ct)
@@ -894,19 +936,7 @@ namespace Supervertaler.Core
                 sb.Append(",\"systemInstruction\":{\"parts\":[{\"text\":").Append(JsonString(systemPrompt)).Append("}]}");
             }
 
-            sb.Append(",\"generationConfig\":{\"maxOutputTokens\":").Append(tokens);
-            if (_model.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase))
-            {
-                // gemini-3.5+ forces "thinking" (default medium), billing
-                // hundreds of reasoning tokens at the output rate even for
-                // short segments. Pin it to "minimal" to keep cost sane.
-                // 3.5 also dropped temperature/top_p/top_k, so omit them.
-                sb.Append(",\"thinkingConfig\":{\"thinkingLevel\":\"minimal\"}}");
-            }
-            else
-            {
-                sb.Append(",\"temperature\":0.3}");
-            }
+            sb.Append(",\"generationConfig\":").Append(GeminiGenerationConfig(_model, tokens));
             sb.Append("}");
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, url))
@@ -1269,19 +1299,7 @@ namespace Supervertaler.Core
             if (!string.IsNullOrEmpty(systemPrompt))
                 sb.Append(",\"systemInstruction\":{\"parts\":[{\"text\":").Append(JsonString(systemPrompt)).Append("}]}");
 
-            sb.Append(",\"generationConfig\":{\"maxOutputTokens\":").Append(tokens);
-            if (_model.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase))
-            {
-                // gemini-3.5+ forces "thinking" (default medium), billing
-                // hundreds of reasoning tokens at the output rate even for
-                // short segments. Pin it to "minimal" to keep cost sane.
-                // 3.5 also dropped temperature/top_p/top_k, so omit them.
-                sb.Append(",\"thinkingConfig\":{\"thinkingLevel\":\"minimal\"}}");
-            }
-            else
-            {
-                sb.Append(",\"temperature\":0.3}");
-            }
+            sb.Append(",\"generationConfig\":").Append(GeminiGenerationConfig(_model, tokens));
             sb.Append("}");
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, url))
