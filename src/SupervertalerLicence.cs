@@ -347,7 +347,7 @@ namespace Supervertaler.Core
                     _rec = FreshRecord();
                     _unreadable = true;
                     _unknownForTheSession = true;
-                    LicenceFile.Write(path, LicenceFile.Serialise(_rec), replaceExisting: true);
+                    LicenceFile.Write(path, _rec, replaceExisting: true);
                     WriteLog("The licence file could not be read as a licence; it was set aside and a fresh record written.");
                     break;
 
@@ -390,7 +390,7 @@ namespace Supervertaler.Core
                 if (foreignActivation)
                     rec.ForeignMetAt = rec.EffectiveNow;
 
-                switch (LicenceFile.Write(path, LicenceFile.Serialise(rec), replaceExisting: false))
+                switch (LicenceFile.Write(path, rec, replaceExisting: false))
                 {
                     case LicenceFile.WriteStatus.AlreadyExists:
                         // The other product on this computer was first.
@@ -418,7 +418,7 @@ namespace Supervertaler.Core
                         // Someone else's record under this person's name can only
                         // have been put there by hand. It licenses nobody.
                         rec = FreshRecord();
-                        LicenceFile.Write(path, LicenceFile.Serialise(rec), replaceExisting: true);
+                        LicenceFile.Write(path, rec, replaceExisting: true);
                         WriteLog("A licence file held a record for another computer or Windows account; a fresh record was written.");
                     }
                     _rec = Prepare(rec);
@@ -439,7 +439,7 @@ namespace Supervertaler.Core
                     _rec = FreshRecord();
                     _unreadable = true;
                     _unknownForTheSession = true;
-                    LicenceFile.Write(path, LicenceFile.Serialise(_rec), replaceExisting: true);
+                    LicenceFile.Write(path, _rec, replaceExisting: true);
                     WriteLog("The licence file could not be read as a licence; it was set aside and a fresh record written.");
                     break;
 
@@ -525,11 +525,12 @@ namespace Supervertaler.Core
         {
             legacyDamaged = false;
 
-            byte[] first;
+            // The Trados file's own bytes when it is copied, else the fresh record.
+            byte[] copy = null;
             switch (ReadTradosFile(out rec, out var legacyBytes))
             {
                 case LicenceFile.ReadStatus.Ok:
-                    first = legacyBytes;
+                    copy = legacyBytes;
                     break;
 
                 case LicenceFile.ReadStatus.Unreadable:
@@ -542,16 +543,17 @@ namespace Supervertaler.Core
                     legacyDamaged = true;
                     SetAside(legacyBytes);
                     rec = FreshRecord();
-                    first = LicenceFile.Serialise(rec);
                     break;
 
                 default:
                     rec = FreshRecord();
-                    first = LicenceFile.Serialise(rec);
                     break;
             }
 
-            switch (LicenceFile.Write(path, first, replaceExisting: false))
+            var written = copy != null
+                ? LicenceFile.Write(path, copy, replaceExisting: false)
+                : LicenceFile.Write(path, rec, replaceExisting: false);
+            switch (written)
             {
                 case LicenceFile.WriteStatus.AlreadyExists:
                     legacyDamaged = false;
@@ -616,7 +618,7 @@ namespace Supervertaler.Core
             }
 
             if (changed)
-                LicenceFile.Write(MyPath, LicenceFile.Serialise(rec), replaceExisting: true);
+                LicenceFile.Write(MyPath, rec, replaceExisting: true);
 
             return rec;
         }
@@ -652,7 +654,7 @@ namespace Supervertaler.Core
                         // the other person's. If the other product of theirs
                         // moved first, its file is the one read.
                         _owner = Owner.Personal;
-                        LicenceFile.Write(MyPath, LicenceFile.Serialise(_rec), replaceExisting: false);
+                        LicenceFile.Write(MyPath, _rec, replaceExisting: false);
                         LoadPersonal(rec.IsActivated);
                     }
 
@@ -693,7 +695,7 @@ namespace Supervertaler.Core
                     return;
                 }
 
-                LicenceFile.Write(MyPath, LicenceFile.Serialise(_rec), replaceExisting: true);
+                LicenceFile.Write(MyPath, _rec, replaceExisting: true);
             }
             catch (Exception ex)
             {
@@ -914,7 +916,7 @@ namespace Supervertaler.Core
                 return;
 
             rec.ClearActivation();
-            LicenceFile.Write(path, LicenceFile.Serialise(rec), replaceExisting: true);
+            LicenceFile.Write(path, rec, replaceExisting: true);
         }
 
         /// <summary>

@@ -114,6 +114,41 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        /// <summary>Time zones east and west of UTC, a half-hour one, and UTC itself.</summary>
+        private static readonly double[] TimeZones = { 1, 3, 5.5, 9, 14, 0, -5, -12 };
+
+        public static void ANewComputer_StartsATrial_InEveryTimeZone()
+        {
+            foreach (var hours in TimeZones)
+            {
+                using (new LocalTimeZone(hours))
+                using (var s = new Scene())
+                {
+                    var at = " at UTC" + LocalTimeZone.Show(hours);
+                    var licence = s.Open();
+
+                    Assert.Equal(LicenceState.Trial, licence.State, "state" + at);
+                    Assert.Equal(14, licence.TrialDaysRemaining, "days remaining" + at);
+                    Assert.Equal(LicenceFile.ReadStatus.Ok, LicenceFile.TryRead(s.SharedPath, out _, out _), "the shared file was created" + at);
+                    Assert.Equal(LicenceState.Trial, s.Open().State, "the next start" + at);
+                }
+            }
+        }
+
+        public static void ATrialThatHasRunOut_HasEnded_InEveryTimeZone()
+        {
+            foreach (var hours in TimeZones)
+            {
+                using (new LocalTimeZone(hours))
+                using (var s = new Scene())
+                {
+                    TrialAnchor.Write(s.AnchorKey, Scene.Fingerprint, DateTime.UtcNow.AddDays(-20), DateTime.UtcNow.AddDays(-1));
+
+                    Assert.Equal(LicenceState.Expired, s.Open().State, "state at UTC" + LocalTimeZone.Show(hours));
+                }
+            }
+        }
+
         public static void ALostLicenceFile_DoesNotStartANewTrial()
         {
             using (var s = new Scene())

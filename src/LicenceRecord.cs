@@ -31,14 +31,17 @@ namespace Supervertaler.Core
         public string VariantName { get; set; } = "";
 
         [DataMember(Name = "activatedAt")]
-        public DateTime ActivatedAt { get; set; } = DateTime.MinValue;
+        public DateTime ActivatedAt { get => Utc(_activatedAt); set => _activatedAt = value; }
+        private DateTime _activatedAt = DateTime.MinValue;
 
         /// <summary>Last successful online validation (UTC). Starts the offline window.</summary>
         [DataMember(Name = "lastValidatedAt")]
-        public DateTime LastValidatedAt { get; set; } = DateTime.MinValue;
+        public DateTime LastValidatedAt { get => Utc(_lastValidatedAt); set => _lastValidatedAt = value; }
+        private DateTime _lastValidatedAt = DateTime.MinValue;
 
         [DataMember(Name = "expiresAt")]
-        public DateTime? ExpiresAt { get; set; }
+        public DateTime? ExpiresAt { get => Utc(_expiresAt); set => _expiresAt = value; }
+        private DateTime? _expiresAt;
 
         /// <summary>Licence status from Lemon Squeezy: "active", "expired", "disabled".</summary>
         [DataMember(Name = "status")]
@@ -46,7 +49,8 @@ namespace Supervertaler.Core
 
         /// <summary>When the trial started (UTC). MinValue means it has not.</summary>
         [DataMember(Name = "trialStartedAt")]
-        public DateTime TrialStartedAt { get; set; } = DateTime.MinValue;
+        public DateTime TrialStartedAt { get => Utc(_trialStartedAt); set => _trialStartedAt = value; }
+        private DateTime _trialStartedAt = DateTime.MinValue;
 
         [DataMember(Name = "machineFingerprint")]
         public string MachineFingerprint { get; set; } = "";
@@ -59,7 +63,21 @@ namespace Supervertaler.Core
         /// every other record, and from the file entirely when absent.
         /// </summary>
         [DataMember(Name = "foreignMetAt", EmitDefaultValue = false)]
-        public DateTime? ForeignMetAt { get; set; }
+        public DateTime? ForeignMetAt { get => Utc(_foreignMetAt); set => _foreignMetAt = value; }
+        private DateTime? _foreignMetAt;
+
+        /// <summary>
+        /// Every stored date is handed out as UTC, so that any record can be
+        /// written. MinValue and MaxValue keep their meaning ("not set",
+        /// "never") rather than being converted. In the getters, not the
+        /// setters, because a field missing from the file is never set.
+        /// </summary>
+        private static DateTime Utc(DateTime value) =>
+            value.Kind == DateTimeKind.Utc ? value
+            : value == DateTime.MinValue || value == DateTime.MaxValue ? DateTime.SpecifyKind(value, DateTimeKind.Utc)
+            : value.ToUniversalTime();
+
+        private static DateTime? Utc(DateTime? value) => value.HasValue ? Utc(value.Value) : (DateTime?)null;
 
         /// <summary>
         /// The "now" all trial arithmetic uses, from the trial anchor. Not

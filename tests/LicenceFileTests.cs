@@ -26,6 +26,45 @@ namespace Supervertaler.Core.Tests
             return r.VariantName;
         }
 
+        /// <summary>
+        /// Every record can be written and read back in every time zone: a new
+        /// one, one whose activation was cleared, one read from a file that has
+        /// no fields, and one written by an older build in another time zone. A
+        /// date that is not set stays not set, and the format is the one every
+        /// build reads.
+        /// </summary>
+        public static void EveryRecord_CanBeWritten_InEveryTimeZone()
+        {
+            const string olderBuild =
+                "{\"activatedAt\":\"\\/Date(-62135596800000+0000)\\/\",\"trialStartedAt\":\"\\/Date(-62135596800000+0000)\\/\"}";
+
+            foreach (var hours in new double[] { 1, 3, 9, 14, 0, -5, -12 })
+            {
+                using (new LocalTimeZone(hours))
+                {
+                    var cleared = new LicenceRecord { LicenseKey = "K", InstanceId = "i", ActivatedAt = DateTime.UtcNow, LastValidatedAt = DateTime.UtcNow };
+                    cleared.ClearActivation();
+                    Assert.True(LicenceFile.TryParse(Encoding.UTF8.GetBytes("{}"), out var empty), "a file with no fields parses");
+                    Assert.True(LicenceFile.TryParse(Encoding.UTF8.GetBytes(olderBuild), out var older), "an older build's file parses");
+
+                    foreach (var (what, record) in new[] { ("new", new LicenceRecord()), ("cleared", cleared), ("empty", empty), ("older", older) })
+                    {
+                        var at = " (" + what + " record at UTC" + LocalTimeZone.Show(hours) + ")";
+
+                        byte[] bytes;
+                        try { bytes = LicenceFile.Serialise(record); }
+                        catch (Exception ex) { throw new AssertFailed("written" + at + ": " + ex.GetType().Name + ": " + ex.Message); }
+
+                        Assert.True(Encoding.UTF8.GetString(bytes).Contains("\"trialStartedAt\":\"\\/Date("), "the date format every build reads" + at);
+                        Assert.True(LicenceFile.TryParse(bytes, out var back), "read back" + at);
+                        Assert.Equal(DateTime.MinValue, back.TrialStartedAt, "no trial start" + at);
+                        Assert.Equal(DateTime.MinValue, back.ActivatedAt, "no activation date" + at);
+                        Assert.Equal(DateTime.MinValue, record.TrialStartedAt, "no trial start before writing either" + at);
+                    }
+                }
+            }
+        }
+
         public static void CreateOnly_DoesNotOverwrite_AndReportsIt()
         {
             using (var s = new Scene())

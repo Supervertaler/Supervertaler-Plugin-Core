@@ -212,6 +212,27 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
+        /// Writes <paramref name="record"/> as <see cref="Write(string, byte[], bool)"/>
+        /// does. A record that cannot be serialised is a write that failed:
+        /// logged, nothing written, and the caller carries on with the record
+        /// in hand, as it does when the disk refuses.
+        /// </summary>
+        internal static WriteStatus Write(string path, LicenceRecord record, bool replaceExisting)
+        {
+            byte[] bytes;
+            try
+            {
+                bytes = Serialise(record);
+            }
+            catch (Exception ex)
+            {
+                SupervertalerLicence.WriteLog("A licence record could not be written: " + ex.GetType().Name + ": " + ex.Message);
+                return WriteStatus.Failed;
+            }
+            return Write(path, bytes, replaceExisting);
+        }
+
+        /// <summary>
         /// Removes temporary files a process left behind by being killed in the
         /// middle of a write. Only ones old enough that no live write can still
         /// own them.

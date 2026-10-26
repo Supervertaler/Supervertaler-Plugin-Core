@@ -550,6 +550,72 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        public static void AnActivation_IsKept_InEveryTimeZone()
+        {
+            foreach (var hours in new double[] { 3, -5 })
+            {
+                using (new LocalTimeZone(hours))
+                using (var s = new Scene())
+                using (var server = new FakeLicenceServer((endpoint, form) => Replies.Activated("instance-new")))
+                {
+                    var at = " at UTC" + LocalTimeZone.Show(hours);
+                    var (ok, message) = s.Open(server.Url).ActivateAsync(Key).GetAwaiter().GetResult();
+
+                    Assert.True(ok, "activated" + at + ": " + message);
+                    var next = s.Open(server.Url);
+                    Assert.Equal(LicenceState.Licensed, next.State, "the next start" + at);
+                    Assert.Equal("instance-new", Read(s.SharedPath).InstanceId, "the activation on disk" + at);
+                }
+            }
+        }
+
+        public static void ADeactivation_IsKept_InEveryTimeZone()
+        {
+            foreach (var hours in new double[] { 3, -5 })
+            {
+                using (new LocalTimeZone(hours))
+                using (var s = new Scene())
+                using (var server = new FakeLicenceServer((endpoint, form) => Replies.Deactivated(true)))
+                {
+                    var at = " at UTC" + LocalTimeZone.Show(hours);
+                    Put(s.SharedPath, ActivatedFor(Scene.Fingerprint, instance: "instance-mine"));
+
+                    var (ok, message) = s.Open(server.Url).DeactivateAsync().GetAwaiter().GetResult();
+
+                    Assert.True(ok, "deactivated" + at + ": " + message);
+                    Assert.True(!Read(s.SharedPath).IsActivated, "the activation is cleared on disk" + at);
+                    Assert.True(s.Open(server.Url).State != LicenceState.Licensed, "the next start" + at);
+                }
+            }
+        }
+
+        /// <summary>The way back in after a rename, in every time zone: the old activation released, the key activated here.</summary>
+        public static void AKeyWithNoActivationsLeft_ReleasesTheStrandedOne_InEveryTimeZone()
+        {
+            foreach (var hours in new double[] { 3, -5 })
+            {
+                using (new LocalTimeZone(hours))
+                using (var s = new Scene())
+                {
+                    var at = " at UTC" + LocalTimeZone.Show(hours);
+                    Put(s.SharedPath, ActivatedFor(Someone));
+                    int activations = 0;
+                    using (var server = new FakeLicenceServer((endpoint, form) =>
+                    {
+                        if (endpoint == "deactivate") return Replies.Deactivated(true);
+                        return ++activations == 1 ? Replies.LimitReached : Replies.Activated("instance-new");
+                    }))
+                    {
+                        var (ok, message) = s.Open(server.Url).ActivateAsync(Key).GetAwaiter().GetResult();
+
+                        Assert.True(ok, "activated" + at + ": " + message);
+                        Assert.True(!Read(s.SharedPath).IsActivated, "the released activation is cleared" + at);
+                        Assert.Equal("instance-new", Read(s.PersonalPath).InstanceId, "this account's activation" + at);
+                    }
+                }
+            }
+        }
+
         /// <summary>Another account's activation is never even validated from here, let alone renewed.</summary>
         public static void AnotherAccountsActivation_IsNeverValidatedFromHere()
         {

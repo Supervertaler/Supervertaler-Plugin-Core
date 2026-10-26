@@ -1,6 +1,8 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -193,5 +195,41 @@ namespace Supervertaler.Core.Tests
             try { Directory.Delete(Dir, true); } catch { }
             try { Registry.CurrentUser.DeleteSubKeyTree(AnchorKey, false); } catch { }
         }
+    }
+
+    /// <summary>
+    /// Until disposed, this process takes the computer's time zone to be a
+    /// fixed <c>hours</c> from UTC, with no daylight saving. .NET Framework
+    /// keeps the local zone in two places, TimeZone.CurrentTimeZone and
+    /// TimeZoneInfo.Local, and both are replaced; disposing clears both, so the
+    /// real zone is read again. Child processes are not affected.
+    /// </summary>
+    internal sealed class LocalTimeZone : IDisposable
+    {
+        private const BindingFlags Hidden = BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+
+        public LocalTimeZone(double hours)
+        {
+            var offset = TimeSpan.FromHours(hours);
+
+            var legacy = TimeZone.CurrentTimeZone;
+            legacy.GetType().GetField("m_ticksOffset", Hidden).SetValue(legacy, offset.Ticks);
+            ((Hashtable)legacy.GetType().GetField("m_CachedDaylightChanges", Hidden).GetValue(legacy)).Clear();
+
+            var cache = typeof(TimeZoneInfo).GetField("s_cachedData", Hidden).GetValue(null);
+            var name = "UTC" + Show(hours);
+            cache.GetType().GetField("m_localTimeZone", Hidden)
+                .SetValue(cache, TimeZoneInfo.CreateCustomTimeZone(name, offset, name, name));
+
+            // Should a framework update move either, fail here rather than
+            // test the real zone and pass.
+            Assert.Equal(offset, TimeZone.CurrentTimeZone.GetUtcOffset(DateTime.MinValue), "TimeZone.CurrentTimeZone replaced");
+            Assert.Equal(offset, TimeZoneInfo.Local.GetUtcOffset(DateTime.MinValue), "TimeZoneInfo.Local replaced");
+        }
+
+        /// <summary>"+3", "-5", "+5.5", "±0": for messages.</summary>
+        public static string Show(double hours) => hours.ToString("+0.#;-0.#;±0", CultureInfo.InvariantCulture);
+
+        public void Dispose() => CultureInfo.CurrentCulture.ClearCachedData();
     }
 }
