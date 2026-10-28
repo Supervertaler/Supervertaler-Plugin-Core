@@ -756,6 +756,84 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        /// <summary>
+        /// The fresh activation fails after the server said it does not know
+        /// the old one: nothing is written, so the next try takes the same way
+        /// in and succeeds. (From the memoQ session's review.)
+        /// </summary>
+        public static void AFailedFreshActivation_LeavesTheRecordForTheNextTry()
+        {
+            var failures = new (int Status, string Body)[]
+            {
+                (500, "{\"error\":\"Server Error\"}"),
+                (400, Replies.LimitReached),
+                (400, Replies.Refused("disabled", 0, 2)),
+            };
+            foreach (var failure in failures)
+            {
+                using (var s = new Scene())
+                {
+                    var what = " for activate HTTP " + failure.Status + " " + failure.Body;
+                    Put(s.SharedPath, MineConfirmed(40));
+
+                    using (var server = new FakeLicenceServer((endpoint, form) =>
+                        endpoint == "activate" ? failure : (404, Replies.UnknownActivation)))
+                    {
+                        var licence = s.Open(server.Url);
+                        var mine = File.ReadAllBytes(s.SharedPath);
+                        var (ok, message) = licence.ActivateAsync(Key).GetAwaiter().GetResult();
+
+                        Assert.True(!ok, "not activated" + what + ": " + message);
+                        Assert.Equal("validate instance-old|deactivate instance-old|activate ",
+                            string.Join("|", server.Requests), "requests" + what);
+                        Assert.True(File.ReadAllBytes(s.SharedPath).SequenceEqual(mine), "the file untouched" + what);
+                    }
+
+                    using (var server = new FakeLicenceServer((endpoint, form) =>
+                        endpoint == "activate" ? (200, Replies.Activated("instance-new")) : (404, Replies.UnknownActivation)))
+                    {
+                        var (ok, message) = s.Open(server.Url).ActivateAsync(Key).GetAwaiter().GetResult();
+
+                        Assert.True(ok, "the next try activates" + what + ": " + message);
+                        Assert.Equal("instance-new", Read(s.SharedPath).InstanceId, "the new activation on disk" + what);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Validating an activation the server no longer has says so, and that
+        /// entering the key again is the way back in - but changes nothing
+        /// stored, at startup or on "check now". Any other unreadable reply
+        /// keeps the general message.
+        /// </summary>
+        public static void ValidatingAnActivationTheServerNoLongerKnows_SaysToEnterTheKeyAgain()
+        {
+            foreach (var reply in new (int Status, string Body)[]
+                { (404, Replies.UnknownActivation), (404, "<html><body>Not Found</body></html>") })
+            {
+                using (var s = new Scene())
+                using (var server = new FakeLicenceServer((endpoint, form) => reply))
+                {
+                    var what = " for HTTP " + reply.Status + " " + reply.Body;
+                    Put(s.SharedPath, MineConfirmed(2));
+                    var licence = s.Open(server.Url);
+                    var mine = File.ReadAllBytes(s.SharedPath);
+
+                    var (ok, message) = licence.ValidateOnlineAsync().GetAwaiter().GetResult();
+
+                    Assert.True(!ok, "not confirmed" + what);
+                    Assert.Equal(reply.Body == Replies.UnknownActivation
+                            ? SupervertalerLicence.ActivationUnknownMessage
+                            : "Could not read the licence server's reply. Using cached licence state.",
+                        message, "message" + what);
+                    Assert.Equal("validate instance-old", string.Join("|", server.Requests), "only asked" + what);
+                    Assert.True(File.ReadAllBytes(s.SharedPath).SequenceEqual(mine), "the file untouched" + what);
+                    Assert.Equal(LicenceState.Licensed, licence.State, "the offline window still runs" + what);
+                }
+            }
+        }
+
         /// <summary>A key already activated here, and confirmed, is adopted: no second activation.</summary>
         public static void AKeyActivatedHere_IsAdoptedNotActivatedAgain()
         {

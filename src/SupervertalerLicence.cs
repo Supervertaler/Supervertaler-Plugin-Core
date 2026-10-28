@@ -85,6 +85,14 @@ namespace Supervertaler.Core
         private const string NotOurKeyStatus = "not-supervertaler";
         private const string NotOurKeyMessage =
             "This licence key is not a Supervertaler licence. Please check you entered the right key.";
+
+        /// <summary>
+        /// What validating says when the licence server no longer has the
+        /// activation recorded here. Entering the key again is the way back in.
+        /// </summary>
+        internal const string ActivationUnknownMessage =
+            "The licence server no longer has this computer's activation, so it cannot be confirmed. " +
+            "Enter your licence key again to activate this computer.";
         private const int OfflineCacheDays = 30;
         private static readonly TimeSpan AbandonedTempAge = TimeSpan.FromMinutes(10);
 
@@ -801,7 +809,7 @@ namespace Supervertaler.Core
                 // Handed back as well, in case the server holds it after all,
                 // so this computer never keeps two of the key's activations.
                 await ReleaseAsync(key, unknown).ConfigureAwait(false);
-                WriteLog("The activation recorded for this key is unknown to the licence server; the key is activated afresh.");
+                WriteLog("The activation recorded for this key is unknown to the licence server; activating the key afresh.");
             }
 
             try
@@ -1052,8 +1060,9 @@ namespace Supervertaler.Core
                 // the window. Do not relax either half; both directions of
                 // getting this wrong are bad, one for the user and one for us.
                 if (!result.Understood)
-                    return (false, "Could not read the licence server's reply. Using cached licence state.",
-                        IsUnknownActivation(response.StatusCode, result) ? instance : null);
+                    return IsUnknownActivation(response.StatusCode, result)
+                        ? (false, ActivationUnknownMessage, instance)
+                        : (false, "Could not read the licence server's reply. Using cached licence state.", null);
 
                 var after = ApplyValidationReply(result, key, instance);
 
