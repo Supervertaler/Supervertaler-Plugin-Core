@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
@@ -757,6 +758,11 @@ namespace Supervertaler.Core
         /// longer be deactivated from where it was made. Entering the key is the
         /// authority here, as it is for deactivating; the day keeps it from
         /// taking a colleague's activation that is in use.
+        ///
+        /// A key already activated here is adopted, not activated again - unless
+        /// the licence server answers that it no longer knows that activation.
+        /// Then the key is activated afresh, since the old one can never be
+        /// confirmed and would otherwise stand in the way for good.
         /// </summary>
         public async Task<(bool Ok, string Message)> ActivateAsync(string key)
         {
@@ -777,10 +783,25 @@ namespace Supervertaler.Core
                     ClearDamage();
                 }
                 OnStateChanged();
-                var (_, message) = await ValidateOnlineAsync().ConfigureAwait(false);
-                return State == LicenceState.Licensed
-                    ? (true, "This computer is already activated with this licence key.")
-                    : (false, message);
+                var (_, message, unknown) = await ValidateAsync().ConfigureAwait(false);
+
+                // The licence server answered that it does not know the
+                // activation recorded here: it was released - by a deactivation
+                // this computer never recorded, or from the store - and can
+                // never be confirmed again. Entering the key is the way back
+                // in, so it is activated afresh. Only on that answer, and only
+                // while the record still holds that activation: a reply that
+                // did not come or could not be read proves nothing, and the
+                // other product may have activated afresh in the meantime.
+                if (unknown == null || !IsActivatedHereWith(key, unknown))
+                    return State == LicenceState.Licensed
+                        ? (true, "This computer is already activated with this licence key.")
+                        : (false, message);
+
+                // Handed back as well, in case the server holds it after all,
+                // so this computer never keeps two of the key's activations.
+                await ReleaseAsync(key, unknown).ConfigureAwait(false);
+                WriteLog("The activation recorded for this key is unknown to the licence server; the key is activated afresh.");
             }
 
             try
@@ -921,15 +942,17 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// Whether this computer is already activated with <paramref name="key"/>,
-        /// by either product. Re-reads the file, so it sees the other's activation.
+        /// by either product - and, when <paramref name="instance"/> is given,
+        /// with that activation. Re-reads the file, so it sees the other's activation.
         /// </summary>
-        internal bool IsActivatedHereWith(string key)
+        internal bool IsActivatedHereWith(string key, string instance = null)
         {
             lock (_lock)
             {
                 RefreshFromDisk();
                 return _rec.IsActivated
-                    && string.Equals(_rec.LicenseKey, key?.Trim(), StringComparison.OrdinalIgnoreCase);
+                    && string.Equals(_rec.LicenseKey, key?.Trim(), StringComparison.OrdinalIgnoreCase)
+                    && (instance == null || string.Equals(_rec.InstanceId, instance, StringComparison.Ordinal));
             }
         }
 
@@ -973,6 +996,19 @@ namespace Supervertaler.Core
         /// </summary>
         public async Task<(bool Ok, string Message)> ValidateOnlineAsync()
         {
+            var (ok, message, _) = await ValidateAsync().ConfigureAwait(false);
+            return (ok, message);
+        }
+
+        /// <summary>
+        /// <see cref="ValidateOnlineAsync"/>, also naming the activation the
+        /// licence server answered it does not know - null for any other
+        /// answer, or none. That answer changes nothing stored: it carries no
+        /// licence, so like any reply without one it is not read as an answer
+        /// about the licence.
+        /// </summary>
+        private async Task<(bool Ok, string Message, string UnknownInstance)> ValidateAsync()
+        {
             LicenceState before, now;
             string key = null, instance = null;
             lock (_lock)
@@ -992,7 +1028,7 @@ namespace Supervertaler.Core
             if (instance == null)
             {
                 if (now != before) OnStateChanged();
-                return (false, "No active licence to validate.");
+                return (false, "No active licence to validate.", null);
             }
 
             try
@@ -1016,7 +1052,8 @@ namespace Supervertaler.Core
                 // the window. Do not relax either half; both directions of
                 // getting this wrong are bad, one for the user and one for us.
                 if (!result.Understood)
-                    return (false, "Could not read the licence server's reply. Using cached licence state.");
+                    return (false, "Could not read the licence server's reply. Using cached licence state.",
+                        IsUnknownActivation(response.StatusCode, result) ? instance : null);
 
                 var after = ApplyValidationReply(result, key, instance);
 
@@ -1024,21 +1061,32 @@ namespace Supervertaler.Core
                     OnStateChanged();
 
                 if (result.FromAnotherStore)
-                    return (false, NotOurKeyMessage);
+                    return (false, NotOurKeyMessage, null);
 
                 return result.Valid
-                    ? (true, "Licence is valid.")
-                    : (false, result.Error ?? "Licence validation failed.");
+                    ? (true, "Licence is valid.", null)
+                    : (false, result.Error ?? "Licence validation failed.", null);
             }
             catch (HttpRequestException)
             {
-                return (false, "Could not reach the licence server. Using cached licence state.");
+                return (false, "Could not reach the licence server. Using cached licence state.", null);
             }
             catch (Exception ex)
             {
-                return (false, "Validation error: " + ex.Message);
+                return (false, "Validation error: " + ex.Message, null);
             }
         }
+
+        /// <summary>
+        /// The licence server saying it has no such activation: HTTP 404 and a
+        /// JSON reply with an error and no licence in it - what the live API
+        /// answers for an activation that has been deactivated (checked
+        /// 2026-09-23 and 2026-10-28). Anything else, such as a proxy's error
+        /// page, is not it.
+        /// </summary>
+        internal static bool IsUnknownActivation(HttpStatusCode status, LemonSqueezyResult result) =>
+            status == HttpStatusCode.NotFound && result.Parsed && !result.Understood
+            && !string.IsNullOrEmpty(result.Error);
 
         /// <summary>
         /// Applies a validation reply the licence code understood to the
@@ -1144,6 +1192,7 @@ namespace Supervertaler.Core
                     var serializer = new DataContractJsonSerializer(typeof(LsResponse));
                     var response = (LsResponse)serializer.ReadObject(stream);
 
+                    result.Parsed = true;
                     result.Valid = response.Valid;
                     result.Activated = response.Activated;
                     result.Error = response.Error;
@@ -1223,6 +1272,9 @@ namespace Supervertaler.Core
         {
             /// <summary>The server named the store that issued the key, and it is not ours.</summary>
             public bool FromAnotherStore;
+
+            /// <summary>The body was JSON the serializer could read, whatever its shape.</summary>
+            public bool Parsed;
 
             /// <summary>
             /// The body parsed and carried a recognisable licence block. False

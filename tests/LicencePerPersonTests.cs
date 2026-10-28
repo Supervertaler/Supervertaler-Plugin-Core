@@ -636,6 +636,142 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        // ─── An activation the licence server no longer knows ──────
+
+        private static LicenceRecord MineConfirmed(int daysAgo)
+        {
+            var mine = ActivatedFor(Scene.Fingerprint);
+            mine.LastValidatedAt = DateTime.UtcNow.AddDays(-daysAgo);
+            return mine;
+        }
+
+        /// <summary>
+        /// The activation recorded here was released on the server - by a
+        /// deactivation this computer never recorded, or from the store - so it
+        /// can never be confirmed again. Entering the key activates it afresh,
+        /// whether the offline window has run out or not, in any time zone.
+        /// </summary>
+        public static void AnActivationTheServerNoLongerKnows_IsReplacedWhenTheKeyIsEntered()
+        {
+            foreach (var hours in new double[] { 8, -5 })
+            foreach (var daysAgo in new[] { 40, 2 })
+            {
+                using (new LocalTimeZone(hours))
+                using (var s = new Scene())
+                using (var server = new FakeLicenceServer((endpoint, form) =>
+                    endpoint == "activate" ? (200, Replies.Activated("instance-new")) : (404, Replies.UnknownActivation)))
+                {
+                    var at = " at UTC" + LocalTimeZone.Show(hours) + ", last confirmed " + daysAgo + " days ago";
+                    Put(s.SharedPath, MineConfirmed(daysAgo));
+
+                    var licence = s.Open(server.Url);
+                    var (ok, message) = licence.ActivateAsync(Key).GetAwaiter().GetResult();
+
+                    Assert.True(ok, "activated" + at + ": " + message);
+                    Assert.Equal("validate instance-old|deactivate instance-old|activate ",
+                        string.Join("|", server.Requests), "requests" + at);
+                    Assert.Equal(LicenceState.Licensed, licence.State, "state" + at);
+                    Assert.Equal("instance-new", Read(s.SharedPath).InstanceId, "the new activation on disk" + at);
+                    Assert.Equal(LicenceState.Licensed, s.Open(server.Url).State, "the next start" + at);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Only the server's own "no such activation" replaces the one recorded
+        /// here. No reply, one that cannot be read, a proxy's 404 page or an
+        /// error of another kind proves nothing: no activation is spent or
+        /// handed back, and the file is left as it was.
+        /// </summary>
+        public static void AnActivationThatCannotBeConfirmed_IsNeverReplaced()
+        {
+            var replies = new (int Status, string Body)[]
+            {
+                (404, "<html><body>Not Found</body></html>"),
+                (404, "{\"message\":\"Not Found\"}"),
+                (200, "<html>Sign in to the network</html>"),
+                (500, "{\"error\":\"Server Error\"}"),
+                (429, "{\"error\":\"Too Many Attempts.\"}"),
+            };
+            foreach (var reply in replies)
+            {
+                using (var s = new Scene())
+                using (var server = new FakeLicenceServer((endpoint, form) => reply))
+                {
+                    var what = " for HTTP " + reply.Status + " " + reply.Body;
+                    Put(s.SharedPath, MineConfirmed(40));
+                    var licence = s.Open(server.Url);
+                    var mine = File.ReadAllBytes(s.SharedPath);
+
+                    var (ok, _) = licence.ActivateAsync(Key).GetAwaiter().GetResult();
+
+                    Assert.True(!ok, "not activated" + what);
+                    Assert.Equal("validate instance-old", string.Join("|", server.Requests), "only asked" + what);
+                    Assert.True(File.ReadAllBytes(s.SharedPath).SequenceEqual(mine), "the file untouched" + what);
+                }
+            }
+
+            using (var s = new Scene())
+            {
+                Put(s.SharedPath, MineConfirmed(40));
+                var licence = s.Open();
+                var mine = File.ReadAllBytes(s.SharedPath);
+
+                var (ok, message) = licence.ActivateAsync(Key).GetAwaiter().GetResult();
+
+                Assert.True(!ok && message.Contains("Could not reach"), "not activated with no server: " + message);
+                Assert.True(File.ReadAllBytes(s.SharedPath).SequenceEqual(mine), "the file untouched with no server");
+            }
+        }
+
+        /// <summary>
+        /// The other product activated afresh while this one was asking about
+        /// the old activation: theirs is adopted, and no further one is spent.
+        /// </summary>
+        public static void AFreshActivationByTheOtherProductMeanwhile_IsAdopted()
+        {
+            using (var s = new Scene())
+            {
+                Put(s.SharedPath, MineConfirmed(40));
+                using (var server = new FakeLicenceServer((endpoint, form) =>
+                {
+                    if (endpoint == "validate")
+                    {
+                        // The other product, while this reply is on its way.
+                        var theirs = ActivatedFor(Scene.Fingerprint, instance: "instance-other");
+                        theirs.LastValidatedAt = DateTime.UtcNow;
+                        Put(s.SharedPath, theirs);
+                    }
+                    return (404, Replies.UnknownActivation);
+                }))
+                {
+                    var licence = s.Open(server.Url);
+                    var (ok, message) = licence.ActivateAsync(Key).GetAwaiter().GetResult();
+
+                    Assert.True(ok, "adopted: " + message);
+                    Assert.Equal("validate instance-old", string.Join("|", server.Requests), "nothing activated or handed back");
+                    Assert.Equal("instance-other", Read(s.SharedPath).InstanceId, "the other product's activation stands");
+                    Assert.Equal(LicenceState.Licensed, licence.State, "state");
+                }
+            }
+        }
+
+        /// <summary>A key already activated here, and confirmed, is adopted: no second activation.</summary>
+        public static void AKeyActivatedHere_IsAdoptedNotActivatedAgain()
+        {
+            using (var s = new Scene())
+            using (var server = new FakeLicenceServer((endpoint, form) => Replies.Validated("active")))
+            {
+                Put(s.SharedPath, MineConfirmed(40));
+                var licence = s.Open(server.Url);
+                var (ok, message) = licence.ActivateAsync(Key).GetAwaiter().GetResult();
+
+                Assert.True(ok && message.Contains("already activated"), "adopted: " + message);
+                Assert.Equal("validate instance-old", string.Join("|", server.Requests), "only confirmed");
+                Assert.Equal(LicenceState.Licensed, licence.State, "and licensed again");
+            }
+        }
+
         /// <summary>Licence-server replies in the live API's shape.</summary>
         private static class Replies
         {
@@ -668,6 +804,10 @@ namespace Supervertaler.Core.Tests
 
             public static readonly string NotFound =
                 "{\"activated\":false,\"error\":\"license_key not found.\"}";
+
+            /// <summary>The live API's whole reply, with HTTP 404, for an activation it does not know (2026-10-28).</summary>
+            public static readonly string UnknownActivation =
+                "{\"valid\":false,\"error\":\"instance_id not found.\"}";
 
             public static string Deactivated(bool ok) =>
                 "{\"deactivated\":" + (ok ? "true" : "false") + ",\"error\":" + (ok ? "null" : "\"refused\"") + "," +

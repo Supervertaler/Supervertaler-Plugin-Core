@@ -16,13 +16,19 @@ namespace Supervertaler.Core.Tests
     internal sealed class FakeLicenceServer : IDisposable
     {
         private readonly TcpListener _listener;
-        private readonly Func<string, IDictionary<string, string>, string> _reply;
+        private readonly Func<string, IDictionary<string, string>, (int Status, string Body)> _reply;
         private readonly List<string> _requests = new List<string>();
 
         public string Url { get; }
 
         /// <param name="reply">Given the endpoint ("activate", "validate", "deactivate") and the form, returns the JSON body.</param>
         public FakeLicenceServer(Func<string, IDictionary<string, string>, string> reply)
+            : this((endpoint, form) => (200, reply(endpoint, form)))
+        {
+        }
+
+        /// <param name="reply">As above, with the HTTP status to answer with.</param>
+        public FakeLicenceServer(Func<string, IDictionary<string, string>, (int Status, string Body)> reply)
         {
             _reply = reply;
             _listener = new TcpListener(IPAddress.Loopback, 0);
@@ -76,8 +82,10 @@ namespace Supervertaler.Core.Tests
                         lock (_requests)
                             _requests.Add(endpoint + " " + (form.TryGetValue("instance_id", out var id) ? id : ""));
 
-                        var json = Encoding.UTF8.GetBytes(_reply(endpoint, form));
-                        Write(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+                        var (status, text) = _reply(endpoint, form);
+                        var json = Encoding.UTF8.GetBytes(text);
+                        Write(stream, "HTTP/1.1 " + status + " " + (status == 200 ? "OK" : "Error") +
+                            "\r\nContent-Type: application/json\r\nContent-Length: " +
                             json.Length + "\r\nConnection: close\r\n\r\n");
                         stream.Write(json, 0, json.Length);
                     }
