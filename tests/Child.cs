@@ -23,6 +23,8 @@ namespace Supervertaler.Core.Tests
                     case "--anchor-hammer": return AnchorHammer(a);
                     case "--open": return Open(a[1], a[2], a[3], a[4], a[5]);
                     case "--parse-reply": return ParseReply(a[1]);
+                    case "--keys-forever": return KeysForever(a[1]);
+                    case "--keys-loop": return KeysLoop(a[1], a[2], a[3], int.Parse(a[4]));
                     default:
                         Console.WriteLine("unknown mode " + a[0]);
                         return 2;
@@ -43,6 +45,32 @@ namespace Supervertaler.Core.Tests
                 if (DateTime.UtcNow > deadline) throw new TimeoutException("no go signal");
                 Thread.Sleep(1);
             }
+        }
+
+        /// <summary>
+        /// Saves the OpenAI key over and over, each time a different length, until
+        /// the parent kills it. Says "writing" once it has started.
+        /// </summary>
+        private static int KeysForever(string root)
+        {
+            SupervertalerPaths.Set(root);
+            var rnd = new Random();
+            Console.WriteLine("writing");
+            Console.Out.Flush();
+            while (true)
+                ApiKeyStore.Set("openai", "sk-" + new string('k', rnd.Next(10, 4000)));
+        }
+
+        /// <summary>Saves keys <paramref name="id"/>_0 .. _n-1, and says how many saves failed.</summary>
+        private static int KeysLoop(string root, string goFile, string id, int n)
+        {
+            SupervertalerPaths.Set(root);
+            WaitFor(goFile);
+            int failed = 0;
+            for (int i = 0; i < n; i++)
+                if (!ApiKeyStore.Set(id + "_" + i, "v" + i)) failed++;
+            Console.WriteLine("failed=" + failed);
+            return 0;
         }
 
         /// <summary>One only-if-absent write of this child's own content.</summary>

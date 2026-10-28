@@ -153,6 +153,12 @@ namespace Supervertaler.Core
         /// <para>Three outcomes, not two: <c>true</c> written, <c>false</c> nothing
         /// needed writing, <c>null</c> could not be written. Collapsing the last two
         /// is what let a no-op save look like a failed one.</para>
+        ///
+        /// <para>The new file is written beside the old one and renamed over it
+        /// (<see cref="AtomicFile"/>), never truncated and rewritten in place: a
+        /// crash or a power cut between the two used to leave an empty file, and
+        /// every key with it. So the file is the old keys or the new ones, never
+        /// neither.</para>
         /// </summary>
         private static bool? Update(Func<Dictionary<string, string>, bool> mutate)
         {
@@ -161,6 +167,8 @@ namespace Supervertaler.Core
             lock (Gate)
             {
                 try { Directory.CreateDirectory(Path.GetDirectoryName(path)); } catch { return null; }
+                // Temporary files left by a process killed in the middle of a write.
+                AtomicFile.SweepAbandoned(path, TimeSpan.FromMinutes(5));
                 for (int attempt = 0; ; attempt++)
                 {
                     try
@@ -187,11 +195,24 @@ namespace Supervertaler.Core
                                 return false;
                             }
                             var bytes = new UTF8Encoding(false).GetBytes(Render(map));
-                            fs.SetLength(0);
-                            fs.Position = 0;
-                            fs.Write(bytes, 0, bytes.Length);
-                            fs.Flush(true);
-                            return true;
+
+                            // Renamed over the file while this handle still holds it:
+                            // a POSIX rename (NTFS) may replace a file whose handles all
+                            // share delete, and this one does. Until the new file is in
+                            // place no other product can open the old one, so the lock
+                            // still covers the whole read-modify-write.
+                            if (AtomicFile.Write(path, bytes, replaceExisting: true, log: null) == AtomicFile.Outcome.Written)
+                                return true;
+
+                            // A volume without POSIX renames (FAT, some network shares)
+                            // cannot replace a file that is open, even by this process.
+                            // Let go of it and try once more. The lock is gone for the
+                            // few milliseconds that takes, which matters only if another
+                            // product saves a key in that same moment; the file is never
+                            // left half-written either way.
+                            fs.Dispose();
+                            return AtomicFile.Write(path, bytes, replaceExisting: true, log: null) == AtomicFile.Outcome.Written
+                                ? true : (bool?)null;
                         }
                     }
                     catch (IOException) when (attempt < 20)
