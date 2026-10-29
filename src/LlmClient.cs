@@ -899,7 +899,8 @@ namespace Supervertaler.Core
             // The 3.5 models have never been sent a temperature (it was believed
             // dropped; 3.5 Flash-Lite in fact accepts one - checked 21 Oct 2026),
             // and Google advises leaving it alone on every Gemini 3 model. The rest
-            // keep the 0.3 they have always had; 3.8 Flash and 3.1 Pro accept it.
+            // keep the 0.3 they have always had; 3.8 Flash, 3.1 Pro and 4 Argon
+            // accept it (Argon checked 29 Oct 2026).
             if (!model.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase))
                 sb.Append(",\"temperature\":0.3");
 
@@ -911,13 +912,16 @@ namespace Supervertaler.Core
         /// model says so itself; a model that is not on the list (typed in, or
         /// fetched in Advanced mode) has no entry to say, and a level it does not
         /// accept is a 400, so only the 3.5 family the rule has always covered is
-        /// pinned and every other unlisted model gets Google's default.
+        /// pinned and every other unlisted model gets Google's default. 3.1 Pro
+        /// left the list for Gemini 4 Argon but keeps its level: anyone with it
+        /// saved would otherwise think at its default, "high", and pay for it.
         /// </summary>
         internal static string GeminiThinkingLevelFor(string model)
         {
             if (string.IsNullOrEmpty(model)) return null;
             var info = LlmModels.FindModel(model);
             if (info != null) return info.GeminiThinkingLevel;
+            if (model.Equals("gemini-3.1-pro-preview", StringComparison.OrdinalIgnoreCase)) return "low";
             return model.StartsWith("gemini-3.5", StringComparison.OrdinalIgnoreCase) ? "minimal" : null;
         }
 

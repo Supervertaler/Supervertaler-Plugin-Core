@@ -128,6 +128,10 @@ namespace Supervertaler.Core
                 { "gemini-3.8-flash", (0.75m, 3.75m) },
                 { "gemini-3.5-flash-lite", (0.30m, 2.50m) },
                 { "gemini-3.1-pro-preview", (2.00m, 12.00m) },
+                // Argon's price from 1 Dec 2026 (Google's pricing page, checked
+                // 2026-10-29). Until 30 Nov it is $2/$10, so for those weeks its
+                // costs are shown at twice the bill: an estimate that errs high.
+                { "gemini-4-argon", (4.00m, 20.00m) },
             };
         }
 

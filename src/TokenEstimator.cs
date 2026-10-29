@@ -159,6 +159,12 @@ namespace Supervertaler.Core
             if (lc.StartsWith("deepseek") || lc.Contains("deepseek/"))
                 return (0.1m, 1m);
 
+            // Gemini 4 reads its implicit cache at 95% off: $0.10 against $2 on Argon
+            // (Google's pricing page, checked 2026-10-29), and Google gives Carbon the
+            // same discount. Without this, Argon's cache reads cost full price.
+            if (lc.StartsWith("gemini-4") || lc.StartsWith("google/gemini-4"))
+                return (0.05m, 1m);
+
             // Gemini 2.5+ implicit caching: 75% off cache reads
             if (lc.StartsWith("gemini-2.5") || lc.StartsWith("gemini-3")
                 || lc.StartsWith("google/gemini-2.5") || lc.StartsWith("google/gemini-3"))

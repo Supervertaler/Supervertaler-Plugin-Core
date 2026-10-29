@@ -31,8 +31,18 @@ namespace Supervertaler.Core.Tests
                 Config("gemini-3.8-flash"), "gemini-3.8-flash");
         }
 
-        public static void Gemini31Pro_IsPinnedToLow_AndKeepsItsTemperature()
+        public static void Gemini4Argon_IsPinnedToLow_AndKeepsItsTemperature()
         {
+            // Both checked against the live API on 29 Oct 2026; "minimal" is a 400 there too.
+            Assert.Equal("{\"maxOutputTokens\":16384,\"thinkingConfig\":{\"thinkingLevel\":\"low\"},\"temperature\":0.3}",
+                Config("gemini-4-argon"), "gemini-4-argon");
+        }
+
+        public static void Gemini31Pro_StaysPinnedToLow_AfterLeavingTheList()
+        {
+            // Off the list since 29 Oct 2026, but a saved 3.1 Pro still runs: at its
+            // default it would think at "high" and bill it.
+            Assert.True(LlmModels.FindModel("gemini-3.1-pro-preview") == null, "3.1 Pro is off the list");
             Assert.Equal("{\"maxOutputTokens\":16384,\"thinkingConfig\":{\"thinkingLevel\":\"low\"},\"temperature\":0.3}",
                 Config("gemini-3.1-pro-preview"), "gemini-3.1-pro-preview");
         }
@@ -45,9 +55,10 @@ namespace Supervertaler.Core.Tests
 
         public static void NoListedModel_IsSentALevelItRefuses()
         {
-            // Only the levels Google documents for these two; "minimal" is rejected.
-            foreach (var id in new[] { "gemini-3.8-flash", "gemini-3.1-pro-preview" })
+            // Only the levels Google documents for these; "minimal" is rejected.
+            foreach (var id in new[] { "gemini-3.8-flash", "gemini-4-argon" })
                 Assert.True(LlmModels.FindModel(id).GeminiThinkingLevel != "minimal", id + " does not accept minimal");
+            Assert.True(LlmClient.GeminiThinkingLevelFor("gemini-3.1-pro-preview") != "minimal", "gemini-3.1-pro-preview does not accept minimal");
         }
 
         public static void AnUnlistedModel_KeepsTheRuleItHadBeforeTheFlag()

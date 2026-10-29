@@ -143,6 +143,9 @@ namespace Supervertaler.Core
         // Flash-Lite and 2.5 Pro are generations behind). Gemma is out: Google hosts it
         // on the free tier only - paid tier "not available" - so a batch on a paid key
         // hits the rate limits; it lives under Ollama, where open weights belong.
+        // Gemini 4 Argon, stable since 2026-10-13, took 3.1 Pro (Preview)'s place as
+        // the top pick on 2026-10-29 (Michael); 3.1 Pro stays priced, so anyone with
+        // it saved keeps it.
         public static readonly LlmModelInfo[] GeminiModels =
         {
             new LlmModelInfo
@@ -161,11 +164,12 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "gemini-3.1-pro-preview", DisplayName = "Gemini 3.1 Pro (Preview)",
-                Description = "Top quality – Google's most capable, $2/$12 per 1M tokens; still a preview",
+                Id = "gemini-4-argon", DisplayName = "Gemini 4 Argon",
+                Description = "Top quality – Google's most capable, $4/$20 per 1M tokens ($2/$10 until 30 Nov 2026), 1M context",
                 Provider = LlmProvider.Gemini,
-                // Its lowest level: Pro cannot go below "low", and still thinks at it
-                // (524 hidden tokens against 1,070 at its default, measured 21 Oct 2026).
+                // Its lowest level: "minimal" is a 400 on Argon (checked 29 Oct 2026).
+                // On two test translations it reported no thinking tokens at "low" or
+                // at its default, "medium", so this is a cap rather than a measured saving.
                 GeminiThinkingLevel = "low"
             }
         };
@@ -242,8 +246,9 @@ namespace Supervertaler.Core
 
         // The direct short lists' current models under one key, then open-weight
         // models offered here only. IDs checked against openrouter.ai/api/v1/models
-        // on 2026-10-02, the GPT-6 ones on 2026-10-07. Superseded entries (Claude
-        // Sonnet 5 and Opus 5, GPT-5.5, GPT-5.6, GPT-5.4 Mini, Gemini 3 Flash)
+        // on 2026-10-02, the GPT-6 ones on 2026-10-07, Gemini 4 Argon on 2026-10-29.
+        // Superseded entries (Claude Sonnet 5 and Opus 5, GPT-5.5, GPT-5.6, GPT-5.4
+        // Mini, Gemini 3 Flash, Gemini 3.1 Pro)
         // left the list but not the price list, so anyone with one saved keeps it. Qwen 3.6 Plus (Free) left because OpenRouter withdrew it:
         // choosing it failed.
         public static readonly LlmModelInfo[] OpenRouterModels =
@@ -300,8 +305,8 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "google/gemini-3.1-pro-preview", DisplayName = "Gemini 3.1 Pro (Preview)",
-                Description = "Google's most capable model; still a preview",
+                Id = "google/gemini-4-argon", DisplayName = "Gemini 4 Argon",
+                Description = "Google's most capable model, 1M context",
                 Provider = LlmProvider.OpenRouter
             },
             new LlmModelInfo

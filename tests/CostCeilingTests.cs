@@ -14,7 +14,7 @@ namespace Supervertaler.Core.Tests
     {
         private static readonly string[] Listed =
         {
-            "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5", "gpt-5.5", "gpt-5.4-mini", "gemini-3.1-pro-preview",
+            "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5", "gpt-5.5", "gpt-5.4-mini", "gemini-3.1-pro-preview", "gemini-4-argon",
         };
 
         public static void TheCeiling_IsNeverBelowAListedModelsCost()
