@@ -1,6 +1,7 @@
 # API keys locked to the computer
 
-**Status: plan, for Michael's approval. No code yet.** Written 2026-10-30. Covers
+**Status: decisions taken 30 Oct 2026; plan awaiting Michael's go to build. No code
+yet.** Written 2026-10-30. Covers
 Supervertaler for Trados, Supervertaler for memoQ, Sidekick and Workbench (and the
 Python core package). Building comes afterwards, one product at a time.
 
@@ -32,15 +33,15 @@ folder holds no usable key. On a Mac, Workbench uses the Mac's Keychain.
 | **Administrator resets the Windows password of a local account** | The keys can no longer be unlocked. The product says so, names the key, and asks you to paste it again. Never a silent failure, never "wrong key". | One re-paste per key. Windows loses its own saved passwords the same way. |
 | **Network (domain) account reset by IT** | Nothing: Windows gets its key back from the network. | No |
 | **Microsoft-account or work-account sign-in reset online** | Probably like a local reset (to be checked). If so, the same message and one re-paste. | At worst one re-paste |
-| **GroupShare users** | Like their GroupShare password: locked to their Windows sign-in, entered once per computer. Better than that password when something goes wrong – it fails silently today (decision 5). | No |
+| **GroupShare users** | Like their GroupShare password: locked to their Windows sign-in, entered once per computer. That password fails silently today; after step 1 it moves into the same locked file and gets the same "can't be read" message (decision 5). | No |
 | **Company hands out one key** | Put the plain `api-keys.json` in the settings folder as now. The next product to start locks the keys and removes the file. | No |
 | **Two PCs, a synced data folder, or two Windows accounts on one PC** | Each key is pasted once on each computer (and each Windows account), and a changed key is changed on each. Softened: in step 1 every PC quietly makes its own locked copy from the plain file, so a PC you use at least once in the months before step 2 needs nothing retyped even then. | **Yes – the one real cost** |
-| **Workbench on a Mac** | Keys go into the Keychain. macOS may ask "allow?" once, and again after an update (decision 3). | A prompt |
+| **Workbench on a Mac** | Keys go into the Keychain. The .dmg is signed with your Apple Developer ID, so macOS treats each update as the same app and asks nothing. One "allow?" when someone moves between the pip version and the .dmg, and possibly after a Python update for the pip version (§3). | Hardly: a rare one-off question |
 
 **Two steps, so nobody loses a key while the products update at different times.**
 Step 1: every product learns to read and write the locked keys, and keeps the plain
-file going exactly as now. Step 2, months later and only after all four have shipped
-step 1: the plain copies go. Nothing becomes safer in step 1 – it exists so that step 2
+file going exactly as now. Step 2, eight weeks after the last of the four step-1
+releases: the plain copies go. Nothing becomes safer in step 1 – it exists so that step 2
 costs nobody a key.
 
 **When to replace a key.** After step 2, if your data folder was ever synced, shared or
@@ -53,7 +54,7 @@ still read your keys – nothing that stores a key on the computer prevents that
 copies made before step 2 (old backups, sync history, the Recycle Bin) are out of
 reach, which is why replacing the key is the advice above.
 
-The decisions only you can make are at the end (§12), to be put to you one at a time.
+Your five decisions of 30 Oct 2026 are recorded at the end (§12).
 
 ---
 
@@ -120,6 +121,9 @@ Flagged rather than silently built on:
    Sidekick the same lock for both files.
 6. **Workbench's error messages still name `api_keys.txt`**, a file it has not used
    since keys moved into `settings.json`.
+7. **Workbench's `BUILD_MACOS.md` still describes ad-hoc signing.** The release build is
+   `build_macos_signed.sh`, which signs with a Developer ID and notarises. The first
+   version of this note took its "unsigned" premise from the former (§12, decision 3).
 
 ---
 
@@ -243,11 +247,50 @@ the lookup count grows with actions, not with segments.
 
 ### Mac: the Keychain (Workbench)
 
-Through the `keyring` package (MIT licence; macOS backend only, through Apple's Security
-framework): **one** Keychain item, service `Supervertaler`, account `api-keys`, holding
-the same JSON map with plain values. One item rather than one per provider, because
-macOS asks permission per item: one item means at most one question after each update,
-not one per key (decision 3).
+Through the `keyring` package (MIT licence; macOS backend only): **one** Keychain item,
+service `Supervertaler`, account `api-keys`, holding the same JSON map with plain
+values. keyring (25.6.0, read 30 Oct 2026) calls Apple's Security framework from inside
+Workbench's own process – `SecItemCopyMatching`, `SecItemAdd`, `SecItemDelete` – on the
+login keychain, so macOS sees **the program running Workbench** as the one asking.
+
+**Who macOS asks about.** The login keychain records with each item the app that
+created it, by the app's *designated requirement*: for a Developer ID–signed app, its
+bundle identifier and the developer's Team ID. A program that meets the requirement
+reads the item without a question; any other gets the "allow?" dialog (Apple's Code
+Signing Guide and TN2206; Apple DTS in forum thread 654410, §11).
+
+- **The .dmg** is signed with Michael's Developer ID and notarised by
+  `build_macos_signed.sh`, with bundle identifier `com.michaelbeijer.supervertaler` and
+  no custom requirement. Every update with the same identifier and Team ID meets the
+  same requirement, so **no question – at first use or after any update.** A renewed
+  certificate keeps the Team ID and should change nothing; that is inferred from the
+  requirement's shape and checked on every release (§8). A different Team ID or
+  identifier would make every Mac user answer once.
+- **pip or source** (`pip install supervertaler`): macOS sees the Python interpreter, not
+  Workbench. So other scripts run by that Python read the item without a question – no
+  worse than Windows, where any program under the user's account can unlock the keys
+  (§2) – and whether a Python update brings the question back depends on how that
+  Python is signed. Since v1.10.351 (16 Jul 2026), the last release with a .dmg, Mac
+  users who stayed current run Workbench this way, so on many Macs the item will first
+  be created by Python.
+- **Moving between the two** costs one question, which "Always Allow" answers for good.
+  One item rather than one per provider is what keeps it to one question, not one per
+  key.
+
+**A save re-creates the item.** keyring saves by deleting the item and adding a new one,
+so the item then belongs to whichever program saved it (someone alternating between pip
+and the .dmg, saving keys in both, is asked again each time). And if Workbench is killed
+between the delete and the add, every key is gone: in step 1 the next start's sync
+restores them from the plain file, in step 2 nothing would. So Workbench saves the way
+`AtomicFile` writes a file: the new map first into a second item, `api-keys.new`, then the
+main item, then the second item is deleted. A read that finds no main item uses
+`api-keys.new`.
+
+**One open risk on current macOS.** Apple forum thread 844097 reports repeated keychain
+prompts after upgrading a Developer ID–signed app on macOS 26.6, put down to a securityd
+fault Apple has filed and, at its latest reply, not fixed. The app there used the older
+`SecKeychain…` calls, which keyring does not. The per-release Mac check (§8) runs on the
+newest macOS.
 
 Failure path: a frozen PyInstaller build can end up with no working keyring backend
 (keyring finds its backends through entry points, which freezing can lose). Workbench
@@ -291,6 +334,14 @@ nothing more.
   profile moves its entry.
 - Step 2: stops writing `aiSettings.apiKeys`, clears it after the import, and clears
   `customOpenAiProfiles[].apiKey`.
+- **GroupShare password (decision 5)**, a separate small change after step 1: stored in
+  the same locked file as `trados:groupshare:<server address>`; the user name stays in
+  `settings.json`. Read: the locked file first, else today's `passwordProtected` if
+  this PC can read it, which is then copied into the locked file. An unreadable password
+  gets M1 and M2 (§7) – never a blank box, never an empty password sent to the server.
+  Saves write the locked file and, until step 2, `passwordProtected` too, for an older
+  Trados; step 2 clears it. Because each PC reads its own locked copy first, two PCs
+  sharing a data folder stop taking turns asking for it.
 
 ### memoQ
 
@@ -345,7 +396,8 @@ buffer is freed with `LocalFree`. Where it goes wrong if done carelessly:
   function. A key passed in a job file as `apiKey` is the caller's choice and stays.
 - Workbench **joins the shared keys** (decision 1): one key per provider for all four
   products. At its first step-1 start it adds its own keys where the shared store has
-  none, never overwriting – the rule `MigrateFrom` already follows.
+  none, never overwriting – the rule `MigrateFrom` already follows. Where its own key
+  differs, the shared one wins and M8 (§7) names those providers, once.
 - The messages that name `api_keys.txt` are replaced by core's sentences (§7).
 
 ### Python core
@@ -430,6 +482,7 @@ is the price of the sync never being able to wipe the locked file.
 | Sidekick `settings.ini` `[Keys]`, `ChatGptAPI.ini` | kept and written | imported; `[Keys]` blanked, `ChatGptAPI.ini` deleted |
 | Workbench `settings.json` `api_keys`, profile `api_key` | kept and written | imported, removed from the file |
 | Workbench `api_keys.txt` (any of the five places) | read as now | imported, deleted |
+| Trados `groupShareServers[].passwordProtected` (locked, in the data folder) | kept; after the GroupShare change, a fallback that is still written | cleared, no longer written |
 
 Deleted means deleted, not moved to the Recycle Bin, which would keep the plain text, and
 not overwritten first, which means nothing on an SSD or in a synced folder's history.
@@ -445,9 +498,15 @@ into a text file" way of replacing a key open.
   Trados's warning). Order: core first (one core worker), then Trados and memoQ (one
   core version), Sidekick, Workbench for Windows and Mac. The Help pages in the same
   round (§10).
+- **Before the Workbench step-1 Mac build:** confirm that Michael's Apple Developer
+  membership is paid. Notarising needs an active membership; without one, a new .dmg is
+  one macOS warns about. Renewing under the same Team ID changes nothing for the
+  Keychain (§3). The step-1 Mac release ships as a signed, notarised .dmg again.
+- **GroupShare password:** its own small Trados release after step 1 (§4, decision 5).
 - **Step 2, all products:** the import, the removal of the plain copies, the end of
-  core's Workbench fallback. Ships only when decision 2 says so. The step-2 release
-  notes carry the replace-your-key advice (§6) and the downgrade note.
+  core's Workbench fallback. Ships eight weeks after the last of the four step-1
+  releases (decision 2). The step-2 release notes carry the replace-your-key advice (§6)
+  and the downgrade note.
 
 The Mac follows the same two steps, although only Workbench runs there: the same rules
 everywhere are easier to keep right than a Mac shortcut.
@@ -476,7 +535,7 @@ product, then delete the old key in the provider's console. The last part is wha
 old copies worthless.
 
 **Where users are told:** the step-2 release notes, a Help page on API keys (§10), and
-one sentence in the import notice (M4) pointing to it.
+one sentence in the import notice (M4) pointing to it (decision 4).
 
 ---
 
@@ -494,6 +553,10 @@ options (memoQ), AI providers & keys (Sidekick), Settings → AI (Workbench).
 **M2 – unreadable key when an action needs it** (instead of calling the provider):
 > Can't use your Anthropic key – it can't be read on this computer (saved under another
 > Windows sign-in, or your Windows password was reset). Paste it in again in <Settings>.
+
+The GroupShare password gets the same two messages, naming the server: "Your GroupShare
+password for <server> can't be read on this computer – …", and nothing is sent to the
+server until it is entered again.
 
 **M3 – a fixed line under the key box:**
 > Saved on this computer only, locked to your Windows sign-in.
@@ -518,6 +581,11 @@ a pop-up – with a product still at step 1 it can recur):
 **M7 – no Keychain (Mac) or secret store (Linux):**
 > Your Mac's Keychain isn't available to Supervertaler, so your keys stay in
 > Supervertaler's settings file as before.
+
+**M8 – Workbench's first step-1 start, where its own key differed from the shared one**
+(once, in the status line and the log):
+> Workbench now uses the same API keys as Supervertaler for Trados, memoQ and Sidekick.
+> Your Workbench key for OpenAI was different; the shared one is used from now on.
 
 A missing key that was never there keeps today's wording ("No API key set for
 Anthropic…"). Only an unreadable one gets M1 or M2. Telling the two apart is the point of
@@ -572,9 +640,12 @@ parameter, so the test needs no switch in any product. This catches the encoding
 - memoQ `tools\apikeys-test.ps1`: the real locked file is byte-identical before and after
   a harness run, as it already asserts for the plain file.
 - Trados: the offline `.dev` tests cover the start-up sync and import against a
-  temporary data root.
+  temporary data root. With the GroupShare change: an unreadable password gives the
+  message and no request goes out with an empty password.
 - Workbench: unit tests for the Windows functions (round trip, unreadable, damaged,
-  lock), and `keyring` with its in-memory backend for the Mac logic.
+  lock), and `keyring` with its in-memory backend for the Mac logic – including a save
+  stopped after the main item is deleted, after which the keys still read from
+  `api-keys.new`. And M8 when Workbench's own key differs from the shared one.
 
 ### Once, by hand, on real systems
 
@@ -587,8 +658,10 @@ parameter, so the test needs no switch in any product. This catches the encoding
 - **Citrix or FSLogix:** a tester, same check across two sessions.
 - **Microsoft account or Entra ID online reset:** what happens, so the Help page can say
   it plainly.
-- **Mac, every release:** the frozen build finds the Keychain backend, and the number of
-  "allow?" prompts after updating from the previous build.
+- **Mac, every release, on the newest macOS:** the frozen build finds the Keychain
+  backend; `codesign -d -r-` gives the same designated requirement as the previous
+  build; and updating from the previous build brings no "allow?" at all. Once: a key
+  saved by the pip version, then read by the .dmg, asks exactly once.
 - **32- and 64-bit Studio:** a key saved in Studio 2024 is read in Studio 2026. The
   format does not depend on bitness, but both are installed side by side and it costs a
   minute.
@@ -601,7 +674,8 @@ parameter, so the test needs no switch in any product. This catches the encoding
   either, and the import route covers the company key and hand editing.
 - Nothing against programs running under the user's own account (§2).
 - No change to memoQ's own encrypted key store (#6).
-- The GroupShare password is decision 5, not part of this work unless Michael says so.
+- The GroupShare password is not in the step-1 releases. It follows as its own small
+  Trados change (§4, decision 5).
 
 ---
 
@@ -616,7 +690,9 @@ Pages that name `api-keys.json` today: `trados\settings\ai-settings.md`,
 - what the "can't be read" message means and what to do;
 - the company-key route (drop `api-keys.json` into the settings folder);
 - when to replace a key (§6), in step 2;
-- on a Mac, the Keychain question.
+- on a Mac, the one Keychain question when moving between the pip version and the .dmg;
+- on the Trados GroupShare settings page, when that change ships: the password is kept
+  the same way, and what "can't be read" means there.
 
 ---
 
@@ -629,47 +705,56 @@ Pages that name `api-keys.json` today: `trados\settings\ai-settings.md`,
 - ESET knowledge base, error 0x8009000B after an administrator reset a local password
   in Computer Management –
   https://techcenter.eset.nl/en/kb/articles/error-after-resetting-user-password-in-windows-computer-management
-- Apple, Keychain Access user guide, on unsigned apps and "Always Allow" –
+- Apple, Keychain Access user guide, on "Always Allow" –
   https://support.apple.com/guide/keychain-access/kyca17140/mac
-- keyring issue #619, a new binary must be allowed again per Keychain item –
-  https://github.com/jaraco/keyring/issues/619
+- Apple, Code Signing Guide, "Code Signing Tasks": Keychain Services does not tell older
+  and newer versions apart when both are signed with the same identifier and designated
+  requirement –
+  https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html
+- Apple, TN2206 "macOS Code Signing In Depth": the designated requirement is how updates
+  are recognised; a keychain item trusts the app that created it –
+  https://developer.apple.com/library/archive/technotes/tn2206/_index.html
+- Apple Developer Forums, thread 654410 (Apple DTS): a Developer ID designated
+  requirement names the identifier and the Team ID, not one certificate; a changed
+  requirement counts as different code – https://developer.apple.com/forums/thread/654410
+- Apple Developer Forums, thread 844097: repeated keychain prompts after an app upgrade
+  on macOS 26.6, a securityd fault not fixed at the latest reply –
+  https://developer.apple.com/forums/thread/844097
+- keyring 25.6.0, `keyring/backends/macOS/api.py`: in-process `SecItem…` calls; a save
+  deletes the item and adds a new one – https://github.com/jaraco/keyring
+- keyring issue #619, a program whose signature changes must be allowed again, per
+  Keychain item (the pip case) – https://github.com/jaraco/keyring/issues/619
 
 ---
 
-## 12. Decisions only Michael can make
+## 12. Decisions taken (30 Oct 2026)
 
-To be put to him one at a time, each with a recommended answer.
+Put to Michael one at a time; his answers of 30 Oct 2026, in his words. The plan above
+already follows them.
 
-1. **Workbench joins the shared keys?** Then one key per provider for all four products.
-   Where Workbench's own key differs from the shared one, the shared one wins, and
-   Workbench says once which ones changed.
-   *Recommended: yes.* It is what #108 did for the other three, and it is what makes one
-   locked file enough. Anyone who deliberately uses a different key in Workbench than in
-   the plugins could no longer do so – rare.
+1. **Workbench joins the shared keys?** *Decided: yes – one key per provider for all four
+   products; where Workbench's own key differs, the shared one wins and Workbench says
+   once which ones changed (M8).* "Yes, share them."
 
-2. **How long between step 1 and step 2?** Step 2 only after all four step-1 releases are
-   out, plus time for users to update. Trados goes through the RWS App Store, the others
-   through GitHub.
-   *Recommended: eight weeks after the last step-1 release*, and well before the CRA
-   date of 11 Dec 2027 – so step 1 this winter, step 2 next spring.
+2. **How long between step 1 and step 2?** *Decided: step 2 comes eight weeks after the
+   last of the four step-1 releases* – well before the CRA date of 11 Dec 2027.
+   "Eight weeks."
 
-3. **Mac: the Keychain question after each Workbench update.** macOS recognises an
-   unsigned app's new build as a different app and asks again.
-   (a) Accept one question per update – one Keychain item keeps it to one.
-   (b) Also sign the Mac build with a home-made certificate: free, and the question
-   should then stop recurring (to be confirmed on a Mac). Gatekeeper's first-launch
-   warning stays.
-   (c) An Apple Developer ID ($99 a year): no recurring question and no Gatekeeper
-   warning.
-   *Recommended: (a) now, (b) if the Mac build can be signed that way.*
+3. **Mac: the Keychain question after each Workbench update.** *Premise corrected, so no
+   choice was needed.* The first version of this note took the Mac build to be unsigned
+   (§1, item 7) and offered ways to live with a question after every update. Michael:
+   "I'm pretty sure I went through all the trouble and that it is code signed." It is:
+   the README says the .dmg is "Code-signed and Apple-notarised", and
+   `build_macos_signed.sh` signs with a Developer ID Application certificate and
+   notarises. So, as long as Mac builds stay Developer ID–signed, macOS asks nothing
+   after updates – checked against Apple's documentation, §3. What remains: one question
+   when moving between the pip version and the .dmg, and confirming the Apple Developer
+   membership is paid before the Workbench step-1 Mac build (§5).
 
-4. **How loudly to advise replacing keys?** (a) Release notes and Help page only, or
-   (b) also the one sentence in the import notice (M4).
-   *Recommended: (b)* – the notice reaches exactly the users who had a plain file, at
-   the moment it matters.
+4. **How loudly to advise replacing keys?** *Decided: the one sentence goes in the import
+   notice (M4) as well as the step-2 release notes and the Help page.* "Yes, in the
+   notice too."
 
-5. **The GroupShare password the same way?** Move it out of the data folder into the
-   locked file, and give it M1 and M2 instead of failing silently. A small Trados-only
-   change after step 1; it also stops two PCs sharing a data folder from taking turns
-   asking for it.
-   *Recommended: yes, as a separate change.*
+5. **The GroupShare password the same way?** *Decided: yes – into the same locked file,
+   with the same "can't be read" messages, as a separate small Trados change after step
+   1 (§4).* "Yes, same way."
