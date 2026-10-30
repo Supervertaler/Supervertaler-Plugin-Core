@@ -19,9 +19,10 @@ namespace Supervertaler.Core
     /// reading it decrypts, writing it encrypts and drops the legacy value. No
     /// call site had to change.</para>
     ///
-    /// <para><b>The failure path is the risk.</b> Ciphertext is bound to the
-    /// Windows user and machine that wrote it, so a settings file restored from
-    /// a backup or carried to a new laptop will not decrypt. That is intended —
+    /// <para><b>The failure path is the risk.</b> Ciphertext opens only for the
+    /// Windows account that wrote it (<see cref="DpapiSecret"/>), so a settings
+    /// file restored under another account or carried to a new laptop without
+    /// the profile will not decrypt. That is intended —
     /// but it must reach the user as "please enter your key again", never as an
     /// empty field, which presents as an authentication failure from the
     /// provider and sends them debugging the wrong thing. Use

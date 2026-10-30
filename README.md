@@ -60,8 +60,11 @@ tests/bin/Debug/net48/Supervertaler.Core.Tests.exe
 A plain console program, no test framework. Exit code 0 means every test
 passed; a word on the command line runs only the tests whose names contain it.
 The licence tests use a temporary folder and a throwaway registry key and never
-touch the real licence. Some start copies of the program, because two products
-writing one file at once is only real across processes.
+touch the real licence. The API key tests use a temporary data folder and a
+temporary locked key file (the run redirects the locked file before anything
+else), and the run fails if the user's own key files changed. Some start copies
+of the program, because two products writing one file at once is only real
+across processes.
 
 ## Licence
 

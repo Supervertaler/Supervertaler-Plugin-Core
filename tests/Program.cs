@@ -22,10 +22,26 @@ namespace Supervertaler.Core.Tests
         internal static readonly string RegistryRoot =
             @"Software\SupervertalerCoreTests\" + Guid.NewGuid().ToString("N");
 
+        /// <summary>
+        /// Where a test with its own data root keeps its locked key file. Child
+        /// processes find it from the root they are given.
+        /// </summary>
+        internal static string LockedPathFor(string root) => Path.Combine(root, "appdata", "api-keys.locked.json");
+
         private static int Main(string[] args)
         {
+            // No test, and no child process a test starts, may touch the user's own
+            // locked key file. It is in %APPDATA%, which redirecting the data root
+            // does not move, so it is redirected here for the whole run, before
+            // anything else; a test that uses it points it somewhere of its own.
+            var runDir = Path.Combine(Path.GetTempPath(), "sv-core-tests-" + Guid.NewGuid().ToString("N"));
+            var runLocked = Path.Combine(runDir, "api-keys.locked.json");
+            ApiKeyStore.RedirectLockedFile(runLocked);
+
             if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
                 return Child.Run(args);
+
+            var realKeys = RealKeyFiles.Look();
 
             var filter = args.Length > 0 ? args[0] : null;
             var logs = new List<string>();
@@ -59,6 +75,15 @@ namespace Supervertaler.Core.Tests
                         if (!(tie.InnerException is AssertFailed))
                             Console.WriteLine(tie.InnerException?.StackTrace);
                     }
+
+                    // A test that moved the locked file must put it back, or the
+                    // next one could reach the real file.
+                    if (ApiKeyStore.LockedFilePath != runLocked)
+                    {
+                        failed++;
+                        Console.WriteLine($"FAIL  {name} left the locked key file pointing at {ApiKeyStore.LockedFilePath}");
+                        ApiKeyStore.RedirectLockedFile(runLocked);
+                    }
                 }
             }
             finally
@@ -79,10 +104,24 @@ namespace Supervertaler.Core.Tests
                 {
                     Console.WriteLine("WARNING: could not remove test registry keys: " + ex.Message);
                 }
+                try { Directory.Delete(runDir, true); } catch { }
+            }
+
+            // The run as a whole: the user's own key files exactly as they were.
+            var changed = realKeys.ChangedSince();
+            if (changed == null)
+            {
+                Console.WriteLine("PASS  Program.RealKeyFilesUntouched");
+            }
+            else
+            {
+                failed++;
+                Console.WriteLine("FAIL  Program.RealKeyFilesUntouched");
+                Console.WriteLine("      " + changed);
             }
 
             Console.WriteLine();
-            Console.WriteLine($"{tests.Count - failed} passed, {failed} failed, {clock.Elapsed.TotalSeconds:F1} s");
+            Console.WriteLine($"{tests.Count + 1 - failed} passed, {failed} failed, {clock.Elapsed.TotalSeconds:F1} s");
             return failed == 0 ? 0 : 1;
         }
 
@@ -112,6 +151,68 @@ namespace Supervertaler.Core.Tests
                 }
             }
             return outputs.Select(o => o.Result.Trim()).ToArray();
+        }
+    }
+
+    /// <summary>
+    /// The user's own API key files - the plain one in the real data folder, the
+    /// locked one in the real %APPDATA% - and anything beside them named like them
+    /// (a temporary file, a set-aside copy). Seen by name, size and timestamps
+    /// only, never opened, so the run reads no real key. Any difference after the
+    /// run means a test reached one; or a product saved a key meanwhile, in which
+    /// case run again.
+    /// </summary>
+    internal sealed class RealKeyFiles
+    {
+        private readonly List<string> _folders;
+        private readonly Dictionary<string, string> _seen;
+
+        private RealKeyFiles(List<string> folders)
+        {
+            _folders = folders;
+            _seen = Snapshot(folders);
+        }
+
+        public static RealKeyFiles Look()
+        {
+            var folders = new List<string>();
+            SupervertalerPaths.Reset();
+            try { folders.Add(Path.Combine(SupervertalerPaths.Root, "settings")); }
+            catch { }
+            SupervertalerPaths.Reset();
+            var locked = ApiKeyStore.DefaultLockedFilePath;
+            if (locked != null) folders.Add(Path.GetDirectoryName(locked));
+            return new RealKeyFiles(folders);
+        }
+
+        /// <summary>Null when nothing changed; otherwise which files did, by name.</summary>
+        public string ChangedSince()
+        {
+            var now = Snapshot(_folders);
+            var changes = new List<string>();
+            foreach (var f in _seen.Keys.Union(now.Keys))
+            {
+                _seen.TryGetValue(f, out var before);
+                now.TryGetValue(f, out var after);
+                if (before != after)
+                    changes.Add(f + (before == null ? " appeared" : after == null ? " disappeared" : " changed"));
+            }
+            return changes.Count == 0 ? null : string.Join("; ", changes);
+        }
+
+        private static Dictionary<string, string> Snapshot(List<string> folders)
+        {
+            var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var folder in folders)
+            {
+                if (!Directory.Exists(folder)) continue;
+                foreach (var file in Directory.GetFiles(folder, "api-keys*"))
+                {
+                    var info = new FileInfo(file);
+                    seen[file] = info.Length + "|" + info.CreationTimeUtc.Ticks + "|" + info.LastWriteTimeUtc.Ticks;
+                }
+            }
+            return seen;
         }
     }
 

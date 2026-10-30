@@ -30,5 +30,9 @@
          Declared here rather than left to each consumer so a plugin picking up
          core does not fail to build on a reference it never knew it needed. -->
     <Reference Include="System.Security" />
+    <!-- JavaScriptSerializer, to read the locked key file strictly, so a
+         truncated one is recognised as damaged (ApiKeyStore.cs). A framework
+         assembly, so nothing is deployed. -->
+    <Reference Include="System.Web.Extensions" />
   </ItemGroup>
 </Project>

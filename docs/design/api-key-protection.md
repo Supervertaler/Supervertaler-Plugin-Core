@@ -1,7 +1,7 @@
 # API keys locked to the computer
 
-**Status: decisions taken 30 Oct 2026; plan awaiting Michael's go to build. No code
-yet.** Written 2026-10-30. Covers
+**Status: decisions taken 30 Oct 2026. Step 1 built in core on 30 Oct 2026 (core branch
+`api-key-lock-step1`, not merged; see §13); the products follow.** Written 2026-10-30. Covers
 Supervertaler for Trados, Supervertaler for memoQ, Sidekick and Workbench (and the
 Python core package). Building comes afterwards, one product at a time.
 
@@ -758,3 +758,78 @@ already follows them.
 5. **The GroupShare password the same way?** *Decided: yes – into the same locked file,
    with the same "can't be read" messages, as a separate small Trados change after step
    1 (§4).* "Yes, same way."
+
+---
+
+## 13. Step 1 in core, as built (30 Oct 2026)
+
+Core branch `api-key-lock-step1`. What the product workers call, and what was decided
+where the plan above is silent.
+
+**API** (`ApiKeyStore`, unchanged surface plus):
+
+- `Status(id)` – `ApiKeyStatus.Present`, `Absent` or `Unreadable`, by the step-1 read rule.
+  `Get(id)` returns null for both absent and unreadable.
+- `MissingKeyMessage(id, settingsPlace)` – M2, or "No API key set for Anthropic. Add one in
+  AI Settings." when there is none; null when the key is there. `UnreadableKeyNote(id)` – M1,
+  or null. `LockedKeyLine` – M3.
+- `SyncLocked()` – the step-1 start-up sync. Returns `Locked` (count), `Failed`, and
+  `Notice` (M6, when a damaged locked file was set aside). Call it once per start, after
+  `MigrateFrom`.
+- `LockedFilePath`; `Log` (wire it to the product's log: Windows error codes, set-asides,
+  failed locked writes; never a key).
+- `PrivateId(product, kind, name)` – `trados:custom_openai:Acme server`. An id with a colon
+  lives in the locked file only; `Get`/`Set`/`Status` take it like any other id.
+- `LlmClient.ResolveApiKey(id, localKeys, settingsPlace, out problem)` – null plus the
+  sentence to show. The old two-argument overload still compiles and returns null, never a
+  blank or fallback key, for an unreadable one; a call site has to use the new overload (or
+  `MissingKeyMessage`) for the user to see M2.
+- `DpapiSecret.TryUnprotect(value, out plain, out windowsError)`.
+- Test-only, internal: `ApiKeyStore.RedirectLockedFile(path)` and `DefaultLockedFilePath`.
+  **Any test or harness that redirects the data root and then saves a key or runs the sync
+  must also redirect the locked file**, or it writes the user's real one – and the sync
+  replaces entries there. memoQ's `tools\apikeys-test.ps1` section 4 is such a harness.
+
+**Decided while building:**
+
+1. **The sync holds the plain file** (others may read it, not write it) until the locked
+   file is written. §5 says the two files are held together only by the import; without
+   it, a sync at one product's start could overwrite in the locked file a key another
+   product saved a moment before. Same order as everywhere – plain first – so no deadlock;
+   tested with a saver and a syncer racing.
+2. **An empty save never removes a locked entry this account cannot unlock.** Settings
+   dialogs save every box on OK, and that box was empty because the key could not be read.
+   It stays until a new key replaces it (§3).
+3. **A removal counts only when both files are written**; a save counts when the plain file
+   is (§5). A key left in the locked file would still be read.
+4. **`MigrateFrom` never adds a key either file holds, and adds nothing past a damaged or
+   unopenable locked file.** Otherwise, after a step-2 import, a step-1 Trados start would
+   put its older copy back in the plain file, which step 1 reads first, and the sync would
+   lock it over the newer key.
+5. **An unreadable shared key ends `ResolveApiKey`'s search**: the plugin's own copy or
+   Workbench's may be older, and the provider would answer "invalid key".
+6. **A locked file that cannot be opened after waiting a second is "unreadable"**, not
+   absent, with its own sentence ("could not be opened … Try again in a moment."). So is a
+   damaged one ("is damaged: <path>"). Neither wording is in §7.
+7. **A damaged file is copied aside, not renamed**: its exact bytes go to
+   `api-keys.locked.damaged-<yyyyMMdd-HHmmss>.json` (local time) while the file is still
+   held, then the file is replaced in one step. A rename would leave a moment with no file,
+   in which another product could create one and lose a write.
+8. **Strict JSON with `JavaScriptSerializer`** (framework assembly System.Web.Extensions,
+   now referenced in `Supervertaler.Core.props`). The framework's other reader,
+   `JsonReaderWriterFactory`, accepts a truncated file (`{"claude": "…",` parses), so it
+   cannot tell damage. A 0-byte or blank file counts as no entries; a blank value or one
+   that unlocks to "" counts as no key.
+9. **Ids are kept as spelt** when core rewrites the file (lookups ignore case); ids starting
+   with `_` are dropped on rewrite, as in the plain file.
+10. **Error codes seen offline:** 0x8007000D (invalid data) both for a value locked with an
+    entropy and for a flipped byte. 0x8009000B is the password-reset case, for the manual
+    check in §8.
+
+**Measured** (core tests, this PC): one unlock 0.27 ms; one whole lookup from the locked
+file (read, parse, unlock) 0.8 ms; a start-up sync of 15 keys with nothing to change 6–8 ms.
+
+**Not built here:** step 2 (import, M4, M5, test 5, the step-2 half of the state table),
+the cross-language script (§8), the GroupShare password, and all product changes in §4.
+M6 says "Please paste your keys in again" although in step 1 the sync restores every key
+the plain file still has; worth a softer step-1 wording when a product first shows it.

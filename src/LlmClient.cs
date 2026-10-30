@@ -475,20 +475,41 @@ namespace Supervertaler.Core
         // ─── API Key Fallback Chain ──────────────────────────────────
 
         /// <summary>
-        /// Resolves the API key for a provider using the fallback chain:
-        /// 1. Plugin-local settings (aiSettings.apiKeys)
-        /// 2. Supervertaler desktop app settings (~/Supervertaler/settings/settings.json)
-        /// 3. Supervertaler config pointer (%APPDATA%\Supervertaler\config.json → user_data_path)
+        /// The API key for a provider, or null when there is none to use. In order:
+        /// 1. The shared keys (<see cref="ApiKeyStore"/>: the plain file, else the
+        ///    locked file). Not for custom endpoints: those keep their key in the profile.
+        /// 2. The plugin's own keys - where a pre-#108 install kept them.
+        /// 3. Supervertaler Workbench's settings.json.
+        ///
+        /// <para>A shared key this Windows account cannot unlock ends the search with
+        /// null. A fallback's key may be an older one, and the provider would answer
+        /// it with a misleading "invalid key". The overload with <c>problem</c> says
+        /// why, for the caller to show instead of calling the provider.</para>
         /// </summary>
         public static string ResolveApiKey(string providerKey, AiApiKeys localKeys)
+            => ResolveApiKey(providerKey, localKeys, null, out _);
+
+        /// <summary>
+        /// <see cref="ResolveApiKey(string, AiApiKeys)"/>; when that is null,
+        /// <paramref name="problem"/> is the sentence to show (design note §7): why
+        /// the stored key cannot be used, or that none is set, naming
+        /// <paramref name="settingsPlace"/> ("AI Settings") as where to enter one.
+        /// </summary>
+        public static string ResolveApiKey(string providerKey, AiApiKeys localKeys, string settingsPlace, out string problem)
         {
-            // 1. The shared key file - one file for every Supervertaler product (#108).
-            //    Not for custom endpoints: those keep their key in the profile.
+            problem = null;
+
+            // 1. The shared keys - one set for every Supervertaler product (#108).
             if (providerKey != LlmModels.ProviderCustomOpenAi)
             {
-                var shared = ApiKeyStore.Get(providerKey);
-                if (!string.IsNullOrEmpty(shared))
+                var status = ApiKeyStore.Lookup(providerKey, settingsPlace, out var shared, out var sharedProblem);
+                if (status == ApiKeyStatus.Present)
                     return shared;
+                if (status == ApiKeyStatus.Unreadable)
+                {
+                    problem = sharedProblem;
+                    return null;
+                }
             }
 
             // 2. The plugin's own keys - the fallback, and where a pre-#108 install kept them
@@ -497,7 +518,12 @@ namespace Supervertaler.Core
                 return localKey;
 
             // 3. Supervertaler Workbench's settings
-            return ReadKeyFromSupervertalerSettings(providerKey);
+            var workbenchKey = ReadKeyFromSupervertalerSettings(providerKey);
+            if (!string.IsNullOrEmpty(workbenchKey))
+                return workbenchKey;
+
+            problem = ApiKeyStore.NoKeyMessage(providerKey, settingsPlace);
+            return null;
         }
 
         private static string GetKeyFromLocal(string providerKey, AiApiKeys keys)

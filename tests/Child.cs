@@ -25,6 +25,7 @@ namespace Supervertaler.Core.Tests
                     case "--parse-reply": return ParseReply(a[1]);
                     case "--keys-forever": return KeysForever(a[1]);
                     case "--keys-loop": return KeysLoop(a[1], a[2], a[3], int.Parse(a[4]));
+                    case "--sync-loop": return SyncLoop(a[1], a[2], int.Parse(a[3]));
                     default:
                         Console.WriteLine("unknown mode " + a[0]);
                         return 2;
@@ -53,7 +54,7 @@ namespace Supervertaler.Core.Tests
         /// </summary>
         private static int KeysForever(string root)
         {
-            SupervertalerPaths.Set(root);
+            UseKeysUnder(root);
             var rnd = new Random();
             Console.WriteLine("writing");
             Console.Out.Flush();
@@ -64,13 +65,32 @@ namespace Supervertaler.Core.Tests
         /// <summary>Saves keys <paramref name="id"/>_0 .. _n-1, and says how many saves failed.</summary>
         private static int KeysLoop(string root, string goFile, string id, int n)
         {
-            SupervertalerPaths.Set(root);
+            UseKeysUnder(root);
             WaitFor(goFile);
             int failed = 0;
             for (int i = 0; i < n; i++)
                 if (!ApiKeyStore.Set(id + "_" + i, "v" + i)) failed++;
             Console.WriteLine("failed=" + failed);
             return 0;
+        }
+
+        /// <summary>Runs the start-up sync <paramref name="n"/> times, and says how many failed.</summary>
+        private static int SyncLoop(string root, string goFile, int n)
+        {
+            UseKeysUnder(root);
+            WaitFor(goFile);
+            int failed = 0;
+            for (int i = 0; i < n; i++)
+                if (ApiKeyStore.SyncLocked().Failed) failed++;
+            Console.WriteLine("failed=" + failed);
+            return 0;
+        }
+
+        /// <summary>The parent's data root and its locked key file, never the user's.</summary>
+        private static void UseKeysUnder(string root)
+        {
+            SupervertalerPaths.Set(root);
+            ApiKeyStore.RedirectLockedFile(Program.LockedPathFor(root));
         }
 
         /// <summary>One only-if-absent write of this child's own content.</summary>
