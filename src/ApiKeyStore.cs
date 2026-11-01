@@ -884,6 +884,9 @@ namespace Supervertaler.Core
                 case LlmModels.ProviderMistral: return "Mistral";
                 case LlmModels.ProviderDeepSeek: return "DeepSeek";
                 case LlmModels.ProviderCustomOpenAi: return "Custom OpenAI";
+                case MachineTranslation.DeepL:
+                case MachineTranslation.Google:
+                case MachineTranslation.Microsoft: return MachineTranslation.DisplayName(providerKey);
                 default: return providerKey;
             }
         }

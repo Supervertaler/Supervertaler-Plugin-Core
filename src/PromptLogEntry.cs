@@ -43,6 +43,14 @@ namespace Supervertaler.Core.Models
         public decimal EstimatedCost { get; set; }
 
         /// <summary>
+        /// A machine-translation engine's run (<see cref="MachineTranslation"/>): the
+        /// characters it charged, which take the place of tokens in every view.
+        /// Null for an AI call. <see cref="EstimatedCost"/> is then their cost at list
+        /// price.
+        /// </summary>
+        public int? Characters { get; set; }
+
+        /// <summary>
         /// When set, these are the real token counts and cost reported by the
         /// provider's API response (with cache pricing applied). When null, the
         /// chars/4 + list-price estimate above is used instead. Populated via
@@ -121,6 +129,12 @@ namespace Supervertaler.Core.Models
                 if (IsError)
                     return $"{DisplayModel ?? Model} \u2022 ERROR \u2022 {Duration.TotalSeconds:F1}s";
 
+                if (Characters.HasValue)
+                {
+                    var mtCost = EstimatedCost >= 0.01m ? $"${EstimatedCost:F2}" : EstimatedCost > 0 ? $"${EstimatedCost:F4}" : "free";
+                    return $"{DisplayModel ?? Model} \u2022 {Characters.Value:N0} characters \u2022 {mtCost} \u2022 {Duration.TotalSeconds:F1}s";
+                }
+
                 if (HasActualUsage)
                 {
                     var regularIn = ActualRegularInputTokens ?? 0;
@@ -186,7 +200,12 @@ namespace Supervertaler.Core.Models
             sb.AppendLine($"Provider: {Provider}");
             sb.AppendLine($"Model: {DisplayModel ?? Model}");
             sb.AppendLine($"Duration: {Duration.TotalSeconds:F1}s");
-            if (HasActualUsage)
+            if (Characters.HasValue)
+            {
+                sb.AppendLine($"Characters charged: {Characters.Value:N0}");
+                sb.AppendLine($"Cost (list price): {(EstimatedCost > 0 ? $"${EstimatedCost:F4}" : "free")}");
+            }
+            else if (HasActualUsage)
             {
                 var regularIn = ActualRegularInputTokens ?? 0;
                 var cacheRead = ActualCacheReadTokens ?? 0;

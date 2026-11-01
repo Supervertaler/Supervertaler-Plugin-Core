@@ -17,6 +17,11 @@ namespace Supervertaler.Core
     ///      so cost estimation never throws.
     /// Loaded once on first use. Cache-discount multipliers live in
     /// TokenEstimator (they are per-provider, not per-model).
+    ///
+    /// <para>The same file may carry an <c>"mt"</c> section: machine-translation
+    /// engines' list prices, USD per 1,000,000 CHARACTERS, not tokens
+    /// (<see cref="MtPerMillion"/>). Workbench reads only <c>"models"</c> and
+    /// ignores it.</para>
     /// </summary>
     public static class PricingTable
     {
@@ -25,6 +30,7 @@ namespace Supervertaler.Core
         {
             [DataMember(Name = "version")] public string Version { get; set; }
             [DataMember(Name = "models")] public Dictionary<string, ModelPrice> Models { get; set; }
+            [DataMember(Name = "mt")] public Dictionary<string, decimal> Mt { get; set; }
         }
 
         [DataContract]
@@ -62,6 +68,65 @@ namespace Supervertaler.Core
                 return true;
             rates = (0m, 0m);
             return false;
+        }
+
+        private static readonly Dictionary<string, decimal> _mtPrices = LoadMt();
+
+        /// <summary>
+        /// A machine-translation engine's list price, USD per million characters; 0
+        /// for anything else. The first file with an <c>"mt"</c> section decides
+        /// (override, then bundled); without one, the prices below.
+        /// </summary>
+        public static decimal MtPerMillion(string engine) =>
+            !string.IsNullOrEmpty(engine) && _mtPrices.TryGetValue(engine.Trim(), out var price) ? price : 0m;
+
+        private static Dictionary<string, decimal> LoadMt()
+        {
+            foreach (var open in new Func<Stream>[] { OpenOverride, OpenBundled })
+            {
+                try
+                {
+                    using (var s = open())
+                    {
+                        var file = Read(s);
+                        if (file?.Mt != null && file.Mt.Count > 0)
+                            return new Dictionary<string, decimal>(file.Mt, StringComparer.OrdinalIgnoreCase);
+                    }
+                }
+                catch { /* the next one */ }
+            }
+
+            // Read from the vendors' pages on 30 Oct 2026 (docs/design/mt-engines.md
+            // §11): DeepL's Growth price for characters beyond the plan, Google's NMT
+            // above its free 500,000 a month, Microsoft's S1 standard translation.
+            return new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+            {
+                { MachineTranslation.DeepL, 27.50m },
+                { MachineTranslation.Google, 20.00m },
+                { MachineTranslation.Microsoft, 10.00m },
+            };
+        }
+
+        private static Stream OpenOverride()
+        {
+            var path = Path.Combine(SupervertalerPaths.Root, "pricing.json");
+            return File.Exists(path) ? File.OpenRead(path) : null;
+        }
+
+        private static Stream OpenBundled()
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            foreach (var n in asm.GetManifestResourceNames())
+                if (n.EndsWith("pricing.json", StringComparison.OrdinalIgnoreCase))
+                    return asm.GetManifestResourceStream(n);
+            return null;
+        }
+
+        private static PricingFile Read(Stream s)
+        {
+            if (s == null) return null;
+            var serSettings = new DataContractJsonSerializerSettings { UseSimpleDictionaryFormat = true };
+            return (PricingFile)new DataContractJsonSerializer(typeof(PricingFile), serSettings).ReadObject(s);
         }
 
         private static Dictionary<string, (decimal, decimal)> Load()
@@ -138,9 +203,7 @@ namespace Supervertaler.Core
         private static Dictionary<string, (decimal, decimal)> Parse(Stream s)
         {
             if (s == null) return null;
-            var serSettings = new DataContractJsonSerializerSettings { UseSimpleDictionaryFormat = true };
-            var ser = new DataContractJsonSerializer(typeof(PricingFile), serSettings);
-            var file = (PricingFile)ser.ReadObject(s);
+            var file = Read(s);
             var dict = new Dictionary<string, (decimal, decimal)>(StringComparer.OrdinalIgnoreCase);
             if (file?.Models != null)
             {

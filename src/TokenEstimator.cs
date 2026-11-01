@@ -100,6 +100,11 @@ namespace Supervertaler.Core
         {
             if (string.Equals(provider, LlmModels.ProviderOllama, System.StringComparison.OrdinalIgnoreCase))
                 return 0m;
+            // A machine-translation engine charges by the character and is priced
+            // by MachineTranslation.Cost. Counted here, its characters would be
+            // taken for tokens at the dearest AI rate.
+            if (MachineTranslation.IsEngine(provider))
+                return 0m;
 
             var (inputPer1M, outputPer1M) = PricingTable.Dearest;
             var (readMul, writeMul) = GetCacheMultipliers(model);

@@ -31,8 +31,13 @@ namespace Supervertaler.Core
             public bool CostKnown = true;
             public int InputTokens;
             public int OutputTokens;
+            /// <summary>A machine-translation engine's: the characters it charged, in place of tokens.</summary>
+            public int Characters;
             public TimeSpan Elapsed;
             public string Error;
+
+            /// <summary>DeepL, Google Translate or Microsoft Translator rather than an AI model.</summary>
+            public bool IsMachineTranslation => MachineTranslation.IsEngine(Provider);
         }
 
         public sealed class Run
@@ -97,16 +102,21 @@ namespace Supervertaler.Core
 
         public static string BuildJudgeUserPrompt(Run run, string translationInstructions, string terminologyBlock)
         {
+            // "The project's", not "the candidates were given": a machine-translation
+            // contender is given neither, and saying which candidate was not would
+            // unblind the judge. Every candidate is judged against what the job needs
+            // (docs/design/mt-engines.md, decision 3); the report, not the judge,
+            // says who saw what.
             var sb = new StringBuilder();
             if (!string.IsNullOrWhiteSpace(translationInstructions))
             {
-                sb.AppendLine("# TRANSLATION INSTRUCTIONS THE CANDIDATES WERE GIVEN");
+                sb.AppendLine("# THE PROJECT'S TRANSLATION INSTRUCTIONS");
                 sb.AppendLine(translationInstructions.Trim());
                 sb.AppendLine();
             }
             if (!string.IsNullOrWhiteSpace(terminologyBlock))
             {
-                sb.AppendLine("# APPROVED TERMS THE CANDIDATES WERE GIVEN");
+                sb.AppendLine("# THE PROJECT'S APPROVED TERMS");
                 sb.AppendLine(terminologyBlock.Trim());
                 sb.AppendLine();
             }
@@ -140,20 +150,37 @@ namespace Supervertaler.Core
             sb.AppendLine("- Languages: " + run.SourceLang + " → " + run.TargetLang);
             sb.AppendLine("- Segments: " + run.Sources.Count);
             if (!string.IsNullOrWhiteSpace(run.SettingsSummary)) sb.AppendLine("- Settings: " + run.SettingsSummary);
+            var engines = ordered.Where(c => c.IsMachineTranslation).Select(c => MachineTranslation.DisplayName(c.Provider)).ToList();
+            if (engines.Count > 0)
+                sb.AppendLine("- Machine translation: " + JoinNames(engines) + (engines.Count == 1 ? " was" : " were")
+                              + " given no prompt and no termbase. The judge marked " + (engines.Count == 1 ? "it" : "them")
+                              + " against both, like every candidate.");
             sb.AppendLine("- Judge: " + (run.JudgeDisplayModel ?? run.JudgeModel) + (run.JudgeCost > 0 ? " (" + Money(run.JudgeCost) + ")" : ""));
             sb.AppendLine();
 
             sb.AppendLine("## Contenders");
             sb.AppendLine();
-            sb.AppendLine("| Label | Model | Cost | Tokens in / out | Time | Segments returned |");
+            sb.AppendLine("| Label | Model | Cost | Tokens in / out · characters | Time | Segments returned |");
             sb.AppendLine("|---|---|---|---|---|---|");
             foreach (var c in ordered)
             {
                 var returned = c.Translations.Count(t => !string.IsNullOrEmpty(t));
-                sb.AppendLine("| **" + c.Label + "** | " + (c.DisplayModel ?? c.Model) + " (" + c.Provider + ") | " +
-                              (c.CostKnown ? Money(c.Cost) : "unknown") + " | " + c.InputTokens.ToString("N0") + " / " + c.OutputTokens.ToString("N0") +
+                var model = c.IsMachineTranslation
+                    ? MachineTranslation.DisplayName(c.Provider) + " (machine translation)"
+                    : (c.DisplayModel ?? c.Model) + " (" + c.Provider + ")";
+                var usage = c.IsMachineTranslation
+                    ? c.Characters.ToString("N0") + " characters" + (c.Provider == MachineTranslation.Google ? " (computed)" : "")
+                    : c.InputTokens.ToString("N0") + " / " + c.OutputTokens.ToString("N0");
+                sb.AppendLine("| **" + c.Label + "** | " + model + " | " +
+                              (c.CostKnown ? Money(c.Cost) : "unknown") + " | " + usage +
                               " | " + c.Elapsed.TotalSeconds.ToString("F0") + " s | " + returned + " / " + run.Sources.Count +
                               (string.IsNullOrEmpty(c.Error) ? "" : " – " + c.Error) + " |");
+            }
+            if (engines.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("Machine-translation costs are at list price, in US dollars, for characters beyond what a plan includes. " +
+                              "Within a free allowance, or the characters a plan includes, they cost nothing extra.");
             }
             sb.AppendLine();
 
@@ -192,5 +219,10 @@ namespace Supervertaler.Core
             string.IsNullOrEmpty(s) ? "" : s.Replace("\r", " ").Replace("\n", " ").Replace("|", "\\|");
 
         private static string Money(decimal usd) => "$" + usd.ToString("0.00##");
+
+        /// <summary>"DeepL", "DeepL and Google Translate", "DeepL, Google Translate and Microsoft Translator".</summary>
+        private static string JoinNames(IList<string> names) =>
+            names.Count <= 1 ? string.Concat(names)
+            : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[names.Count - 1];
     }
 }
