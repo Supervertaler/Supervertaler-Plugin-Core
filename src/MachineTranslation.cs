@@ -173,12 +173,15 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// The characters a text costs as sent: its code points, markup included -
-        /// Google's published rule, and Microsoft's. Used for the estimate before a
-        /// run, and for Google's count after one.
+        /// Google's published rule, and Microsoft's. DeepL charges the text without
+        /// its tags (on 1 Nov 2026 it billed 607 characters for 812 sent, 607 being
+        /// the escaped text alone). Used for the estimate before a run, and for
+        /// Google's count after one.
         /// </summary>
         public static int CharactersAsSent(string engine, string text)
         {
-            return CodePoints(MtMarkup.ToEngine(text, NotationOf(engine), out _));
+            var sent = MtMarkup.ToEngine(text, NotationOf(engine), out _);
+            return CodePoints(engine == DeepL ? MtMarkup.PlainText(sent) : sent);
         }
 
         private static int CodePoints(string s)
@@ -217,8 +220,8 @@ namespace Supervertaler.Core
         /// <summary>
         /// The target-language code an engine wants for a BCP 47 tag
         /// (docs/design/mt-engines.md §3.2). Variants are checked against each
-        /// engine's own language list, recorded 1 Nov 2026 (Google, Microsoft); an
-        /// unknown language goes as its base code and the engine's refusal says so.
+        /// engine's own language list, recorded 1 Nov 2026; an unknown language goes
+        /// as its base code and the engine's refusal says so.
         /// </summary>
         public static string TargetCode(string engine, string language)
         {
@@ -231,6 +234,9 @@ namespace Supervertaler.Core
                     if (lang == "pt") return region == "BR" ? "PT-BR" : "PT-PT";
                     if (lang == "zh") return traditional ? "ZH-HANT" : "ZH-HANS";
                     if (lang == "es") return region != null && LatinAmerica.Contains(region) ? "ES-419" : "ES";
+                    if (lang == "fr" && region == "CA") return "FR-CA";
+                    // Swiss German writes "ss" for "ß"; Liechtenstein does the same.
+                    if (lang == "de" && (region == "CH" || region == "LI")) return "DE-CH";
                     if (IsNorwegian(lang)) return "NB";
                     return lang.ToUpperInvariant();
 

@@ -15,7 +15,9 @@ namespace Supervertaler.Core
     /// 1 Nov 2026 (the spike's replies are in the Trados repo's .dev\mt-spike):</para>
     /// <list type="bullet">
     /// <item><b>XML (DeepL)</b>: the placeholders as they are - valid XML elements -
-    /// with DeepL's <c>tag_handling: "xml"</c>.</item>
+    /// with DeepL's <c>tag_handling: "xml"</c>. It kept every tag in 11 of 12 test
+    /// segments, with clean spacing; the twelfth lost the pair around a lone number
+    /// ("claim &lt;t1&gt;1&lt;/t1&gt;"), which the plugins then write as plain text.</item>
     /// <item><b>HTML (Google, Microsoft)</b>: a pair becomes <c>&lt;span id="t1"&gt;…&lt;/span&gt;</c>,
     /// a standalone tag <c>&lt;img id="t2"&gt;</c>. Google kept every tag in all three
     /// notations tried, but with its own element names (<c>&lt;t1&gt;</c>) it translated

@@ -116,12 +116,26 @@ namespace Supervertaler.Core.Tests
                 ["pt-BR"] = "PT-BR", ["pt-PT"] = "PT-PT", ["pt-AO"] = "PT-PT",
                 ["zh-CN"] = "ZH-HANS", ["zh-Hans-SG"] = "ZH-HANS", ["zh-TW"] = "ZH-HANT", ["zh-Hant-HK"] = "ZH-HANT",
                 ["es-ES"] = "ES", ["es-MX"] = "ES-419", ["es-419"] = "ES-419",
-                ["nb-NO"] = "NB", ["nn-NO"] = "NB", ["no"] = "NB", ["nl-NL"] = "NL", ["nl-BE"] = "NL", ["de-CH"] = "DE",
+                ["nb-NO"] = "NB", ["nn-NO"] = "NB", ["no"] = "NB", ["nl-NL"] = "NL", ["nl-BE"] = "NL",
+                ["de-DE"] = "DE", ["de-AT"] = "DE", ["de-CH"] = "DE-CH", ["fr-FR"] = "FR", ["fr-CA"] = "FR-CA",
             };
+            var deepl = new HashSet<string>(DeepLTargets, StringComparer.Ordinal);
             foreach (var kv in expected)
+            {
                 Assert.Equal(kv.Value, MachineTranslation.TargetCode(MachineTranslation.DeepL, kv.Key), "DeepL target for " + kv.Key);
-            foreach (var src in new[] { "en-US", "pt-BR", "zh-TW", "es-419" })
+                Assert.True(deepl.Contains(kv.Value), "DeepL's list has " + kv.Value);
+            }
+            foreach (var src in new[] { "en-US", "pt-BR", "zh-TW", "es-419", "de-CH" })
                 Assert.True(!MachineTranslation.SourceCode(MachineTranslation.DeepL, src).Contains("-"), "a DeepL source carries no variant: " + src);
+        }
+
+        public static void Mt_CharactersAsSent_DeepLWithoutTags_OthersWithMarkup()
+        {
+            const string s = "See <t1>Figure 3</t1> & more.<t2/>";
+            Assert.Equal("See Figure 3 &amp; more.".Length, MachineTranslation.CharactersAsSent(MachineTranslation.DeepL, s), "DeepL: the escaped text alone");
+            Assert.Equal("See <span id=\"t1\">Figure 3</span> &amp; more.<img id=\"t2\">".Length,
+                MachineTranslation.CharactersAsSent(MachineTranslation.Google, s), "Google: every character sent");
+            Assert.Equal(1, MachineTranslation.CharactersAsSent(MachineTranslation.Microsoft, "\U0001F600"), "a code point, not two UTF-16 units");
         }
 
         public static void Mt_Codes_GoogleAndMicrosoft_AreInTheirOwnLists()
@@ -557,6 +571,18 @@ namespace Supervertaler.Core.Tests
             if (retryAfterSeconds.HasValue) r.Headers.TryAddWithoutValidation("Retry-After", retryAfterSeconds.Value.ToString());
             return r;
         }
+
+        // DeepL's target languages as /v2/languages?type=target gave them on 1 Nov 2026.
+        private static readonly string[] DeepLTargets =
+        {
+            "AF", "AN", "AR", "AS", "AY", "AZ", "BA", "BE", "BG", "BN", "BR", "BS", "CA", "CS", "CY", "DA", "DE", "DE-CH",
+            "DE-DE", "EL", "EN-GB", "EN-US", "EO", "ES", "ES-419", "ES-ES", "ET", "EU", "FA", "FI", "FR", "FR-CA", "FR-FR",
+            "GA", "GL", "GN", "GU", "HA", "HE", "HI", "HR", "HT", "HU", "HY", "ID", "IG", "IS", "IT", "JA", "JV", "KA", "KK",
+            "KO", "KY", "LA", "LB", "LN", "LT", "LV", "MG", "MI", "MK", "ML", "MN", "MR", "MS", "MT", "MY", "NB", "NE", "NL",
+            "OC", "OM", "PA", "PL", "PS", "PT-BR", "PT-PT", "QU", "RO", "RU", "SA", "SK", "SL", "SQ", "SR", "ST", "SU", "SV",
+            "SW", "TA", "TE", "TG", "TH", "TK", "TL", "TN", "TR", "TS", "TT", "UK", "UR", "UZ", "VI", "WO", "XH", "YI", "ZH",
+            "ZH-HANS", "ZH-HANT", "ZU",
+        };
 
         // Google's and Microsoft's language lists as they gave them on 1 Nov 2026.
         private static readonly string[] GoogleList =
