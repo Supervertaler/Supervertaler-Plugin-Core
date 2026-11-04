@@ -30,6 +30,16 @@ namespace Supervertaler.Core.Models
         public string DisplayContent { get; set; }
 
         /// <summary>
+        /// Optional: where the user was when they sent this message, e.g. "segment 4 of 54"
+        /// (Trados AI Assistant, 205). Never shown in the chat and never part of
+        /// <see cref="Content"/>; the plugin puts it on the message's first line in the copy it
+        /// sends, so the model knows which segment an earlier "this segment" meant. Null for
+        /// messages saved before it existed and for plugins that do not set it.
+        /// </summary>
+        [DataMember(Name = "askedWhile", EmitDefaultValue = false)]
+        public string AskedWhile { get; set; }
+
+        /// <summary>
         /// Optional image attachments. Null means text-only (most messages).
         /// </summary>
         [DataMember(Name = "images", EmitDefaultValue = false)]
