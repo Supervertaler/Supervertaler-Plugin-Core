@@ -157,7 +157,7 @@ namespace Supervertaler.Core.Tests
         /// test gives and keeps the last request body. Raw sockets, as in
         /// <see cref="FakeLicenceServer"/>: HttpListener needs a URL reservation.
         /// </summary>
-        private sealed class FakeJsonServer : IDisposable
+        internal sealed class FakeJsonServer : IDisposable
         {
             private readonly TcpListener _listener;
             private readonly Func<string, string> _reply;

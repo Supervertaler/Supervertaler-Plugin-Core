@@ -319,17 +319,41 @@ namespace Supervertaler.Core
         /// Sends a multi-turn chat conversation to the LLM.
         /// Used by the AI Assistant for conversation continuity.
         /// </summary>
+        /// <param name="enablePromptCaching">
+        /// The caller asserts that this conversation will be sent again within
+        /// minutes, longer by one turn: an ongoing chat, not a one-off request.
+        /// For Claude, direct or through OpenRouter, it adds cache breakpoints
+        /// on the system prompt's stable part and on the last message, so the
+        /// next turn reads everything before its own new message from the cache
+        /// instead of paying for it in full (see <see cref="ClaudeSystemJson"/>).
+        /// No other provider is sent a marker: OpenAI, DeepSeek and Gemini cache
+        /// a repeated beginning by themselves, and Ollama, local servers and
+        /// custom endpoints get exactly the request they got before.
+        /// </param>
+        /// <param name="stableSystemPromptLength">
+        /// How many leading characters of <paramref name="systemPrompt"/> stay
+        /// the same from turn to turn; the rest (the active segment, its terms)
+        /// changes. The system breakpoint goes at that point. Null: all of it
+        /// is stable. Only read when <paramref name="enablePromptCaching"/>.
+        /// </param>
         public async Task<string> SendChatAsync(
             List<ChatMessage> messages,
             string systemPrompt = null,
             int? maxTokens = null,
             CancellationToken cancellationToken = default,
             PromptLogFeature? feature = null,
-            string promptName = null)
+            string promptName = null,
+            bool enablePromptCaching = false,
+            int? stableSystemPromptLength = null)
         {
             var sw = Stopwatch.StartNew();
             string result = null;
             string errorMsg = null;
+
+            // As in SendPromptAsync: a failure must not be logged with the
+            // previous call's usage or stop reason.
+            LastUsage = null;
+            LastFinishReason = null;
 
             try
             {
@@ -341,10 +365,12 @@ namespace Supervertaler.Core
                     case LlmModels.ProviderDeepSeek:
                     case LlmModels.ProviderOpenRouter:
                     case LlmModels.ProviderCustomOpenAi:
-                        result = await CallOpenAiChatAsync(messages, systemPrompt, maxTokens, cancellationToken);
+                        result = await CallOpenAiChatAsync(messages, systemPrompt, maxTokens, cancellationToken,
+                            enablePromptCaching, stableSystemPromptLength);
                         break;
                     case LlmModels.ProviderClaude:
-                        result = await CallClaudeChatAsync(messages, systemPrompt, maxTokens, cancellationToken);
+                        result = await CallClaudeChatAsync(messages, systemPrompt, maxTokens, cancellationToken,
+                            enablePromptCaching, stableSystemPromptLength);
                         break;
                     case LlmModels.ProviderGemini:
                         result = await CallGeminiChatAsync(messages, systemPrompt, maxTokens, cancellationToken);
@@ -1107,26 +1133,17 @@ namespace Supervertaler.Core
 
         // ─── Multi-Turn Chat Implementations ──────────────────────────
 
-        private async Task<string> CallOpenAiChatAsync(
-            List<ChatMessage> messages, string systemPrompt, int? maxTokens,
-            CancellationToken ct)
+        /// <summary>
+        /// The body of an OpenAI-shaped chat request. Internal so the tests can
+        /// read what would be sent. Cache breakpoints only for a Claude model
+        /// through OpenRouter (<see cref="IsOpenRouterAnthropicModel"/>), which
+        /// passes them on to Anthropic; every other provider gets the body it
+        /// always got.
+        /// </summary>
+        internal string BuildOpenAiChatBody(List<ChatMessage> messages, string systemPrompt, int tokens,
+            bool enablePromptCaching, int? stableSystemPromptLength)
         {
-            var baseUrl = ResolveOpenAiBaseUrl();
-
-            var url = $"{baseUrl}/chat/completions";
-            var tokens = maxTokens ?? _maxTokens;
-            var timeoutMs = _isReasoningModel ? 600_000 : _defaultTimeoutMs;
-            // A big output request takes a long time whatever the model, so scale
-            // for it the same way the Claude path already does. A flat 120 s is
-            // what broke AutoPrompt: it asks for ~32k output tokens, and a slow
-            // premium model (GPT-5.5) could not finish inside it, so it failed
-            // with "The request timed out." at exactly 120.0 s while fast models
-            // fitted comfortably. Scaling on the REQUEST rather than on a
-            // per-model flag keeps this working for models released after this
-            // build, whose metadata we cannot know in advance.
-            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
-            var local = _provider == LlmModels.ProviderCustomOpenAi;
-            if (local) timeoutMs = GetLocalServerTimeout();
+            var marker = enablePromptCaching && IsOpenRouterAnthropicModel();
 
             var sb = new StringBuilder();
             sb.Append("{\"model\":").Append(JsonString(_model));
@@ -1134,7 +1151,9 @@ namespace Supervertaler.Core
 
             if (!string.IsNullOrEmpty(systemPrompt))
             {
-                sb.Append("{\"role\":\"system\",\"content\":").Append(JsonString(systemPrompt)).Append("},");
+                sb.Append("{\"role\":\"system\",\"content\":")
+                  .Append(marker ? ClaudeSystemJson(systemPrompt, true, stableSystemPromptLength) : JsonString(systemPrompt))
+                  .Append("},");
             }
 
             for (int i = 0; i < messages.Count; i++)
@@ -1142,7 +1161,11 @@ namespace Supervertaler.Core
                 var role = messages[i].Role == ChatRole.User ? "user" : "assistant";
                 sb.Append("{\"role\":").Append(JsonString(role));
 
-                if (messages[i].HasImages && role == "user")
+                if (marker)
+                {
+                    sb.Append(",\"content\":").Append(OpenAiContentParts(messages[i], i == messages.Count - 1));
+                }
+                else if (messages[i].HasImages && role == "user")
                 {
                     // Multimodal: content is an array of text + image_url parts
                     sb.Append(",\"content\":[");
@@ -1181,10 +1204,35 @@ namespace Supervertaler.Core
             }
 
             sb.Append("}");
+            return sb.ToString();
+        }
+
+        private async Task<string> CallOpenAiChatAsync(
+            List<ChatMessage> messages, string systemPrompt, int? maxTokens,
+            CancellationToken ct, bool enablePromptCaching, int? stableSystemPromptLength)
+        {
+            var baseUrl = ResolveOpenAiBaseUrl();
+
+            var url = $"{baseUrl}/chat/completions";
+            var tokens = maxTokens ?? _maxTokens;
+            var timeoutMs = _isReasoningModel ? 600_000 : _defaultTimeoutMs;
+            // A big output request takes a long time whatever the model, so scale
+            // for it the same way the Claude path already does. A flat 120 s is
+            // what broke AutoPrompt: it asks for ~32k output tokens, and a slow
+            // premium model (GPT-5.5) could not finish inside it, so it failed
+            // with "The request timed out." at exactly 120.0 s while fast models
+            // fitted comfortably. Scaling on the REQUEST rather than on a
+            // per-model flag keeps this working for models released after this
+            // build, whose metadata we cannot know in advance.
+            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            var local = _provider == LlmModels.ProviderCustomOpenAi;
+            if (local) timeoutMs = GetLocalServerTimeout();
+
+            var json = BuildOpenAiChatBody(messages, systemPrompt, tokens, enablePromptCaching, stableSystemPromptLength);
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, url))
             {
-                request.Content = new StringContent(sb.ToString(), Encoding.UTF8, "application/json");
+                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
                 AddOpenRouterHeaders(request);
 
@@ -1206,43 +1254,36 @@ namespace Supervertaler.Core
                     if (!response.IsSuccessStatusCode)
                         throw new HttpRequestException(EnrichErrorMessage(OpenAiProviderLabel(), (int)response.StatusCode, body, _model));
 
+                    // Recorded as the single-prompt path records it. Until 205 the
+                    // chat left both unset, so the Reports tab priced a chat turn
+                    // from a character estimate and never saw a cache read.
+                    LastUsage = ExtractOpenAiUsage(body);
+                    LastFinishReason = ExtractJsonString(body, "finish_reason");
                     if (local)
                         EnsureWholePromptRead(OpenAiProviderLabel(),
-                            TokenEstimator.EstimateInputTokens(messages, systemPrompt), ExtractOpenAiUsage(body));
+                            TokenEstimator.EstimateInputTokens(messages, systemPrompt), LastUsage);
                     return ExtractOpenAiContent(body);
                 }
             }
         }
 
-        private async Task<string> CallClaudeChatAsync(
-            List<ChatMessage> messages, string systemPrompt, int? maxTokens,
-            CancellationToken ct)
+        /// <summary>
+        /// The body of a streamed Claude chat request. Internal so the tests can
+        /// read what would be sent. Without caching it is the body the chat has
+        /// always sent; with it, the system prompt and every message go as
+        /// content blocks, with breakpoints on the system prompt's stable part
+        /// and on the last block of the last message.
+        /// </summary>
+        internal string BuildClaudeChatBody(List<ChatMessage> messages, string systemPrompt, int tokens,
+            bool enablePromptCaching, int? stableSystemPromptLength)
         {
-            var url = "https://api.anthropic.com/v1/messages";
-            var tokens = maxTokens ?? _maxTokens;
-
-            var totalLen = (systemPrompt?.Length ?? 0);
-            foreach (var m in messages) totalLen += m.Content?.Length ?? 0;
-            int timeoutMs;
-            if (totalLen > 50000) timeoutMs = 300_000;
-            else if (totalLen > 20000) timeoutMs = 180_000;
-            else timeoutMs = 120_000;
-            // Large output requests (e.g. prompt generation) need more time.
-            // With the reply streamed this no longer bounds the whole generation,
-            // only how long a STALLED stream is tolerated - data arriving keeps a
-            // connection alive, so a 13k-token prompt that takes nine minutes at a
-            // slow model's pace is fine. Before streaming, 600s was also the hard
-            // budget, and a model too slow to finish inside it could never
-            // complete AutoPrompt at all (#119).
-            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 900_000);
-
             var sb = new StringBuilder();
             sb.Append("{\"model\":").Append(JsonString(_model));
             sb.Append(",\"max_tokens\":").Append(tokens);
             AppendThinkingConfig(sb);
 
             if (!string.IsNullOrEmpty(systemPrompt))
-                sb.Append(",\"system\":").Append(JsonString(systemPrompt));
+                sb.Append(",\"system\":").Append(ClaudeSystemJson(systemPrompt, enablePromptCaching, stableSystemPromptLength));
 
             // Claude requires alternating user/assistant messages
             sb.Append(",\"messages\":[");
@@ -1251,7 +1292,12 @@ namespace Supervertaler.Core
                 var role = messages[i].Role == ChatRole.User ? "user" : "assistant";
                 sb.Append("{\"role\":").Append(JsonString(role));
 
-                if (messages[i].HasImages && role == "user")
+                if (enablePromptCaching)
+                {
+                    var blocks = ClaudeContentBlocks(messages[i]);
+                    sb.Append(",\"content\":").Append(i == messages.Count - 1 ? WithCacheMarkerOnLastObject(blocks) : blocks);
+                }
+                else if (messages[i].HasImages && role == "user")
                 {
                     // Multimodal: content is an array of text + image blocks
                     sb.Append(",\"content\":[");
@@ -1280,15 +1326,41 @@ namespace Supervertaler.Core
             // guidance is to stream anything long-running for exactly this reason.
             sb.Append(",\"stream\":true");
             sb.Append("}");
+            return sb.ToString();
+        }
+
+        private async Task<string> CallClaudeChatAsync(
+            List<ChatMessage> messages, string systemPrompt, int? maxTokens,
+            CancellationToken ct, bool enablePromptCaching, int? stableSystemPromptLength)
+        {
+            var url = "https://api.anthropic.com/v1/messages";
+            var tokens = maxTokens ?? _maxTokens;
+
+            var totalLen = (systemPrompt?.Length ?? 0);
+            foreach (var m in messages) totalLen += m.Content?.Length ?? 0;
+            int timeoutMs;
+            if (totalLen > 50000) timeoutMs = 300_000;
+            else if (totalLen > 20000) timeoutMs = 180_000;
+            else timeoutMs = 120_000;
+            // Large output requests (e.g. prompt generation) need more time.
+            // With the reply streamed this no longer bounds the whole generation,
+            // only how long a STALLED stream is tolerated - data arriving keeps a
+            // connection alive, so a 13k-token prompt that takes nine minutes at a
+            // slow model's pace is fine. Before streaming, 600s was also the hard
+            // budget, and a model too slow to finish inside it could never
+            // complete AutoPrompt at all (#119).
+            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 900_000);
+
+            var json = BuildClaudeChatBody(messages, systemPrompt, tokens, enablePromptCaching, stableSystemPromptLength);
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, url))
             {
-                request.Content = new StringContent(sb.ToString(), Encoding.UTF8, "application/json");
+                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
                 request.Headers.Add("x-api-key", _apiKey);
                 request.Headers.Add("anthropic-version", "2023-06-01");
 
                 // Until #119 this path recorded neither usage nor the stop reason;
-                // the shared transport does both.
+                // the shared transport does both, cache reads and writes included.
                 return await SendClaudeStreamedAsync(request, timeoutMs, ct);
             }
         }
@@ -2317,6 +2389,10 @@ namespace Supervertaler.Core
         /// </summary>
         /// <param name="toolStatusCallback">Optional callback invoked on the UI thread
         /// when a tool is being called, with the tool name as argument.</param>
+        /// <param name="enablePromptCaching">As for <see cref="SendChatAsync"/>; on
+        /// the tools path the tool definitions get a breakpoint too, and each
+        /// round of a tool loop reads the round before it from the cache.</param>
+        /// <param name="stableSystemPromptLength">As for <see cref="SendChatAsync"/>.</param>
         public async Task<string> SendChatWithToolsAsync(
             List<ChatMessage> messages,
             string systemPrompt,
@@ -2326,11 +2402,14 @@ namespace Supervertaler.Core
             CancellationToken cancellationToken = default,
             PromptLogFeature? feature = null,
             string promptName = null,
-            Action<string> toolStatusCallback = null)
+            Action<string> toolStatusCallback = null,
+            bool enablePromptCaching = false,
+            int? stableSystemPromptLength = null)
         {
             // Providers without tool support fall back to plain chat
             if (!SupportsToolUse(_provider))
-                return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName);
+                return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName,
+                    enablePromptCaching, stableSystemPromptLength);
 
             // GPT-6.1 Sol takes tools only on the Responses API, which this client
             // calls for OpenAI direct (CallOpenAiResponsesWithToolsAsync). Through
@@ -2344,13 +2423,20 @@ namespace Supervertaler.Core
                 var noTools = "No tools are available in this conversation, whatever the instructions above say. "
                     + "If a question needs information that is not in this prompt, say that you cannot look it up "
                     + "with this model, rather than guessing.";
+                // Appended, so the stable beginning the caller measured is unchanged.
                 systemPrompt = string.IsNullOrEmpty(systemPrompt) ? noTools : systemPrompt + "\n\n" + noTools;
-                return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName);
+                return await SendChatAsync(messages, systemPrompt, maxTokens, cancellationToken, feature, promptName,
+                    enablePromptCaching, stableSystemPromptLength);
             }
 
             var sw = Stopwatch.StartNew();
             string result = null;
             string errorMsg = null;
+
+            // A failure must not be logged with the previous call's usage. The
+            // tool loops sum usage round by round, from here.
+            LastUsage = null;
+            LastFinishReason = null;
 
             try
             {
@@ -2359,7 +2445,8 @@ namespace Supervertaler.Core
                     case LlmModels.ProviderClaude:
                         result = await CallClaudeChatWithToolsAsync(
                             messages, systemPrompt, toolDefinitionsJson, executor,
-                            maxTokens, cancellationToken, toolStatusCallback);
+                            maxTokens, cancellationToken, toolStatusCallback,
+                            enablePromptCaching, stableSystemPromptLength);
                         break;
                     case LlmModels.ProviderGemini:
                         result = await CallGeminiChatWithToolsAsync(
@@ -2374,7 +2461,8 @@ namespace Supervertaler.Core
                                 maxTokens, cancellationToken, toolStatusCallback)
                             : await CallOpenAiChatWithToolsAsync(
                                 messages, systemPrompt, toolDefinitionsJson, executor,
-                                maxTokens, cancellationToken, toolStatusCallback);
+                                maxTokens, cancellationToken, toolStatusCallback,
+                                enablePromptCaching, stableSystemPromptLength);
                         break;
                 }
                 return result;
@@ -2399,10 +2487,91 @@ namespace Supervertaler.Core
             ToolExecutor executor,
             int? maxTokens,
             CancellationToken ct,
-            Action<string> toolStatusCallback)
+            Action<string> toolStatusCallback,
+            bool enablePromptCaching,
+            int? stableSystemPromptLength)
         {
             var url = "https://api.anthropic.com/v1/messages";
             var tokens = maxTokens ?? _maxTokens;
+
+            async Task<string> Post(string json, CancellationToken token)
+            {
+                // Timeout scales with the request, as it always has here.
+                var totalLen = (systemPrompt?.Length ?? 0) + json.Length;
+                int timeoutMs;
+                if (totalLen > 50000) timeoutMs = 300_000;
+                else if (totalLen > 20000) timeoutMs = 180_000;
+                else timeoutMs = 120_000;
+                if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+
+                using (var request = new HttpRequestMessage(HttpMethod.Post, url))
+                {
+                    request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                    request.Headers.Add("x-api-key", _apiKey);
+                    request.Headers.Add("anthropic-version", "2023-06-01");
+
+                    using (var cts = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    {
+                        cts.CancelAfter(timeoutMs);
+                        var response = await Http.SendAsync(request, cts.Token);
+                        var body = await response.Content.ReadAsStringAsync();
+
+                        if (!response.IsSuccessStatusCode)
+                            throw new HttpRequestException(EnrichErrorMessage("Claude", (int)response.StatusCode, body, _model));
+                        return body;
+                    }
+                }
+            }
+
+            // Until 205 this path recorded no usage at all, so a tool-using chat
+            // turn was priced from a character estimate. The loop fills the
+            // outcome round by round; copying it in finally keeps what the rounds
+            // that did complete were billed, when a later one fails or is cancelled.
+            var outcome = new ClaudeToolOutcome();
+            try
+            {
+                await RunClaudeToolLoopAsync(Post, _model, tokens, systemPrompt, toolDefinitionsJson, messages,
+                    enablePromptCaching, stableSystemPromptLength, executor, toolStatusCallback, outcome, ct);
+                return outcome.Text;
+            }
+            finally
+            {
+                LastUsage = outcome.Usage;
+                LastFinishReason = outcome.FinishReason;
+            }
+        }
+
+        /// <summary>What a Claude tool loop has come to so far.</summary>
+        internal sealed class ClaudeToolOutcome
+        {
+            /// <summary>The final answer; null until the loop ends with one.</summary>
+            public string Text;
+            /// <summary>The stop_reason of the latest response.</summary>
+            public string FinishReason;
+            /// <summary>Summed over every response received; null when none
+            /// reported any. Kept when a later round fails.</summary>
+            public ApiUsage Usage;
+        }
+
+        /// <summary>
+        /// The Claude tool loop, with the HTTP POST passed in so what is sent
+        /// each round can be tested without a server. At most five rounds of
+        /// tool calls.
+        ///
+        /// <para>With caching, three of the four breakpoints the API allows are
+        /// used: the last tool definition, the system prompt's stable part, and
+        /// the last block of the last message - which moves to the newest tool
+        /// results each round, so round two reads round one from the cache.
+        /// Nothing is kept between calls: the markers are worked out afresh from
+        /// what each request contains.</para>
+        /// </summary>
+        internal static async Task RunClaudeToolLoopAsync(
+            Func<string, CancellationToken, Task<string>> post,
+            string model, int maxTokens, string systemPrompt, string toolDefinitionsJson,
+            List<ChatMessage> messages, bool enablePromptCaching, int? stableSystemPromptLength,
+            ToolExecutor executor, Action<string> toolStatusCallback,
+            ClaudeToolOutcome outcome, CancellationToken ct)
+        {
             const int maxToolRounds = 5;
 
             // Build mutable conversation for tool loop
@@ -2412,64 +2581,54 @@ namespace Supervertaler.Core
                 conversation.Add(new ConversationTurn
                 {
                     Role = m.Role == ChatRole.User ? "user" : "assistant",
-                    ContentJson = m.HasImages && m.Role == ChatRole.User
-                        ? BuildClaudeImageContent(m)
-                        : JsonString(m.Content)
+                    ContentJson = enablePromptCaching
+                        ? ClaudeContentBlocks(m)
+                        : m.HasImages && m.Role == ChatRole.User
+                            ? BuildClaudeImageContent(m)
+                            : JsonString(m.Content)
                 });
             }
+
+            var systemJson = string.IsNullOrEmpty(systemPrompt)
+                ? null
+                : ClaudeSystemJson(systemPrompt, enablePromptCaching, stableSystemPromptLength);
+            var toolsJson = enablePromptCaching
+                ? WithCacheMarkerOnLastObject(toolDefinitionsJson)
+                : toolDefinitionsJson;
 
             for (int round = 0; round < maxToolRounds; round++)
             {
                 // Build request JSON
                 var sb = new StringBuilder(4096);
-                sb.Append("{\"model\":").Append(JsonString(_model));
-                sb.Append(",\"max_tokens\":").Append(tokens);
+                sb.Append("{\"model\":").Append(JsonString(model));
+                sb.Append(",\"max_tokens\":").Append(maxTokens);
 
-                if (!string.IsNullOrEmpty(systemPrompt))
-                    sb.Append(",\"system\":").Append(JsonString(systemPrompt));
+                if (systemJson != null)
+                    sb.Append(",\"system\":").Append(systemJson);
 
                 // Tools
-                sb.Append(",\"tools\":").Append(toolDefinitionsJson);
+                sb.Append(",\"tools\":").Append(toolsJson);
 
                 // Messages
                 sb.Append(",\"messages\":[");
                 for (int i = 0; i < conversation.Count; i++)
                 {
                     if (i > 0) sb.Append(",");
+                    var content = conversation[i].ContentJson;
+                    if (enablePromptCaching && i == conversation.Count - 1)
+                        content = WithCacheMarkerOnLastObject(content);
                     sb.Append("{\"role\":").Append(JsonString(conversation[i].Role));
-                    sb.Append(",\"content\":").Append(conversation[i].ContentJson);
+                    sb.Append(",\"content\":").Append(content);
                     sb.Append("}");
                 }
                 sb.Append("]}");
 
-                // Calculate timeout
-                var totalLen = (systemPrompt?.Length ?? 0) + sb.Length;
-                int timeoutMs;
-                if (totalLen > 50000) timeoutMs = 300_000;
-                else if (totalLen > 20000) timeoutMs = 180_000;
-                else timeoutMs = 120_000;
-                if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
-
-                string body;
-                using (var request = new HttpRequestMessage(HttpMethod.Post, url))
-                {
-                    request.Content = new StringContent(sb.ToString(), Encoding.UTF8, "application/json");
-                    request.Headers.Add("x-api-key", _apiKey);
-                    request.Headers.Add("anthropic-version", "2023-06-01");
-
-                    using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
-                    {
-                        cts.CancelAfter(timeoutMs);
-                        var response = await Http.SendAsync(request, cts.Token);
-                        body = await response.Content.ReadAsStringAsync();
-
-                        if (!response.IsSuccessStatusCode)
-                            throw new HttpRequestException(EnrichErrorMessage("Claude", (int)response.StatusCode, body, _model));
-                    }
-                }
+                var body = await post(sb.ToString(), ct);
+                outcome.Usage = AddUsage(outcome.Usage, ExtractClaudeUsage(body));
 
                 // Check stop_reason
                 var stopReason = ExtractJsonFieldStatic(body, "stop_reason");
+                outcome.FinishReason = stopReason;
 
                 if (stopReason == "tool_use")
                 {
@@ -2519,7 +2678,8 @@ namespace Supervertaler.Core
                 }
 
                 // stop_reason is "end_turn" or similar – extract final text
-                return ExtractClaudeTextFromContent(body);
+                outcome.Text = ExtractClaudeTextFromContent(body);
+                return;
             }
 
             throw new InvalidOperationException("Tool use loop exceeded maximum rounds.");
@@ -2531,7 +2691,7 @@ namespace Supervertaler.Core
         /// Conversation turn for OpenAI tool loop. Stores raw JSON fragments
         /// so we can replay the exact assistant messages (including tool_calls).
         /// </summary>
-        private class OpenAiTurn
+        internal class OpenAiTurn
         {
             public string Role;
             /// <summary>Raw JSON of the "content" value (string literal, null, or array).</summary>
@@ -2542,32 +2702,19 @@ namespace Supervertaler.Core
             public string ToolCallId;
         }
 
-        private async Task<string> CallOpenAiChatWithToolsAsync(
-            List<ChatMessage> messages,
-            string systemPrompt,
-            string toolDefinitionsJson,
-            ToolExecutor executor,
-            int? maxTokens,
-            CancellationToken ct,
-            Action<string> toolStatusCallback)
+        /// <summary>
+        /// The opening turns of an OpenAI-shaped tool loop: the system prompt and
+        /// the conversation. Internal so the tests can read them. For a Claude
+        /// model through OpenRouter with caching on, the system prompt's stable
+        /// part and the last message carry Anthropic cache breakpoints; the tool
+        /// rounds appended after them do not (OpenRouter documents the marker on
+        /// text parts, not on tool messages), so a round reads the conversation
+        /// from the cache and pays for the earlier rounds' tool results in full.
+        /// </summary>
+        internal List<OpenAiTurn> OpenAiToolConversation(List<ChatMessage> messages, string systemPrompt,
+            bool enablePromptCaching, int? stableSystemPromptLength)
         {
-            var baseUrl = ResolveOpenAiBaseUrl();
-            var url = $"{baseUrl}/chat/completions";
-            var tokens = maxTokens ?? _maxTokens;
-            var timeoutMs = _isReasoningModel ? 600_000 : _defaultTimeoutMs;
-            // A big output request takes a long time whatever the model, so scale
-            // for it the same way the Claude path already does. A flat 120 s is
-            // what broke AutoPrompt: it asks for ~32k output tokens, and a slow
-            // premium model (GPT-5.5) could not finish inside it, so it failed
-            // with "The request timed out." at exactly 120.0 s while fast models
-            // fitted comfortably. Scaling on the REQUEST rather than on a
-            // per-model flag keeps this working for models released after this
-            // build, whose metadata we cannot know in advance.
-            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
-            if (_provider == LlmModels.ProviderCustomOpenAi) timeoutMs = GetLocalServerTimeout();
-            const int maxToolRounds = 5;
-
-            // Build mutable conversation
+            var marker = enablePromptCaching && IsOpenRouterAnthropicModel();
             var conversation = new List<OpenAiTurn>();
 
             // System prompt
@@ -2576,15 +2723,22 @@ namespace Supervertaler.Core
                 conversation.Add(new OpenAiTurn
                 {
                     Role = "system",
-                    ContentJson = JsonString(systemPrompt)
+                    ContentJson = marker
+                        ? ClaudeSystemJson(systemPrompt, true, stableSystemPromptLength)
+                        : JsonString(systemPrompt)
                 });
             }
 
-            foreach (var m in messages)
+            for (int i = 0; i < messages.Count; i++)
             {
+                var m = messages[i];
                 var role = m.Role == ChatRole.User ? "user" : "assistant";
                 string contentJson;
-                if (m.HasImages && m.Role == ChatRole.User)
+                if (marker)
+                {
+                    contentJson = OpenAiContentParts(m, i == messages.Count - 1);
+                }
+                else if (m.HasImages && m.Role == ChatRole.User)
                 {
                     // Multimodal content array
                     var csb = new StringBuilder("[");
@@ -2604,6 +2758,39 @@ namespace Supervertaler.Core
 
                 conversation.Add(new OpenAiTurn { Role = role, ContentJson = contentJson });
             }
+
+            return conversation;
+        }
+
+        private async Task<string> CallOpenAiChatWithToolsAsync(
+            List<ChatMessage> messages,
+            string systemPrompt,
+            string toolDefinitionsJson,
+            ToolExecutor executor,
+            int? maxTokens,
+            CancellationToken ct,
+            Action<string> toolStatusCallback,
+            bool enablePromptCaching,
+            int? stableSystemPromptLength)
+        {
+            var baseUrl = ResolveOpenAiBaseUrl();
+            var url = $"{baseUrl}/chat/completions";
+            var tokens = maxTokens ?? _maxTokens;
+            var timeoutMs = _isReasoningModel ? 600_000 : _defaultTimeoutMs;
+            // A big output request takes a long time whatever the model, so scale
+            // for it the same way the Claude path already does. A flat 120 s is
+            // what broke AutoPrompt: it asks for ~32k output tokens, and a slow
+            // premium model (GPT-5.5) could not finish inside it, so it failed
+            // with "The request timed out." at exactly 120.0 s while fast models
+            // fitted comfortably. Scaling on the REQUEST rather than on a
+            // per-model flag keeps this working for models released after this
+            // build, whose metadata we cannot know in advance.
+            if (tokens > 8192) timeoutMs = Math.Max(timeoutMs, 600_000);
+            if (_provider == LlmModels.ProviderCustomOpenAi) timeoutMs = GetLocalServerTimeout();
+            const int maxToolRounds = 5;
+
+            // Build mutable conversation
+            var conversation = OpenAiToolConversation(messages, systemPrompt, enablePromptCaching, stableSystemPromptLength);
 
             for (int round = 0; round < maxToolRounds; round++)
             {
@@ -2683,8 +2870,14 @@ namespace Supervertaler.Core
                     }
                 }
 
+                // Summed round by round, so a failure later in the loop is still
+                // logged with what the rounds before it were billed. LastUsage was
+                // reset when this call started; nothing of an earlier call is in it.
+                LastUsage = AddUsage(LastUsage, ExtractOpenAiUsage(body));
+
                 // Check finish_reason – "tool_calls" means function calling
                 var finishReason = ExtractOpenAiFinishReason(body);
+                LastFinishReason = finishReason;
 
                 if (finishReason == "tool_calls")
                 {
@@ -3386,6 +3579,152 @@ namespace Supervertaler.Core
             }
 
             return null;
+        }
+
+        // ─── Prompt caching for the chat ─────────────────────────────
+        //
+        // A chat turn sends the whole conversation again: tools, system prompt,
+        // every earlier message, then the new one. Anthropic caches a request's
+        // beginning up to a breakpoint (cache_control) for five minutes from its
+        // last use; a later request that begins with the same bytes reads it for
+        // a tenth of the input price (a twentieth on Opus 5.5, a fortieth on Fable
+        // 5.1), and writing it costs 1.25 times. At most four breakpoints per
+        // request; below the model's minimum (512 tokens on the Claude 5 models,
+        // up to 4,096 on older ones) a breakpoint is silently ignored and nothing
+        // is charged. Only the markers are added here: the text sent is the text
+        // the caller gave, block for block.
+
+        private const string EphemeralCacheControl = "\"cache_control\":{\"type\":\"ephemeral\"}";
+
+        /// <summary>
+        /// Splits a system prompt at the end of its stable part. Returns the
+        /// stable part, or null when nothing of it is stable; <paramref name="tail"/>
+        /// is the rest, or "" when there is none. The two always add up to the
+        /// whole prompt. A part that would be only whitespace is not split off:
+        /// the API refuses a text block without text.
+        /// </summary>
+        private static string SplitStableSystemPrompt(string systemPrompt, int? stableLength, out string tail)
+        {
+            var n = Math.Max(0, Math.Min(stableLength ?? systemPrompt.Length, systemPrompt.Length));
+            var stable = systemPrompt.Substring(0, n);
+            tail = systemPrompt.Substring(n);
+            if (string.IsNullOrWhiteSpace(tail))
+            {
+                tail = "";
+                return systemPrompt;   // all of it stable
+            }
+            if (string.IsNullOrWhiteSpace(stable))
+            {
+                tail = systemPrompt;
+                return null;           // none of it stable
+            }
+            return stable;
+        }
+
+        /// <summary>
+        /// The "system" value of a Claude request - and, since text parts have the
+        /// same shape, of a Claude model's system message through OpenRouter.
+        /// Without caching, the plain string it has always been. With caching,
+        /// text blocks: the stable part with a breakpoint - which also covers the
+        /// tool definitions, rendered before it - then the part that changes from
+        /// turn to turn, unmarked, so a change there costs only itself and what
+        /// follows it.
+        /// </summary>
+        internal static string ClaudeSystemJson(string systemPrompt, bool enablePromptCaching, int? stableLength)
+        {
+            if (!enablePromptCaching || string.IsNullOrWhiteSpace(systemPrompt)) return JsonString(systemPrompt);
+
+            var stable = SplitStableSystemPrompt(systemPrompt, stableLength, out var tail);
+            var sb = new StringBuilder(systemPrompt.Length + 128);
+            sb.Append('[');
+            if (stable != null)
+                sb.Append("{\"type\":\"text\",\"text\":").Append(JsonString(stable)).Append(',')
+                  .Append(EphemeralCacheControl).Append('}');
+            if (tail.Length > 0)
+                sb.Append(stable != null ? "," : "").Append("{\"type\":\"text\",\"text\":").Append(JsonString(tail)).Append('}');
+            return sb.Append(']').ToString();
+        }
+
+        /// <summary>
+        /// One chat message as Claude content blocks: a user message's images,
+        /// then its text, as <see cref="BuildClaudeImageContent"/> sends them -
+        /// but without an empty text block after images, which could not carry
+        /// a breakpoint. Used with caching only, for every message alike, so a
+        /// message is the same bytes whether or not it is the last one.
+        /// </summary>
+        internal static string ClaudeContentBlocks(ChatMessage msg)
+        {
+            var sb = new StringBuilder();
+            sb.Append('[');
+            var images = msg.Role == ChatRole.User && msg.HasImages;
+            if (images)
+            {
+                for (int i = 0; i < msg.Images.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append("{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":")
+                      .Append(JsonString(msg.Images[i].MimeType))
+                      .Append(",\"data\":\"").Append(ToBase64(msg.Images[i].Data)).Append("\"}}");
+                }
+            }
+            if (!images || !string.IsNullOrWhiteSpace(msg.Content))
+            {
+                if (images) sb.Append(',');
+                sb.Append("{\"type\":\"text\",\"text\":").Append(JsonString(msg.Content ?? "")).Append('}');
+            }
+            return sb.Append(']').ToString();
+        }
+
+        /// <summary>
+        /// A JSON array of objects - tool definitions, or a message's content
+        /// blocks - with a cache breakpoint added to its last object. Anything
+        /// that is not such an array, or whose last object is a text block with
+        /// no text (which the API would refuse to mark), comes back unchanged:
+        /// a missing breakpoint costs a cache miss, a malformed one a failed
+        /// request.
+        /// </summary>
+        internal static string WithCacheMarkerOnLastObject(string arrayJson)
+        {
+            if (string.IsNullOrWhiteSpace(arrayJson)) return arrayJson;
+            var trimmed = arrayJson.TrimEnd();
+            if (!arrayJson.TrimStart().StartsWith("[") || !trimmed.EndsWith("]")) return arrayJson;
+
+            var objects = ExtractTopLevelObjects(arrayJson);
+            if (objects.Count == 0) return arrayJson;
+            var last = objects[objects.Count - 1];
+            if (last.Substring(1).Trim() == "}") return arrayJson;
+            if (TopLevelString(last, "type") == "text" && string.IsNullOrWhiteSpace(TopLevelString(last, "text")))
+                return arrayJson;
+            if (TopLevelValue(last, "cache_control") != null) return arrayJson;
+
+            // The last object's closing brace is the last '}' before the final ']'.
+            var close = trimmed.Length - 1;
+            var end = trimmed.LastIndexOf('}', close);
+            if (end < 0 || trimmed.Substring(end + 1, close - end - 1).Trim().Length != 0) return arrayJson;
+            return trimmed.Substring(0, end) + "," + EphemeralCacheControl + trimmed.Substring(end);
+        }
+
+        /// <summary>
+        /// One chat message as OpenAI content parts, text first and then any
+        /// images, as this client has always ordered them; with
+        /// <paramref name="mark"/>, the text part carries the breakpoint
+        /// (OpenRouter documents it on text parts).
+        /// </summary>
+        private static string OpenAiContentParts(ChatMessage msg, bool mark)
+        {
+            var sb = new StringBuilder();
+            sb.Append("[{\"type\":\"text\",\"text\":").Append(JsonString(msg.Content ?? ""));
+            if (mark && !string.IsNullOrWhiteSpace(msg.Content)) sb.Append(',').Append(EphemeralCacheControl);
+            sb.Append('}');
+            if (msg.Role == ChatRole.User && msg.HasImages)
+            {
+                foreach (var img in msg.Images)
+                {
+                    sb.Append(",{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:")
+                      .Append(img.MimeType).Append(";base64,").Append(ToBase64(img.Data)).Append("\"}}");
+                }
+            }
+            return sb.Append(']').ToString();
         }
 
         /// <summary>
