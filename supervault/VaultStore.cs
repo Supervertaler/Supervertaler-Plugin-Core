@@ -30,7 +30,7 @@ namespace Supervertaler.Core.SuperVault
     /// is one unit even when two tools numbered its tags differently.
     ///
     /// Scale: inserts go through one prepared statement in one transaction per import; the uniqueness check is the
-    /// UNIQUE index on <c>key</c>. Measured about 1.5 million units a minute.
+    /// UNIQUE index on <c>key</c>. Measured: about 8,000 units a second; the 1.55M-row Workbench TM imports in about 3 minutes, as 871,121 distinct units.
     /// </summary>
     public static class VaultStore
     {
