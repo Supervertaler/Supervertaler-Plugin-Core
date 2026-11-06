@@ -25,6 +25,7 @@ already paid for once, with SQLite.
 | `AiApiKeys` | Per-provider keys, as stored in a plugin's settings. |
 | `SupervertalerPaths` | The one folder every Supervertaler product shares. |
 | `SupervertalerLicence`, `LicenceState` | The one licence every Supervertaler product shares: trial, activation, validation. One licence per computer, safe with several products open at once. No UI. |
+| `SuperVault.VaultMarkup`, `VaultTagMap`, `VaultDiff` | SuperVault without the index: reading the tag codes in stored units, placing them on a document's tags, normalising, and the word-level match % and alignment. |
 
 Deliberately UI-free and CAT-tool-free: nothing here references WinForms, `Sdl.*`
 or `MemoQ.*`. That is the boundary — if a change to this repo needs one of those,
@@ -40,6 +41,25 @@ Added to each plugin repo as a submodule at `core/`, then imported:
 
 The props file adds `core/src/**/*.cs` to the compilation and the framework
 references the shared code needs.
+
+## SuperVault's index (opt-in)
+
+`supervault/` holds the part of SuperVault that needs Lucene.NET: the index, building it
+from the Workbench database, and the lookup. It is not in `core/src`, because core
+takes no NuGet packages; a product that serves SuperVault imports it as well:
+
+```xml
+<Import Project="..\..\core\supervault\Supervertaler.SuperVault.props" />
+```
+
+It must also reference Microsoft.Data.Sqlite 8.x. Its tests are a console program
+like core's:
+
+```bash
+dotnet build supervault/tests/SuperVault.Tests.csproj
+supervault/tests/bin/Debug/net48/SuperVault.Tests.exe          # all tests
+supervault/tests/bin/Debug/net48/SuperVault.Tests.exe real     # scale test on the real Workbench TM (read-only)
+```
 
 ## Building on its own
 

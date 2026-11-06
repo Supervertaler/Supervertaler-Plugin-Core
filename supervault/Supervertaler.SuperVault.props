@@ -1,0 +1,25 @@
+<!--
+  SuperVault's index: the shared code that needs Lucene.NET.
+
+  Opt-in, unlike core/src: core/src takes no NuGet packages, so that a product
+  picking up core never inherits a dependency it didn't ask for. A product that
+  serves SuperVault imports this as well:
+
+      <Import Project="..\..\core\supervault\Supervertaler.SuperVault.props" />
+
+  It must already reference Microsoft.Data.Sqlite (8.x), which the index builder
+  uses to read the Workbench database; both plugins do.
+
+  Lucene.Net 4.8.0-beta00017 is Apache-2.0, as is its one non-Microsoft
+  dependency J2N; the Microsoft.Extensions.* packages it pulls in are MIT.
+  Only Lucene.Net itself is used (no Analysis.Common, no Suggest), so the plugin
+  ships Lucene.Net.dll, J2N.dll and two small Microsoft.Extensions DLLs.
+-->
+<Project>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Lucene.Net" Version="4.8.0-beta00017" />
+  </ItemGroup>
+</Project>
