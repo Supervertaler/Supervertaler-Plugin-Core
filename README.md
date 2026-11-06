@@ -44,8 +44,9 @@ references the shared code needs.
 
 ## SuperVault's index (opt-in)
 
-`supervault/` holds the part of SuperVault that needs Lucene.NET: the index, building it
-from the Workbench database, and the lookup. It is not in `core/src`, because core
+`supervault/` holds the part of SuperVault that needs Lucene.NET or SQLite: its own memory
+(`VaultStore`, filled by `VaultTmx` and an optional Workbench import), the index built from it,
+and the lookup. It is not in `core/src`, because core
 takes no NuGet packages; a product that serves SuperVault imports it as well:
 
 ```xml

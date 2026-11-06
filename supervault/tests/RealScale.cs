@@ -26,15 +26,15 @@ namespace Supervertaler.Core.SuperVault.Tests
             Console.WriteLine($"database {db}\nindex    {root}");
             if (lib.Current == null)
             {
+                // The optional Workbench import into SuperVault's own store, then the index is built from the store.
                 var sw = Stopwatch.StartNew();
-                long mem0 = GC.GetTotalMemory(false);
-                int n = lib.Build(db, p => Console.Write("\r  " + p + "        "), CancellationToken.None);
-                Console.WriteLine($"\nbuilt {n:N0} units in {sw.Elapsed.TotalSeconds:F0} s; peak working set {Process.GetCurrentProcess().PeakWorkingSet64 / 1048576} MB");
+                var r = lib.Import((store, p, c) => VaultStore.ImportWorkbench(store, db, p, c), p => Console.Write("\r  " + p + "        "), CancellationToken.None);
+                Console.WriteLine($"\nimport + index: {sw.Elapsed.TotalSeconds:F0} s ({r}); peak working set {Process.GetCurrentProcess().PeakWorkingSet64 / 1048576} MB");
             }
             var idx = lib.Current;
             var info = VaultLibrary.ReadInfo(idx.Folder);
-            Console.WriteLine($"index: {idx.Count:N0} units, junk skipped {info.GetValueOrDefault("junk")}, other skipped {info.GetValueOrDefault("skipped")}, " +
-                              $"build {info.GetValueOrDefault("seconds")} s, size {Directory.GetFiles(idx.Folder).Sum(f => new FileInfo(f).Length) / 1048576} MB");
+            Console.WriteLine($"index: {idx.Count:N0} units, index build {info.GetValueOrDefault("seconds")} s, index {Directory.GetFiles(idx.Folder).Sum(f => new FileInfo(f).Length) / 1048576} MB, " +
+                              $"store {new FileInfo(lib.StorePath).Length / 1048576} MB");
 
             var sample = Sample(db, 200);
             Console.WriteLine($"sample: {sample.Count} nl>en units of 40-300 characters");

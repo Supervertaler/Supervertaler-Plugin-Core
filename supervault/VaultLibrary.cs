@@ -27,9 +27,10 @@ namespace Supervertaler.Core.SuperVault
     }
 
     /// <summary>
-    /// The SuperVault index on disk, and building it from the Workbench database.
+    /// SuperVault on disk: its own memory (<see cref="VaultStore"/>), and the search index built from it.
     ///
     /// Layout of <see cref="Root"/> (by default <c>&lt;data folder&gt;\supervault\</c>):
+    ///   supervault.db       the memory itself (SQLite), filled by imports
     ///   current.txt         name of the generation in use, replaced in one step (AtomicFile)
     ///   gen-&lt;utc&gt;-&lt;n&gt;\    one complete index per build, never changed once current
     ///   build.lock          held open, unshared, by the process building; the OS drops it if that process dies
@@ -58,8 +59,11 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>Where SuperVault lives for this user: <c>&lt;Supervertaler data folder&gt;\supervault</c>.</summary>
         public static string DefaultRoot => Path.Combine(SupervertalerPaths.Root, "supervault");
 
-        /// <summary>The Workbench database SuperVault is built from: <c>&lt;data folder&gt;\resources\supervertaler.db</c>.</summary>
-        public static string DefaultDatabase => Path.Combine(SupervertalerPaths.ResourcesDir, "supervertaler.db");
+        /// <summary>
+        /// Where a Supervertaler Workbench database would be, for the optional "Import from Workbench":
+        /// <c>&lt;data folder&gt;\resources\supervertaler.db</c>. SuperVault never needs it.
+        /// </summary>
+        public static string WorkbenchDatabase => Path.Combine(SupervertalerPaths.ResourcesDir, "supervertaler.db");
 
         public string Root { get; }
         string PointerFile => Path.Combine(Root, "current.txt");
@@ -158,7 +162,7 @@ namespace Supervertaler.Core.SuperVault
                         s.Message = idx.Count.ToString("N0", CultureInfo.InvariantCulture) + " units";
                     }
                     else if (_broken != null) { s.State = VaultState.Broken; s.Message = "The SuperVault index could not be opened (" + _broken + "). Rebuild it."; }
-                    else { s.State = VaultState.Missing; s.Message = "No SuperVault index has been built yet."; }
+                    else { s.State = VaultState.Missing; s.Message = "SuperVault is empty: import a TMX file or a translation memory."; }
                 }
                 return s;
             }
@@ -186,16 +190,64 @@ namespace Supervertaler.Core.SuperVault
             return d;
         }
 
-        // ---- building ----
+        // ---- importing and building ----
+
+        /// <summary>SuperVault's own memory, which the index is built from: <c>supervault.db</c> in <see cref="Root"/>.</summary>
+        public string StorePath => Path.Combine(Root, "supervault.db");
+
+        /// <summary>Units in the store. Opens the file: for a settings dialog, not for every lookup.</summary>
+        public long StoreCount() => VaultStore.Count(StorePath);
+
+        /// <summary>True when units were added to the store after the index in use was built.</summary>
+        public bool IndexOutOfDate()
+        {
+            var idx = Current;
+            long version = VaultStore.Version(StorePath);
+            if (idx == null) return version > 0;
+            return !ReadInfo(idx.Folder).TryGetValue("store_version", out var v) || v != version.ToString(CultureInfo.InvariantCulture);
+        }
 
         public bool IsBuilding { get { lock (_gate) return _buildThread != null; } }
 
         /// <summary>
-        /// Starts building a new generation from <paramref name="database"/> on a background thread (below-normal
-        /// priority, so Studio's UI is never held up). Returns false if a build is already running in this process.
-        /// <paramref name="done"/> is called on that thread with null on success, or the error message.
+        /// Imports into the store with <paramref name="importer"/> (VaultTmx.Import, VaultStore.ImportWorkbench, a CAT
+        /// tool's own TM reader), then rebuilds the index if anything was added. Synchronous; one job at a time across
+        /// processes (the build lock is held throughout). The import is one transaction: if it fails or is cancelled,
+        /// the store is as it was and the index is not touched.
         /// </summary>
-        public bool StartBuild(string database, Action<string> done = null)
+        public VaultImportResult Import(Func<string, Action<string>, CancellationToken, VaultImportResult> importer, Action<string> progress, CancellationToken cancel)
+        {
+            using (TakeLock())
+            {
+                var result = importer(StorePath, progress, cancel);
+                if (result.Added > 0 || (Current == null && File.Exists(StorePath))) BuildLocked(progress, cancel);
+                return result;
+            }
+        }
+
+        /// <summary>Rebuilds the index from the store. Synchronous; throws on failure, leaving the index in use as it was.</summary>
+        public int Build(Action<string> progress, CancellationToken cancel)
+        {
+            using (TakeLock()) return BuildLocked(progress, cancel);
+        }
+
+        /// <summary>Starts <see cref="Import"/> on a background thread. False if a job is already running in this process.</summary>
+        public bool StartImport(Func<string, Action<string>, CancellationToken, VaultImportResult> importer, Action<string> done = null) =>
+            StartJob("import", cancel => Import(importer, p => _progress = p, cancel).ToString(), done);
+
+        /// <summary>Starts <see cref="Build"/> on a background thread. False if a job is already running in this process.</summary>
+        public bool StartBuild(Action<string> done = null) =>
+            StartJob("build", cancel => Build(p => _progress = p, cancel).ToString("N0", CultureInfo.InvariantCulture) + " units indexed", done);
+
+        /// <summary>The last background job's outcome in this process: its summary, or the error.</summary>
+        public string LastJobResult { get { lock (_gate) return _lastResult; } }
+        string _lastResult;
+
+        /// <summary>
+        /// Runs a job on a background thread at below-normal priority, so Studio's UI is never held up.
+        /// <paramref name="done"/> gets null on success, or the error message.
+        /// </summary>
+        bool StartJob(string kind, Func<CancellationToken, string> job, Action<string> done)
         {
             lock (_gate)
             {
@@ -206,20 +258,21 @@ namespace Supervertaler.Core.SuperVault
                 var cancel = _buildCancel.Token;
                 _buildThread = new Thread(() =>
                 {
-                    string error = null;
-                    try { Build(database, p => _progress = p, cancel); }
-                    catch (OperationCanceledException) { error = "The build was cancelled."; }
+                    string error = null, result = null;
+                    try { result = job(cancel); }
+                    catch (OperationCanceledException) { error = "Stopped. Nothing was changed."; }
                     catch (Exception ex) { error = ex.Message; }
                     lock (_gate)
                     {
                         _buildThread = null;
                         _lastError = error;
+                        _lastResult = error ?? result;
                         _progress = null;
                         _checkedAt = 0;   // look at the pointer at once
                     }
                     try { done?.Invoke(error); } catch { }
                 })
-                { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "SuperVault index build" };
+                { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "SuperVault " + kind };
                 _buildThread.Start();
                 return true;
             }
@@ -227,67 +280,66 @@ namespace Supervertaler.Core.SuperVault
 
         public void CancelBuild() { lock (_gate) _buildCancel?.Cancel(); }
 
-        /// <summary>
-        /// Builds a new generation from the Workbench database and makes it current. Synchronous; throws on failure,
-        /// with the current generation untouched and no half-written folder left behind.
-        ///
-        /// The database is opened read-only and read in one pass, ordered by id. Memory use is bounded by Lucene's
-        /// 48 MB buffer however large the database is (it matters in Studio 2024, a 32-bit process). Measured: about
-        /// 5 minutes for the 1.55M-unit Workbench TM; linear, so about 35 minutes at 10M.
-        /// </summary>
-        public int Build(string database, Action<string> progress, CancellationToken cancel, int busyTimeoutSeconds = 30)
+        IDisposable TakeLock()
         {
             System.IO.Directory.CreateDirectory(Root);
-            FileStream lockStream;
-            try { lockStream = new FileStream(LockFile, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose); }
-            catch (IOException) { throw new IOException("Another program (a second Trados Studio, or memoQ) is building the SuperVault index right now. Try again when it has finished."); }
+            try { return new FileStream(LockFile, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose); }
+            catch (IOException) { throw new IOException("Another program (a second Trados Studio, or memoQ) is importing into SuperVault or building its index right now. Try again when it has finished."); }
+        }
 
+        /// <summary>
+        /// Builds a new generation from the store and makes it current; the caller holds the build lock. Throws on
+        /// failure, with the current generation untouched and no half-written folder left behind.
+        ///
+        /// The store is read in one pass, ordered by id, inside one read transaction, so an import can't change it
+        /// half-way. Memory use is bounded by Lucene's 48 MB buffer however large the store is (it matters in Studio
+        /// 2024, a 32-bit process). Linear in the number of units.
+        /// </summary>
+        int BuildLocked(Action<string> progress, CancellationToken cancel)
+        {
             string genFolder = null;
             try
             {
-                if (!File.Exists(database)) throw new FileNotFoundException("The Workbench database was not found at " + database + ".", database);
+                if (!File.Exists(StorePath)) throw new FileNotFoundException("SuperVault is empty: import a TMX file or a translation memory first.", StorePath);
                 var current = ReadPointer();
                 DeleteOldGenerations(current, noneIsCurrent: current == null && !File.Exists(PointerFile));   // e.g. a build that died half-way
 
                 var name = "gen-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
                 genFolder = Path.Combine(Root, name);
                 var sw = Stopwatch.StartNew();
-                int added = 0, junk = 0, skipped = 0, read = 0; long total = 0;
+                int added = 0, read = 0;
+                long total, version;
 
-                var cs = new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly, Cache = SqliteCacheMode.Private, DefaultTimeout = busyTimeoutSeconds, Pooling = false }.ToString();
-                using (var conn = new SqliteConnection(cs))
+                using (var conn = VaultStore.Open(StorePath, readOnly: true))
+                using (var tx = conn.BeginTransaction())   // one snapshot for the count, the version and the rows
                 {
-                    conn.Open();
-                    using (var count = conn.CreateCommand())
+                    using (var q = conn.CreateCommand())
                     {
-                        count.CommandText = "SELECT count(*) FROM translation_units";
-                        total = Convert.ToInt64(count.ExecuteScalar(), CultureInfo.InvariantCulture);
+                        q.Transaction = tx;
+                        q.CommandText = "SELECT count(*) FROM units";
+                        total = Convert.ToInt64(q.ExecuteScalar(), CultureInfo.InvariantCulture);
+                        q.CommandText = "SELECT value FROM meta WHERE name = 'version'";
+                        long.TryParse(Convert.ToString(q.ExecuteScalar(), CultureInfo.InvariantCulture), out version);
                     }
                     using (var dir = FSDirectory.Open(genFolder))
                     using (var w = new IndexWriter(dir, new IndexWriterConfig(VaultIndex.V, new VaultIndex.NoAnalyzer()) { OpenMode = OpenMode.CREATE, RAMBufferSizeMB = 48 }))
                     using (var cmd = conn.CreateCommand())
                     {
-                        cmd.CommandText = "SELECT id, source_text, target_text, source_lang, target_lang FROM translation_units ORDER BY id";
+                        cmd.Transaction = tx;
+                        cmd.CommandText = "SELECT id, lang_a, text_a, lang_b, text_b, variant FROM units ORDER BY id";
                         using (var r = cmd.ExecuteReader())
                         {
                             while (r.Read())
                             {
                                 if ((++read & 1023) == 0) cancel.ThrowIfCancellationRequested();
-                                if ((read % 10000) == 0) progress?.Invoke(read.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
-                                var srcRaw = r.IsDBNull(1) ? "" : r.GetString(1);
-                                var trgRaw = r.IsDBNull(2) ? "" : r.GetString(2);
-                                var srcLangFull = r.IsDBNull(3) ? "" : r.GetString(3);
-                                var trgLangFull = r.IsDBNull(4) ? "" : r.GetString(4);
-                                string a = VaultMarkup.BaseLanguage(srcLangFull), b = VaultMarkup.BaseLanguage(trgLangFull);
-                                if (a.Length == 0 || b.Length == 0 || a == b) { skipped++; continue; }
-                                string pa = VaultMarkup.Plain(srcRaw), pb = VaultMarkup.Plain(trgRaw);
-                                if (VaultMarkup.IsJunk(pa, pb)) { junk++; continue; }
-                                w.AddDocument(VaultIndex.MakeDocument(r.GetInt64(0).ToString(CultureInfo.InvariantCulture), a, srcRaw, pa, b, trgRaw, pb, srcLangFull + ">" + trgLangFull));
+                                if ((read % 10000) == 0) progress?.Invoke("indexing: " + read.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
+                                string a = r.GetString(1), ta = r.GetString(2), b = r.GetString(3), tb = r.GetString(4);
+                                w.AddDocument(VaultIndex.MakeDocument(r.GetInt64(0).ToString(CultureInfo.InvariantCulture), a, ta, VaultMarkup.Plain(ta), b, tb, VaultMarkup.Plain(tb), r.IsDBNull(5) ? "" : r.GetString(5)));
                                 added++;
                             }
                         }
                         cancel.ThrowIfCancellationRequested();
-                        progress?.Invoke("saving");
+                        progress?.Invoke("saving the index");
                         w.Commit();
                     }
                 }
@@ -299,11 +351,8 @@ namespace Supervertaler.Core.SuperVault
                 var info = new StringBuilder();
                 info.AppendLine("format=" + VaultIndex.Format);
                 info.AppendLine("built=" + DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
-                info.AppendLine("database=" + database);
-                info.AppendLine("rows=" + read);
+                info.AppendLine("store_version=" + version.ToString(CultureInfo.InvariantCulture));
                 info.AppendLine("units=" + added);
-                info.AppendLine("junk=" + junk);
-                info.AppendLine("skipped=" + skipped);
                 info.AppendLine("seconds=" + (int)sw.Elapsed.TotalSeconds);
                 File.WriteAllText(Path.Combine(genFolder, "info.txt"), info.ToString(), new UTF8Encoding(false));
 
@@ -317,7 +366,6 @@ namespace Supervertaler.Core.SuperVault
             finally
             {
                 if (genFolder != null) TryDelete(genFolder);   // failed or cancelled: leave nothing half-written
-                lockStream.Dispose();
             }
         }
 
