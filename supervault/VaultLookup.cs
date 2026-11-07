@@ -20,6 +20,9 @@ namespace Supervertaler.Core.SuperVault
         public string TagReason;
         public VaultDiffResult Diff;          // document tokens against Source tokens
         public List<VaultToken> DocumentTokens, SourceTokens;
+        /// <summary>Concordance only: the query's words in the searched side's text (its text pieces run together, tags
+        /// left out), for the CAT tool to highlight. Offset and Length are characters in that text.</summary>
+        public List<VaultToken> Hits;
     }
 
     /// <summary>
@@ -96,9 +99,12 @@ namespace Supervertaler.Core.SuperVault
                 int score = (int)Math.Round(100.0 * words.Count(unitWords.Contains) / words.Count);
                 if (score < minScore) continue;
                 var trg = Strip(VaultMarkup.Parse(c.TargetRaw));
+                var text = string.Concat(src.Where(p => !p.IsTag).Select(p => p.Text));
                 matches.Add(new VaultMatch
                 {
                     Candidate = c, Score = score, Source = src, Target = trg, Tags = VaultTagOutcome.NoTags,
+                    Hits = VaultDiff.Tokenize(new[] { new VaultPiece { Text = text } })
+                                    .Where(t => t.Kind == VaultTokenKind.Word && words.Contains(t.Text.ToLowerInvariant())).ToList(),
                     SourceDocTag = src.Select(_ => -1).ToList(), TargetDocTag = trg.Select(_ => -1).ToList(),
                 });
             }
