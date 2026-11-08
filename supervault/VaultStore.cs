@@ -49,7 +49,7 @@ namespace Supervertaler.Core.SuperVault
     {
         public long Read, Added, Duplicates, Skipped;
         public override string ToString() =>
-            $"{Added:N0} units added, {Duplicates:N0} already in SuperVault, {Skipped:N0} skipped (no text, one language, or junk)";
+            $"{Added:N0} {(Added == 1 ? "unit" : "units")} added, {Duplicates:N0} already in SuperVault, {Skipped:N0} skipped (no text, one language, or junk)";
     }
 
     /// <summary>

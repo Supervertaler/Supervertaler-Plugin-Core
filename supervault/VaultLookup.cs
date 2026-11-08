@@ -36,10 +36,12 @@ namespace Supervertaler.Core.SuperVault
     {
         const int Aligned = 40;
 
-        public static List<VaultMatch> Search(VaultIndex index, IList<VaultPiece> document, string sourceLang, string targetLang, int minScore, int maxResults)
+        public static List<VaultMatch> Search(VaultIndex index, IList<VaultPiece> document, string sourceLang, string targetLang, int minScore, int maxResults,
+                                              IEnumerable<VaultCandidate> extra = null)
         {
             var matches = new List<VaultMatch>();
-            if (index == null || document == null || maxResults <= 0) return matches;
+            var extras = extra?.ToList() ?? new List<VaultCandidate>();
+            if ((index == null && extras.Count == 0) || document == null || maxResults <= 0) return matches;
             var docPlain = PlainOf(document);
             if (docPlain.Length == 0) return matches;
 
@@ -48,7 +50,8 @@ namespace Supervertaler.Core.SuperVault
 
             // Cheap first pass: word overlap with the document. Exact matches always go through.
             var ranked = new List<(VaultCandidate c, List<VaultPiece> src, List<VaultPiece> trg, string srcPlain, int quick)>();
-            foreach (var c in index.Candidates(docPlain, sourceLang, targetLang, maxResults * 2, minScore))
+            var candidates = index == null ? (IEnumerable<VaultCandidate>)extras : index.Candidates(docPlain, sourceLang, targetLang, maxResults * 2, minScore).Concat(extras);
+            foreach (var c in candidates)
             {
                 var src = VaultMarkup.Parse(c.SourceRaw);
                 var trg = VaultMarkup.Parse(c.TargetRaw);

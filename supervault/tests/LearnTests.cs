@@ -158,6 +158,109 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.Eq(trg, b.target, "with its translation");
         }
 
+        // ---- read your own writes: Studio looks a segment up again right after confirming it ----
+
+        /// <summary>The best match through VaultLibrary.Lookup, which CAT tools use: the index plus units just handed over.</summary>
+        static (string target, int score, int count) Look(VaultLibrary lib, string source, string sl = "nl", string tl = "en")
+        {
+            var m = lib.Lookup(Doc(source), sl, tl, 50, 10);
+            return m.Count == 0 ? (null, 0, 0) : (VaultLookup.PlainOf(m[0].Target), m[0].Score, m.Count(x => x.Score == 100));
+        }
+
+        /// <summary>
+        /// Michael's Studio 2026 test, 8 Nov: the first unit confirmed into a SuperVault with no index wasn't shown in
+        /// Translation Results until he reopened SuperVault's settings. Studio looks the segment up right after the
+        /// confirm and caches the result; SuperVault stored the unit a moment later. Now the lookup sees it at once,
+        /// even while it can't be stored at all.
+        /// </summary>
+        public static void AJustConfirmedUnitIsFoundAtOnceEvenWithNoIndex()
+        {
+            var lib = VaultLibrary.For(Path.Combine(Scratch.Folder("fresh"), "supervault"));
+            try
+            {
+                VaultLibrary.FailPoint = p => { if (p == "store-commit") throw new IOException("not stored yet (simulated)"); };
+                lib.Learn(new[] { U("nl-BE", "In Fig. 3 is de pomp te zien.", "en-US", "Fig. 3 shows the pump.") });
+                A.True(lib.Current == null, "no index yet");
+                var b = Look(lib, "In Fig. 3 is de pomp te zien.");
+                A.Eq((100, "Fig. 3 shows the pump."), (b.score, b.target), "found at once, before it is stored");
+                A.Eq("In Fig. 3 is de pomp te zien.", Look(lib, "Fig. 3 shows the pump.", "en", "nl").target, "the other way round too");
+                A.Eq(0, Look(lib, "In Fig. 3 is de pomp te zien.", "nl", "de").score, "not for another language pair");
+                A.Eq(0, Look(lib, "In Fig. 4 is de pomp te zien.").score, "a fuzzy match waits for the index (a second or two)");
+            }
+            finally { VaultLibrary.FailPoint = null; }
+            Settle(lib);
+            var after = Look(lib, "In Fig. 3 is de pomp te zien.");
+            A.Eq((100, 1), (after.score, after.count), "once stored: still found, once (the index and the recent unit are one match)");
+            int fuzzy = Look(lib, "In Fig. 4 is de pomp te zien.").score;
+            A.True(fuzzy >= 70 && fuzzy < 100, "and now as a fuzzy match too: " + fuzzy);
+        }
+
+        public static void AJustConfirmedUnitIsFoundAtOnceWithAnIndex()
+        {
+            var lib = Built(out _);
+            try
+            {
+                VaultLibrary.FailPoint = p => { if (p == "store-commit") throw new IOException("not stored yet (simulated)"); };
+                lib.Learn(new[] { U("nl", "De motor stopt.", "en", "The motor stops.") });
+                A.Eq(100, Look(lib, "De motor stopt.").score, "found at once");
+                A.Eq(100, Look(lib, "De pomp wordt gestart.").score, "the index's units as before");
+                lib.Learn(new[] { U("nl", "De motor stopt.", "en", "The engine stops.") });   // corrected before it was stored
+                var b = Look(lib, "De motor stopt.");
+                A.Eq(("The engine stops.", 1), (b.target, b.count), "the correction replaces it");
+            }
+            finally { VaultLibrary.FailPoint = null; }
+        }
+
+        /// <summary>
+        /// The confirm call stays fast: single confirmations are found at once; a batch (Update Main TMs, 500 units a
+        /// call) skips that bookkeeping and is handed over in a few milliseconds, as before.
+        /// </summary>
+        public static void HandingOverStaysFast()
+        {
+            var lib = VaultLibrary.For(Scratch.Folder("fast"));
+            try
+            {
+                VaultLibrary.FailPoint = p => { if (p == "store-commit") throw new IOException("not stored (simulated)"); };
+                var units = Enumerable.Range(0, 1510).Select(i => U("nl", "Zin nummer " + i + " met <b>opmaak</b> erin.", "en", "Sentence number " + i + " with formatting in it.")).ToList();
+                lib.Learn(units.Take(10));   // warm up
+                var sw = Stopwatch.StartNew();
+                for (int i = 10; i < 1010; i++) lib.Learn(new[] { units[i] });
+                double perConfirm = sw.Elapsed.TotalMilliseconds / 1000;
+                sw.Restart();
+                lib.Learn(units.Skip(1010));
+                long batch = sw.ElapsedMilliseconds;
+                Console.WriteLine($"      (Learn: {perConfirm:F3} ms per confirmation, a batch of 500 in {batch} ms)");
+                A.True(perConfirm < 1 && batch < 10, $"fast: {perConfirm:F3} ms per confirmation, 500 in {batch} ms");
+                A.Eq(100, Look(lib, "Zin nummer 500 met opmaak erin.").score, "a single confirmation: found at once");
+                A.Eq(0, Look(lib, "Zin nummer 1200 met opmaak erin.").score, "a batch unit: found once stored");
+            }
+            finally { lib.DropWaitingForTests(); VaultLibrary.FailPoint = null; }
+        }
+
+        public static void RecentUnitsExpireAfterAMinute()
+        {
+            var lib = Built(out _);
+            long keep = VaultLibrary.RecentKeepTicks;
+            try
+            {
+                VaultLibrary.FailPoint = p => { if (p == "store-commit") throw new IOException("not stored (simulated)"); };
+                VaultLibrary.RecentKeepTicks = Stopwatch.Frequency / 5;   // 200 ms instead of a minute
+                lib.Learn(new[] { U("nl", "Een zin die niet lukt.", "en", "A sentence that fails.") });
+                A.Eq(100, Look(lib, "Een zin die niet lukt.").score, "found at once");
+                Thread.Sleep(400);
+                A.Eq(0, Look(lib, "Een zin die niet lukt.").score, "no longer, once expired and never stored (it waits in the inbox)");
+            }
+            finally { VaultLibrary.FailPoint = null; VaultLibrary.RecentKeepTicks = keep; }
+            Settle(lib);
+            A.Eq(100, Look(lib, "Een zin die niet lukt.").score, "found again once stored");
+        }
+
+        public static void UnitWordingIsSingularForOne()
+        {
+            var c = System.Globalization.CultureInfo.InvariantCulture;
+            A.Eq("1 unit|0 units|2 units|1,234 units", string.Join("|", new long[] { 1, 0, 2, 1234 }.Select(n => VaultLibrary.Units(n, c))), "wording");
+        }
+
         // ---- counting: one confirmation counts once, and says what it did ----
 
         /// <summary>

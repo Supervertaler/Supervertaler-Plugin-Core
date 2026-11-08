@@ -112,7 +112,14 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>Tests only: closes every open index in this process, so its scratch folders can be deleted.</summary>
         internal static void CloseAllForTests()
         {
-            lock (Libraries) foreach (var lib in Libraries.Values.Concat(TestOnly)) { lock (lib._gate) { lib.Swap(null, null); lib._checkedAt = long.MaxValue / 2; } lock (lib._learnGate) lib._waiting.Clear(); }
+            lock (Libraries) foreach (var lib in Libraries.Values.Concat(TestOnly)) { lock (lib._gate) { lib.Swap(null, null); lib._checkedAt = long.MaxValue / 2; } lock (lib._learnGate) { lib._waiting.Clear(); lib._recent.Clear(); lib._recentCount = 0; lib._recentOldest = 0; } }
+        }
+
+        /// <summary>Tests only: forget every unit this library still has to store (its queue, its inbox, its recent units).</summary>
+        internal void DropWaitingForTests()
+        {
+            lock (_learnGate) { _waiting.Clear(); _recent.Clear(); _recentCount = 0; _recentOldest = 0; }
+            try { if (File.Exists(InboxPath)) VaultInbox.Delete(InboxPath, long.MaxValue, 5); } catch { }
         }
 
         /// <summary>Tests only: look at the pointer and the index's commits at the next <see cref="Current"/>.</summary>
@@ -237,7 +244,7 @@ namespace Supervertaler.Core.SuperVault
                         s.State = VaultState.Ready;
                         s.Units = idx.Count;
                         s.BuiltAt = ReadBuiltAt(idx.Folder);
-                        s.Message = idx.Count.ToString("N0", CultureInfo.InvariantCulture) + " units";
+                        s.Message = Units(idx.Count, CultureInfo.InvariantCulture);
                     }
                     else if (_broken != null) { s.State = VaultState.Broken; s.Message = "The SuperVault index could not be opened (" + _broken + "). Rebuild it."; }
                     else
@@ -252,6 +259,10 @@ namespace Supervertaler.Core.SuperVault
                 return s;
             }
         }
+
+        /// <summary>"1 unit", "0 units", "1,234 units".</summary>
+        public static string Units(long n, IFormatProvider culture = null) =>
+            n.ToString("N0", culture ?? CultureInfo.CurrentCulture) + (n == 1 ? " unit" : " units");
 
         static DateTime? ReadBuiltAt(string folder)
         {
@@ -699,6 +710,115 @@ namespace Supervertaler.Core.SuperVault
         readonly VaultLearnCounts _learned = new VaultLearnCounts();   // under _learnGate
         volatile string _learnError;
 
+        // ---- read your own writes: units handed over, not yet searchable ----
+        //
+        // Studio assumes a TM has the unit once its update call returns: right after a confirm it looks the segment up
+        // again, and keeps that result in its own cache (TranslatableDocument.TranslationsCache, cleared only when the
+        // project's TM settings change). SuperVault stores the unit a moment later, in the background, so that lookup
+        // would miss it, and the miss would stay in Studio's cache. So lookups in this process also see the units it
+        // was handed in the last minute, as exact matches. A minute is plenty: a unit is normally searchable within a
+        // second or two, and from then on the index serves it (Search keeps one match per translation).
+
+        sealed class RecentUnit
+        {
+            public string OtherLang, Raw, OtherRaw, Variant;
+            public long AddedAt;
+        }
+
+        readonly Dictionary<string, List<RecentUnit>> _recent = new Dictionary<string, List<RecentUnit>>(StringComparer.Ordinal);   // "lang|plain text"; under _learnGate
+        int _recentCount;
+        long _recentOldest;
+        internal static long RecentKeepTicks = Stopwatch.Frequency * 60;
+        internal const int MaxRecent = 5000;        // units kept at most; beyond this a unit is simply found once stored
+        internal const int MaxRecentPerCall = 50;   // larger calls are batches, not confirms
+
+        static string RecentKey(string lang, string plain) => lang + "|" + plain;
+
+        /// <summary>
+        /// Prepares the units for <see cref="AddRecentLocked"/>: the parsing happens here, outside the lock, and for
+        /// at most <see cref="MaxRecent"/> units, so a big batch costs the caller a bounded few milliseconds.
+        /// </summary>
+        static List<(string key, RecentUnit unit, bool replace)> PrepareRecent(List<VaultLearnUnit> units)
+        {
+            var prepared = new List<(string, RecentUnit, bool)>();
+            long now = Stopwatch.GetTimestamp();
+            foreach (var u in units.Take(MaxRecent))
+            {
+                string a = VaultMarkup.BaseLanguage(u.SourceCulture), b = VaultMarkup.BaseLanguage(u.TargetCulture);
+                string src = u.Source?.Trim() ?? "", trg = u.Target?.Trim() ?? "";
+                if (a.Length == 0 || b.Length == 0 || a == b) continue;
+                string srcPlain = VaultLookup.PlainOf(VaultMarkup.Parse(src)), trgPlain = VaultLookup.PlainOf(VaultMarkup.Parse(trg));
+                if (srcPlain.Length == 0 || trgPlain.Length == 0) continue;
+                var variant = (u.SourceCulture ?? a) + ">" + (u.TargetCulture ?? b);
+                // A corrected translation replaces the one handed over before for the same source.
+                prepared.Add((RecentKey(a, srcPlain), new RecentUnit { OtherLang = b, Raw = src, OtherRaw = trg, Variant = variant, AddedAt = now }, true));
+                prepared.Add((RecentKey(b, trgPlain), new RecentUnit { OtherLang = a, Raw = trg, OtherRaw = src, Variant = variant, AddedAt = now }, false));
+            }
+            return prepared;
+        }
+
+        /// <summary>Caller holds _learnGate.</summary>
+        void AddRecentLocked(List<(string key, RecentUnit unit, bool replace)> prepared)
+        {
+            PruneRecent(Stopwatch.GetTimestamp());
+            foreach (var (key, unit, replace) in prepared)
+            {
+                if (_recentCount >= 2 * MaxRecent) break;   // two entries per unit: one per side
+                AddRecent(key, unit, replace);
+            }
+        }
+
+        void AddRecent(string key, RecentUnit r, bool replaceSameSource)
+        {
+            if (!_recent.TryGetValue(key, out var list)) _recent[key] = list = new List<RecentUnit>(1);
+            int removed = list.RemoveAll(x => x.OtherLang == r.OtherLang && (replaceSameSource || x.OtherRaw == r.OtherRaw));
+            list.Add(r);
+            _recentCount += 1 - removed;
+            if (_recentOldest == 0 || r.AddedAt < _recentOldest) _recentOldest = r.AddedAt;
+        }
+
+        /// <summary>Drops units handed over more than a minute ago. Scans only when one has expired. Caller holds _learnGate.</summary>
+        void PruneRecent(long now)
+        {
+            if (_recentOldest == 0 || now - _recentOldest < RecentKeepTicks) return;
+            long oldest = 0;
+            foreach (var key in _recent.Keys.ToList())
+            {
+                var list = _recent[key];
+                _recentCount -= list.RemoveAll(x => now - x.AddedAt >= RecentKeepTicks);
+                if (list.Count == 0) _recent.Remove(key);
+                else foreach (var x in list) if (oldest == 0 || x.AddedAt < oldest) oldest = x.AddedAt;
+            }
+            _recentOldest = oldest;
+        }
+
+        /// <summary>Units this process was handed in the last minute whose source is exactly <paramref name="docPlain"/>.</summary>
+        List<VaultCandidate> RecentCandidates(string docPlain, string sourceLang, string targetLang)
+        {
+            var found = new List<VaultCandidate>();
+            if (string.IsNullOrEmpty(docPlain)) return found;
+            lock (_learnGate)
+            {
+                if (_recentCount == 0) return found;
+                PruneRecent(Stopwatch.GetTimestamp());
+                if (_recent.TryGetValue(RecentKey(sourceLang, docPlain), out var list))
+                    foreach (var r in list)
+                        if (r.OtherLang == targetLang)
+                            found.Add(new VaultCandidate { Id = "0", SourceRaw = r.Raw, TargetRaw = r.OtherRaw, Variant = r.Variant, Exact = true });
+            }
+            return found;
+        }
+
+        /// <summary>
+        /// A lookup: the index in use, plus (as exact matches) the units this process was handed in the last minute and
+        /// may not have stored yet. This is what a CAT tool should call; never throws for an empty SuperVault.
+        /// </summary>
+        public List<VaultMatch> Lookup(IList<VaultPiece> document, string sourceLang, string targetLang, int minScore, int maxResults)
+        {
+            var recent = document == null ? null : RecentCandidates(VaultLookup.PlainOf(document), sourceLang, targetLang);
+            return VaultLookup.Search(Current, document, sourceLang, targetLang, minScore, maxResults, recent);
+        }
+
         /// <summary>
         /// Stores confirmed segments in SuperVault. Returns at once and never throws: the work happens on a background
         /// thread, so a CAT tool's confirm action can never fail or hang because of SuperVault.
@@ -707,9 +827,14 @@ namespace Supervertaler.Core.SuperVault
         {
             try
             {
+                var list = units?.Where(u => u != null).ToList() ?? new List<VaultLearnUnit>();
+                // Only for interactive confirms (a unit or two per call): a batch such as Update Main TMs doesn't look
+                // its segments up meanwhile, and parsing thousands of units would slow its hand-over.
+                var recent = list.Count <= MaxRecentPerCall ? PrepareRecent(list) : null;
                 lock (_learnGate)
                 {
-                    foreach (var u in units) if (u != null) _waiting.Add(u);
+                    _waiting.AddRange(list);
+                    if (recent != null) AddRecentLocked(recent);
                     if (_waiting.Count > MaxWaiting)
                     {
                         int drop = _waiting.Count - MaxWaiting;
