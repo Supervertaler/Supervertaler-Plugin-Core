@@ -22,16 +22,16 @@ namespace Supervertaler.Core.SuperVault.Tests
             ("<ph x=\"1\"/>Afbeelding <ph x=\"2\"/> toont de pomp.", "<ph x=\"2\"/> shows the pump in figure <ph x=\"1\"/>.", "nl", "en"),
         };
 
-        static List<VaultPiece> Doc(string text) => new List<VaultPiece> { new VaultPiece { Text = text } };
+        internal static List<VaultPiece> Doc(string text) => new List<VaultPiece> { new VaultPiece { Text = text } };
 
-        static Func<string, Action<string>, CancellationToken, VaultImportResult> Workbench(string db, int timeout = 30) =>
+        internal static Func<string, Action<string>, CancellationToken, VaultImportResult> Workbench(string db, int timeout = 30) =>
             (store, p, c) => VaultStore.ImportWorkbench(store, db, p, c, timeout);
 
-        static Func<string, Action<string>, CancellationToken, VaultImportResult> Tmx(string path) =>
+        internal static Func<string, Action<string>, CancellationToken, VaultImportResult> Tmx(string path) =>
             (store, p, c) => VaultTmx.Import(store, path, p, c);
 
         /// <summary>A library filled from a Workbench-style database (the optional import), index built.</summary>
-        static VaultLibrary Built(out string db)
+        internal static VaultLibrary Built(out string db)
         {
             db = Scratch.Database(Units());
             var lib = VaultLibrary.For(Scratch.Folder("vault"));
@@ -41,14 +41,14 @@ namespace Supervertaler.Core.SuperVault.Tests
             return lib;
         }
 
-        static string WriteTmx(string body, string srclang = "en-US")
+        internal static string WriteTmx(string body, string srclang = "en-US")
         {
             var path = Path.Combine(Scratch.Folder("tmx"), "test.tmx");
             File.WriteAllText(path, "<?xml version=\"1.0\" encoding=\"utf-8\"?><tmx version=\"1.4\"><header srclang=\"" + srclang + "\" segtype=\"sentence\" datatype=\"plaintext\" o-tmf=\"x\" adminlang=\"en\" creationtool=\"t\" creationtoolversion=\"1\"/><body>" + body + "</body></tmx>", new UTF8Encoding(false));
             return path;
         }
 
-        static string Tu(params (string lang, string seg)[] tuvs) =>
+        internal static string Tu(params (string lang, string seg)[] tuvs) =>
             "<tu>" + string.Concat(tuvs.Select(t => "<tuv xml:lang=\"" + t.lang + "\"><seg>" + t.seg + "</seg></tuv>")) + "</tu>";
 
         public static void EmptyIsMissingNotAnError()
@@ -260,7 +260,7 @@ namespace Supervertaler.Core.SuperVault.Tests
         }
 
         /// <summary>A built SuperVault copied to a new folder this process has never opened, so it is opened fresh.</summary>
-        static string CopyOfBuilt(Action<string> damage)
+        internal static string CopyOfBuilt(Action<string> damage)
         {
             var built = Built(out _);
             var gen = Directory.GetDirectories(built.Root, "gen-*").Single();

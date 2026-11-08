@@ -55,11 +55,27 @@ namespace Supervertaler.Core.SuperVault
         public string Folder { get; }
         public int Count => _reader.NumDocs;
 
+        /// <summary>Commit data key: the last store change (<c>changes.seq</c>) this index has applied.</summary>
+        internal const string SeqKey = "store_seq";
+
+        /// <summary>The last store change this index has applied; 0 for an index built before learning existed.</summary>
+        public long StoreSeq { get; }
+        /// <summary>False for an index built by stage 1, which records no store change.</summary>
+        public bool HasStoreSeq { get; }
+
         VaultIndex(string folder, DirectoryReader reader)
         {
             Folder = folder;
             _reader = reader;
             _searcher = new IndexSearcher(reader);
+            StoreSeq = ReadSeq(reader.IndexCommit.UserData, out bool has);
+            HasStoreSeq = has;
+        }
+
+        internal static long ReadSeq(IDictionary<string, string> data, out bool has)
+        {
+            has = data != null && data.TryGetValue(SeqKey, out var v) && long.TryParse(v, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _);
+            return has ? long.Parse(data[SeqKey], System.Globalization.CultureInfo.InvariantCulture) : 0;
         }
 
         /// <summary>Opens a built generation. Throws if it is missing or damaged (the caller reports and rebuilds).</summary>
@@ -68,6 +84,22 @@ namespace Supervertaler.Core.SuperVault
             Directory dir = FSDirectory.Open(folder);
             try { return new VaultIndex(folder, DirectoryReader.Open(dir)); }
             catch { dir.Dispose(); throw; }
+        }
+
+        /// <summary>
+        /// The same generation with the units committed since this one was opened (learned or imported a piece at a
+        /// time), or null if nothing changed. Cheap: Lucene reads the commit point and reopens only the new parts;
+        /// segments both share are shared, not read again. Throws if the generation can't be read.
+        /// </summary>
+        internal VaultIndex Reopen()
+        {
+            if (!TryAcquire()) return null;
+            try
+            {
+                var newer = DirectoryReader.OpenIfChanged(_reader);
+                return newer == null ? null : new VaultIndex(Folder, newer);
+            }
+            finally { Release(); }
         }
 
         /// <summary>Takes a reference for the length of one lookup. False once the index has been closed.</summary>
@@ -159,7 +191,7 @@ namespace Supervertaler.Core.SuperVault
 
         HashSet<string> _pairs;
 
-        /// <summary>The base language pairs the index holds, e.g. {"en|nl", "de|nl"}. Read once: a generation never changes.</summary>
+        /// <summary>The base language pairs the index holds, e.g. {"en|nl", "de|nl"}. Read once per reader: new units come with a new <see cref="VaultIndex"/> (<see cref="Reopen"/>).</summary>
         public HashSet<string> Pairs()
         {
             var cached = _pairs;
@@ -195,7 +227,7 @@ namespace Supervertaler.Core.SuperVault
 
         public static string PairKey(string a, string b) => string.CompareOrdinal(a, b) <= 0 ? a + "|" + b : b + "|" + a;
 
-        // ---- writing (used by VaultBuilder only) ----
+        // ---- writing (VaultLibrary: full builds and piece-at-a-time updates) ----
 
         static readonly FieldType WordsField = MakeWordsField();
         static FieldType MakeWordsField()

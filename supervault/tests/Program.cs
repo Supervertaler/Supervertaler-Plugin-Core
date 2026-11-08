@@ -17,7 +17,10 @@ namespace Supervertaler.Core.SuperVault.Tests
         {
             var filter = args.Length > 0 ? args[0] : null;
             if (filter == "real") return RealScale.Run(args.Skip(1).ToArray());
+            if (filter == "child") return LearnTests.Child(args.Skip(1).ToArray());
+            if (filter == "learnscale") return LearnScale.Run(args.Skip(1).ToArray());
             VaultLibrary.CleanupDelayMs = 200;
+            VaultLibrary.LearnDelayMs = 300;   // the background thread waits a little, so the tests' own LearnOnce usually goes first
             var tests = typeof(Program).Assembly.GetTypes()
                 .Where(t => t.Name.EndsWith("Tests"))
                 .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static).Where(m => m.GetParameters().Length == 0 && m.ReturnType == typeof(void)))
@@ -96,7 +99,13 @@ namespace Supervertaler.Core.SuperVault.Tests
         {
             SqliteConnection.ClearAllPools();
             if (!Directory.Exists(Base)) return;
-            try { Directory.Delete(Base, true); } catch { Console.WriteLine("(scratch left at " + Base + ")"); }
+            VaultLibrary.CloseAllForTests();   // open indexes keep their files mapped, and Windows won't delete those
+            for (int i = 0; ; i++)
+            {
+                try { Directory.Delete(Base, true); return; }
+                catch when (i < 10) { GC.Collect(); GC.WaitForPendingFinalizers(); Thread.Sleep(300); }
+                catch { Console.WriteLine("(scratch left at " + Base + ")"); return; }
+            }
         }
     }
 }

@@ -9,6 +9,27 @@ namespace Supervertaler.Core.SuperVault
 {
     public enum VaultAddOutcome { Added, Duplicate, Skipped }
 
+    /// <summary>What learning one confirmed segment did to the store.</summary>
+    public enum VaultLearnOutcome
+    {
+        /// <summary>A new unit.</summary>
+        Added,
+        /// <summary>The unit learned earlier for the same source now has the new translation.</summary>
+        Updated,
+        /// <summary>The new translation was already in SuperVault, so the unit learned earlier for this source was removed.</summary>
+        Replaced,
+        /// <summary>Already in SuperVault, unchanged.</summary>
+        Duplicate,
+        /// <summary>No text, one language, or junk.</summary>
+        Skipped,
+    }
+
+    /// <summary>A segment confirmed in a CAT tool, waiting to be learned.</summary>
+    public sealed class VaultLearnUnit
+    {
+        public string SourceCulture, Source, TargetCulture, Target, Origin;
+    }
+
     /// <summary>What an import did.</summary>
     public sealed class VaultImportResult
     {
@@ -31,17 +52,27 @@ namespace Supervertaler.Core.SuperVault
     ///
     /// Scale: inserts go through one prepared statement in one transaction per import; the uniqueness check is the
     /// UNIQUE index on <c>key</c>. Measured: about 8,000 units a second; the 1.55M-row Workbench TM imports in about 3 minutes, as 871,121 distinct units.
+    ///
+    /// Schema 2 (learning as you work) adds two small tables:
+    ///   changes   one row per unit added, changed or removed, written by triggers on <c>units</c>, so no write path
+    ///             can forget it (stage 1's code included). The index applies them in order and remembers the last
+    ///             <c>seq</c> it applied; applied rows are then deleted. AUTOINCREMENT, so a seq is never reused.
+    ///   learned   for units SuperVault learned from a confirmed segment: which unit belongs to which source text (in
+    ///             the direction it was confirmed). A changed translation of the same source updates that unit
+    ///             instead of adding a near-duplicate. Imported units are never in it, so a confirmation never
+    ///             changes or removes an imported unit.
     /// </summary>
     public static class VaultStore
     {
-        public const int Schema = 1;
+        public const int Schema = 2;
 
         /// <summary>Creates the store if it doesn't exist yet. Safe to call while other processes have it open.</summary>
-        public static void Create(string path)
+        public static void Create(string path, int busyTimeoutSeconds = 30)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));
-            using (var c = Open(path, readOnly: false))
+            using (var c = Open(path, readOnly: false, busyTimeoutSeconds))
             {
+                if (CurrentSchema(c) >= Schema) return;   // the usual case: nothing to write, so no write lock taken
                 Exec(c, "PRAGMA journal_mode=WAL");
                 Exec(c, @"CREATE TABLE IF NOT EXISTS units (
                             id INTEGER PRIMARY KEY,
@@ -52,6 +83,65 @@ namespace Supervertaler.Core.SuperVault
                 Exec(c, "CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT)");
                 Exec(c, "INSERT OR IGNORE INTO meta (name, value) VALUES ('schema', '" + Schema + "')");
                 Exec(c, "INSERT OR IGNORE INTO meta (name, value) VALUES ('version', '0')");
+                // Schema 2. Each statement is idempotent, so an older store is upgraded in place, in milliseconds
+                // whatever its size: nothing here reads the existing units.
+                Exec(c, "CREATE TABLE IF NOT EXISTS changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, unit_id INTEGER NOT NULL)");
+                Exec(c, "CREATE TABLE IF NOT EXISTS learned (src_key TEXT PRIMARY KEY, unit_id INTEGER NOT NULL)");
+                Exec(c, "CREATE TRIGGER IF NOT EXISTS units_ai AFTER INSERT ON units BEGIN INSERT INTO changes (unit_id) VALUES (new.id); END");
+                Exec(c, "CREATE TRIGGER IF NOT EXISTS units_au AFTER UPDATE ON units BEGIN INSERT INTO changes (unit_id) VALUES (new.id); END");
+                Exec(c, "CREATE TRIGGER IF NOT EXISTS units_ad AFTER DELETE ON units BEGIN INSERT INTO changes (unit_id) VALUES (old.id); END");
+                Exec(c, "UPDATE meta SET value = '" + Schema + "' WHERE name = 'schema' AND CAST(value AS INTEGER) < " + Schema);
+            }
+        }
+
+        static int CurrentSchema(SqliteConnection c)
+        {
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'";
+                if (Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return 0;
+                cmd.CommandText = "SELECT value FROM meta WHERE name = 'schema'";
+                return int.TryParse(Convert.ToString(cmd.ExecuteScalar(), CultureInfo.InvariantCulture), out var v) ? v : 0;
+            }
+        }
+
+        /// <summary>The last change seq ever written (0 if none). Read inside the caller's transaction when given one.</summary>
+        internal static long LastChange(SqliteConnection c, SqliteTransaction tx = null)
+        {
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "SELECT seq FROM sqlite_sequence WHERE name = 'changes'";
+                var v = cmd.ExecuteScalar();
+                return v == null || v is DBNull ? 0 : Convert.ToInt64(v, CultureInfo.InvariantCulture);
+            }
+        }
+
+        /// <summary>Number of changes after <paramref name="seq"/>, i.e. not yet in an index that has applied up to it. 0 without a store.</summary>
+        public static long ChangesAfter(string path, long seq)
+        {
+            if (!File.Exists(path)) return 0;
+            using (var c = Open(path, readOnly: true))
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'changes'";
+                if (Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return 0;
+                cmd.CommandText = "SELECT count(*) FROM changes WHERE seq > $s";
+                cmd.Parameters.AddWithValue("$s", seq);
+                return Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+            }
+        }
+
+        /// <summary>Deletes the changes the index has applied (up to and including <paramref name="seq"/>). Caller holds the build lock.</summary>
+        internal static void PruneChanges(string path, long seq, int busyTimeoutSeconds)
+        {
+            if (seq <= 0 || !File.Exists(path)) return;
+            using (var c = Open(path, readOnly: false, busyTimeoutSeconds))
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = "DELETE FROM changes WHERE seq <= $s";
+                cmd.Parameters.AddWithValue("$s", seq);
+                cmd.ExecuteNonQuery();
             }
         }
 
@@ -125,11 +215,12 @@ namespace Supervertaler.Core.SuperVault
             readonly SqliteCommand _insert;
             readonly SqliteParameter _la, _ta, _lb, _tb, _key, _variant, _origin, _added;
             public VaultImportResult Result { get; } = new VaultImportResult();
-            bool _done;
+            bool _done, _changed;
+            SqliteCommand _findLearned, _findKey, _update, _delete, _forget, _remember;
 
             public Writer(string path, int busyTimeoutSeconds = 30)
             {
-                Create(path);
+                Create(path, busyTimeoutSeconds);
                 _c = Open(path, readOnly: false, busyTimeoutSeconds);
                 _tx = _c.BeginTransaction();
                 _insert = _c.CreateCommand();
@@ -156,14 +247,94 @@ namespace Supervertaler.Core.SuperVault
                 _key.Value = Key(a, sourceRaw, b, targetRaw);
                 _variant.Value = (sourceCulture ?? "") + ">" + (targetCulture ?? "");
                 _origin.Value = (object)origin ?? DBNull.Value;
-                if (_insert.ExecuteNonQuery() == 1) { Result.Added++; return VaultAddOutcome.Added; }
+                if (_insert.ExecuteNonQuery() == 1) { Result.Added++; _changed = true; return VaultAddOutcome.Added; }
                 Result.Duplicates++;
                 return VaultAddOutcome.Duplicate;
             }
 
+            /// <summary>
+            /// Learns one confirmed segment. "The same source" is: the same base languages in the same direction
+            /// (nl>en; nl-BE>en-US and nl-NL>en-GB alike) and the same source text and tag shape, as in <see cref="Key"/>.
+            /// If SuperVault learned a unit for that source before, its translation is replaced; otherwise the unit is
+            /// added like an imported one (a duplicate of any existing unit adds nothing). Imported units are never
+            /// changed: a confirmation that differs from an imported unit adds a second translation, as a TM would.
+            /// </summary>
+            public VaultLearnOutcome Learn(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin)
+            {
+                string a = VaultMarkup.BaseLanguage(sourceCulture), b = VaultMarkup.BaseLanguage(targetCulture);
+                string src = sourceRaw?.Trim() ?? "", trg = targetRaw?.Trim() ?? "";
+                if (a.Length == 0 || b.Length == 0 || a == b || VaultMarkup.IsJunk(VaultMarkup.Plain(src), VaultMarkup.Plain(trg)))
+                { Result.Read++; Result.Skipped++; return VaultLearnOutcome.Skipped; }
+                var srcKey = VaultMarkup.Hash(a + ">" + b + "|" + Shape(src));
+                long? learnedId = Scalar(ref _findLearned, "SELECT unit_id FROM learned WHERE src_key = $p", srcKey);
+                if (learnedId == null)
+                {
+                    if (Add(sourceCulture, src, targetCulture, trg, origin) != VaultAddOutcome.Added) return VaultLearnOutcome.Duplicate;
+                    Exec2(ref _remember, "INSERT OR REPLACE INTO learned (src_key, unit_id) VALUES ($p, last_insert_rowid())", srcKey);
+                    return VaultLearnOutcome.Added;
+                }
+
+                string la = a, ta = src, lb = b, tb = trg;
+                if (string.CompareOrdinal(la, lb) > 0) { (la, lb) = (lb, la); (ta, tb) = (tb, ta); }
+                var key = Key(la, ta, lb, tb);
+                long? existing = Scalar(ref _findKey, "SELECT id FROM units WHERE key = $p", key);
+                if (existing == learnedId) { Result.Read++; Result.Duplicates++; return VaultLearnOutcome.Duplicate; }
+                if (existing != null)
+                {
+                    // The new translation is already a unit (imported, or learned for another source): the one learned
+                    // earlier for this source is superseded, so it goes, rather than staying as a near-duplicate.
+                    Exec2(ref _delete, "DELETE FROM units WHERE id = $p", learnedId.Value);
+                    Exec2(ref _forget, "DELETE FROM learned WHERE src_key = $p", srcKey);
+                    Result.Read++; Result.Duplicates++; _changed = true;
+                    return VaultLearnOutcome.Replaced;
+                }
+                if (_update == null)
+                {
+                    _update = _c.CreateCommand();
+                    _update.Transaction = _tx;
+                    _update.CommandText = "UPDATE units SET lang_a = $la, text_a = $ta, lang_b = $lb, text_b = $tb, key = $key, variant = $v, origin = $o, added = $d WHERE id = $id";
+                }
+                _update.Parameters.Clear();
+                _update.Parameters.AddWithValue("$la", la); _update.Parameters.AddWithValue("$ta", ta);
+                _update.Parameters.AddWithValue("$lb", lb); _update.Parameters.AddWithValue("$tb", tb);
+                _update.Parameters.AddWithValue("$key", key);
+                _update.Parameters.AddWithValue("$v", (sourceCulture ?? "") + ">" + (targetCulture ?? ""));
+                _update.Parameters.AddWithValue("$o", (object)origin ?? DBNull.Value);
+                _update.Parameters.AddWithValue("$d", _added.Value);
+                _update.Parameters.AddWithValue("$id", learnedId.Value);
+                if (_update.ExecuteNonQuery() == 1) { Result.Read++; Result.Added++; _changed = true; return VaultLearnOutcome.Updated; }
+                // The learned unit is gone (removed by hand, say): forget it and learn this one afresh.
+                Exec2(ref _forget, "DELETE FROM learned WHERE src_key = $p", srcKey);
+                return Learn(sourceCulture, sourceRaw, targetCulture, targetRaw, origin);
+            }
+
+            long? Scalar(ref SqliteCommand cmd, string sql, object p)
+            {
+                Prepare(ref cmd, sql);
+                cmd.Parameters[0].Value = p;
+                var v = cmd.ExecuteScalar();
+                return v == null || v is DBNull ? (long?)null : Convert.ToInt64(v, CultureInfo.InvariantCulture);
+            }
+
+            void Exec2(ref SqliteCommand cmd, string sql, object p)
+            {
+                Prepare(ref cmd, sql);
+                cmd.Parameters[0].Value = p;
+                cmd.ExecuteNonQuery();
+            }
+
+            void Prepare(ref SqliteCommand cmd, string sql)
+            {
+                if (cmd != null) return;
+                cmd = _c.CreateCommand();
+                cmd.Transaction = _tx;
+                cmd.CommandText = sql;
+                cmd.Parameters.Add(new SqliteParameter { ParameterName = "$p" });
+            }
+
             public void Commit()
             {
-                if (Result.Added > 0)
+                if (_changed)
                     using (var cmd = _c.CreateCommand())
                     {
                         cmd.Transaction = _tx;
@@ -178,6 +349,7 @@ namespace Supervertaler.Core.SuperVault
             {
                 try { if (!_done) _tx.Rollback(); } catch { }
                 _insert.Dispose();
+                foreach (var cmd in new[] { _findLearned, _findKey, _update, _delete, _forget, _remember }) cmd?.Dispose();
                 _tx.Dispose();
                 _c.Dispose();
             }
