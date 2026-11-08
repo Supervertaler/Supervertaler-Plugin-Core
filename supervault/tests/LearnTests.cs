@@ -158,6 +158,67 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.Eq(trg, b.target, "with its translation");
         }
 
+        // ---- counting: one confirmation counts once, and says what it did ----
+
+        /// <summary>
+        /// Michael's acceptance test: segment 1 was a 100% SuperVault match, he confirmed only it, and the window said
+        /// "2 stored". Studio sends a repetition it auto-propagated and confirmed in a second call, a moment later
+        /// (TranslatableDocument.UpdateAutopropagatedSegmentsToTranslationMemory). The same unit twice counts once,
+        /// and a unit SuperVault already holds is "already in SuperVault", not "stored".
+        /// </summary>
+        public static void ConfirmingAnExistingUnitTwiceCountsOnceAsAlreadyThere()
+        {
+            var lib = Built(out _);
+            var u = U("nl-BE", "De pomp wordt gestart.", "en-US", "The pump is started.");   // imported, so already there
+            lib.Learn(new[] { u });                                   // the confirmation
+            lib.Learn(new[] { U(u.SourceCulture, u.Source, u.TargetCulture, u.Target) });   // the auto-propagated repetition
+            Settle(lib);
+            A.Eq(6L, lib.StoreCount(), "nothing added");
+            A.Eq("1 confirmed: 0 added, 1 already in SuperVault", lib.LearnedThisSession.ToString(), "counted once, as already there");
+            A.Eq(1L, lib.Status.Learned.Already, "the status says the same");
+        }
+
+        public static void ANewUnitSentTwiceIsAddedOnce()
+        {
+            var lib = Built(out _);
+            var u = U("nl-BE", "Een herhaalde zin.", "en-US", "A repeated sentence.");
+            lib.Learn(new[] { u, U(u.SourceCulture, u.Source, u.TargetCulture, u.Target) });
+            Settle(lib);
+            A.Eq(7L, lib.StoreCount(), "one new unit");
+            A.Eq("1 confirmed: 1 added, 0 already in SuperVault", lib.LearnedThisSession.ToString(), "counted once, as added");
+            lib.Learn(new[] { U(u.SourceCulture, u.Source, u.TargetCulture, u.Target) });   // confirmed again later, unchanged
+            Settle(lib);
+            A.Eq("2 confirmed: 1 added, 1 already in SuperVault", lib.LearnedThisSession.ToString(), "later: already there");
+        }
+
+        public static void CountsSayAddedReplacedAlreadyAndSkipped()
+        {
+            var lib = Built(out _);
+            const string src = "Draai de knop naar rechts.";
+            lib.Learn(new[] { U("nl", src, "en", "Turn the knob to the rigth.") });
+            Settle(lib);
+            lib.Learn(new[] { U("nl", src, "en", "Turn the knob to the right.") });   // corrected
+            Settle(lib);
+            lib.Learn(new[] { U("nl", src, "en", "Turn the knob to the right.") });   // confirmed again, unchanged
+            lib.Learn(new[] { U("nl", "Tekst", "nl", "Tekst") });                     // same language twice
+            Settle(lib);
+            var c = lib.LearnedThisSession;
+            A.Eq((1L, 1L, 1L, 1L), (c.Added, c.Replaced, c.Already, c.Skipped), "added, replaced, already, skipped");
+            A.Eq("4 confirmed: 1 added, 1 replaced, 1 already in SuperVault, 1 skipped (empty or not text)", c.ToString(), "wording");
+            A.Eq(1, Best(lib, src).count, "one unit for the source");
+        }
+
+        public static void ACorrectionInTheSameBatchStillWins()
+        {
+            var lib = Built(out _);
+            const string src = "Sluit het deksel.";
+            lib.Learn(new[] { U("nl", src, "en", "Close the lid"), U("nl", src, "en", "Close the lid."), U("nl", src, "en", "Close the lid.") });
+            Settle(lib);
+            A.Eq("Close the lid.", Best(lib, src).target, "the last translation is kept");
+            A.Eq(1, Best(lib, src).count, "once");
+            A.Eq("2 confirmed: 1 added, 1 replaced, 0 already in SuperVault", lib.LearnedThisSession.ToString(), "the identical third one counts once with the second");
+        }
+
         public static void OncePerLanguagePairWhateverDirectionAndVariant()
         {
             var lib = Built(out _);
@@ -298,10 +359,12 @@ namespace Supervertaler.Core.SuperVault.Tests
                 A.Eq(100, Best(lib, "De pomp wordt gestart.").score, "lookups still work");
                 A.Eq(1L, InboxCount(lib), "the unit waits in the inbox");
                 A.True(lib.LearnError != null && lib.LearnError.Contains("disk full"), "error kept for the dialog: " + lib.LearnError);
+                A.Eq(0L, lib.LearnedThisSession.Total, "a failed batch is not counted");
             }
             finally { VaultLibrary.FailPoint = null; }
             Settle(lib);
             A.Eq(100, Best(lib, "Een zin die eerst niet lukt.").score, "stored on the next try");
+            A.Eq("1 confirmed: 1 added, 0 already in SuperVault", lib.LearnedThisSession.ToString(), "counted once, when stored");
             A.Eq(null, lib.LearnError, "error cleared");
         }
 

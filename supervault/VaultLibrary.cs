@@ -25,8 +25,47 @@ namespace Supervertaler.Core.SuperVault
         public bool Building;              // a build is running in this process
         public string BuildProgress;       // "412,000 of 1,554,005 units" while building
         public string LastBuildError;      // the last build's failure in this process, if it failed
-        public long LearnedThisSession;    // confirmed segments this process has stored
+        public VaultLearnCounts Learned = new VaultLearnCounts();   // what storing this process's confirmed segments did
         public string LearnError;          // why storing confirmed segments last failed (they are kept and retried)
+    }
+
+    /// <summary>
+    /// What storing confirmed segments did, since the process started. Identical units handed over together (Studio
+    /// sends a repetition it auto-propagated and confirmed as well as the segment you confirmed) count once.
+    /// </summary>
+    public sealed class VaultLearnCounts
+    {
+        public long Added;       // new units
+        public long Replaced;    // a corrected translation replaced the one SuperVault learned before
+        public long Already;     // the unit was already in SuperVault: nothing changed
+        public long Skipped;     // not stored: no text, the same language twice, or junk
+
+        public long Total => Added + Replaced + Already + Skipped;
+
+        internal void Count(VaultLearnOutcome o)
+        {
+            switch (o)
+            {
+                case VaultLearnOutcome.Added: Added++; break;
+                case VaultLearnOutcome.Updated: case VaultLearnOutcome.Replaced: Replaced++; break;
+                case VaultLearnOutcome.Duplicate: Already++; break;
+                default: Skipped++; break;
+            }
+        }
+
+        internal void Add(VaultLearnCounts c) { Added += c.Added; Replaced += c.Replaced; Already += c.Already; Skipped += c.Skipped; }
+        internal VaultLearnCounts Copy() { var c = new VaultLearnCounts(); c.Add(this); return c; }
+
+        /// <summary>"1 confirmed: 0 added, 1 already in SuperVault".</summary>
+        public override string ToString()
+        {
+            var f = CultureInfo.CurrentCulture;
+            var s = Total.ToString("N0", f) + " confirmed: " + Added.ToString("N0", f) + " added";
+            if (Replaced > 0) s += ", " + Replaced.ToString("N0", f) + " replaced";
+            s += ", " + Already.ToString("N0", f) + " already in SuperVault";
+            if (Skipped > 0) s += ", " + Skipped.ToString("N0", f) + " skipped (empty or not text)";
+            return s;
+        }
     }
 
     /// <summary>
@@ -190,7 +229,7 @@ namespace Supervertaler.Core.SuperVault
             get
             {
                 var idx = Current;
-                var s = new VaultStatus { Building = IsBuilding, BuildProgress = _progress, LastBuildError = _lastError, LearnedThisSession = LearnedThisSession, LearnError = _learnError };
+                var s = new VaultStatus { Building = IsBuilding, BuildProgress = _progress, LastBuildError = _lastError, Learned = LearnedThisSession, LearnError = _learnError };
                 lock (_gate)
                 {
                     if (idx != null)
@@ -622,7 +661,7 @@ namespace Supervertaler.Core.SuperVault
         List<VaultLearnUnit> _waiting = new List<VaultLearnUnit>();
         Thread _learner;
         readonly AutoResetEvent _wake = new AutoResetEvent(false);
-        long _learned;
+        readonly VaultLearnCounts _learned = new VaultLearnCounts();   // under _learnGate
         volatile string _learnError;
 
         /// <summary>
@@ -663,8 +702,8 @@ namespace Supervertaler.Core.SuperVault
             return n;
         }
 
-        /// <summary>Confirmed segments this process has moved into the store.</summary>
-        public long LearnedThisSession => Interlocked.Read(ref _learned);
+        /// <summary>What storing confirmed segments has done in this process (a copy).</summary>
+        public VaultLearnCounts LearnedThisSession { get { lock (_learnGate) return _learned.Copy(); } }
 
         /// <summary>Why the last attempt to store confirmed segments failed, or null. They are kept and retried.</summary>
         public string LearnError => _learnError;
@@ -735,20 +774,26 @@ namespace Supervertaler.Core.SuperVault
             {
                 var units = VaultInbox.Read(InboxPath, InboxBusySeconds, out long lastId);
                 if (units.Count == 0) break;
+                var counts = new VaultLearnCounts();
+                // Identical units in one batch are one unit: Studio also sends a repetition it auto-propagated and
+                // confirmed, a moment after the segment you confirmed. Order is kept, so a correction still wins.
+                var seen = new HashSet<string>(StringComparer.Ordinal);
                 using (var w = new VaultStore.Writer(StorePath, StoreBusySeconds))
                 {
                     foreach (var u in units)
                     {
-                        try { w.Learn(u.SourceCulture, u.Source, u.TargetCulture, u.Target, u.Origin); }
+                        if (!seen.Add(u.SourceCulture + "" + u.Source + "" + u.TargetCulture + "" + u.Target)) continue;
+                        try { counts.Count(w.Learn(u.SourceCulture, u.Source, u.TargetCulture, u.Target, u.Origin)); }
                         catch (SqliteException ex) when (ex.SqliteErrorCode != 5 && ex.SqliteErrorCode != 6)   // not BUSY/LOCKED: this unit only
-                        { TryLog("Learning: one unit could not be stored and was skipped: " + ex.Message); }
+                        { counts.Skipped++; TryLog("Learning: one unit could not be stored and was skipped: " + ex.Message); }
                     }
                     FailPoint?.Invoke("store-commit");
                     w.Commit();
                 }
                 FailPoint?.Invoke("inbox-delete");
                 VaultInbox.Delete(InboxPath, lastId, InboxBusySeconds);
-                Interlocked.Add(ref _learned, units.Count);
+                lock (_learnGate) _learned.Add(counts);   // only once committed: a failed batch is retried, not counted twice
+                TryLog("Stored confirmed segments: " + counts + (units.Count > seen.Count ? " (" + units.Count + " received; identical ones counted once)" : "") + ".");
             }
             SyncIndexLocked(null, CancellationToken.None, rebuildIfLarge: false);
         }

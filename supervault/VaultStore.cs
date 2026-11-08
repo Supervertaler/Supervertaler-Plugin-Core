@@ -269,7 +269,8 @@ namespace Supervertaler.Core.SuperVault
                 long? learnedId = Scalar(ref _findLearned, "SELECT unit_id FROM learned WHERE src_key = $p", srcKey);
                 if (learnedId == null)
                 {
-                    if (Add(sourceCulture, src, targetCulture, trg, origin) != VaultAddOutcome.Added) return VaultLearnOutcome.Duplicate;
+                    var added = Add(sourceCulture, src, targetCulture, trg, origin);
+                    if (added != VaultAddOutcome.Added) return added == VaultAddOutcome.Skipped ? VaultLearnOutcome.Skipped : VaultLearnOutcome.Duplicate;
                     Exec2(ref _remember, "INSERT OR REPLACE INTO learned (src_key, unit_id) VALUES ($p, last_insert_rowid())", srcKey);
                     return VaultLearnOutcome.Added;
                 }
