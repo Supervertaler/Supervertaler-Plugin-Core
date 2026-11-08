@@ -85,6 +85,79 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.Eq(100, Best(lib, "Die Pumpe läuft.", "de", "en").score, "found");
         }
 
+        // ---- an empty start is a normal state, not an error ----
+
+        /// <summary>No SuperVault folder at all: nothing found, no error, and the first confirmation creates everything.</summary>
+        public static void EmptyStartNoFolder()
+        {
+            var root = Path.Combine(Scratch.Folder("nofolder"), "supervault");
+            var lib = VaultLibrary.For(root);
+            AssertEmptyButUsable(lib, "no folder");
+            A.True(!Directory.Exists(root), "looking creates nothing");
+            LearnIntoEmpty(lib, "fr-FR", "La pompe démarre.", "de-DE", "Die Pumpe startet.");
+            A.True(File.Exists(lib.StorePath), "the store was created");
+        }
+
+        /// <summary>A store with no units and no index (e.g. what is left after the first write failed half-way).</summary>
+        public static void EmptyStartStoreWithoutIndex()
+        {
+            var lib = VaultLibrary.For(Scratch.Folder("emptystore"));
+            VaultStore.Create(lib.StorePath);
+            AssertEmptyButUsable(lib, "empty store, no index");
+            A.True(lib.Status.Message.Contains("no index yet"), "says the index comes later: " + lib.Status.Message);
+            LearnIntoEmpty(lib, "nl-BE", "De klep sluit.", "en-US", "The valve closes.");
+        }
+
+        /// <summary>An index that holds no units (an empty import): ready, nothing found, learning updates it in place.</summary>
+        public static void EmptyStartIndexWithNoUnits()
+        {
+            var lib = VaultLibrary.For(Scratch.Folder("emptyindex"));
+            var r = lib.Import((store, p, c) => { using (var w = new VaultStore.Writer(store)) { w.Commit(); return w.Result; } }, null, CancellationToken.None);
+            A.Eq(0, r.Added, "nothing imported");
+            lib.Refresh();
+            A.Eq(VaultState.Ready, lib.Status.State, "an empty index is ready");
+            A.Eq(0, lib.Status.Units, "with no units");
+            A.Eq(0, VaultLookup.Search(lib.Current, Doc("De klep sluit."), "nl", "en", 50, 5).Count, "lookup: nothing, no exception");
+            A.Eq(0, VaultLookup.Concordance(lib.Current, "klep", "nl", "en", 50, 5).Count(), "concordance: nothing, no exception");
+            var gen = Gen(lib);
+            LearnIntoEmpty(lib, "fr-FR", "La vanne se ferme.", "de-DE", "Das Ventil schließt.");
+            A.Eq(gen, Gen(lib), "the empty index was updated in place");
+            lib.Build(null, CancellationToken.None);
+            A.Eq(1, lib.Status.Units, "Rebuild index works too");
+        }
+
+        /// <summary>Rebuild index on a store with no units: an empty index, not an error.</summary>
+        public static void EmptyStoreRebuildsToAnEmptyIndex()
+        {
+            var lib = VaultLibrary.For(Scratch.Folder("emptyrebuild"));
+            VaultStore.Create(lib.StorePath);
+            A.Eq(0, lib.Build(null, CancellationToken.None), "built with no units");
+            lib.Refresh();
+            A.Eq(VaultState.Ready, lib.Status.State, "ready");
+        }
+
+        static void AssertEmptyButUsable(VaultLibrary lib, string what)
+        {
+            var s = lib.Status;
+            A.Eq(VaultState.Missing, s.State, what + ": state");
+            A.True(s.Message.Contains("confirm"), what + ": the message mentions learning: " + s.Message);
+            A.True(s.LearnError == null && s.LastBuildError == null, what + ": no error");
+            A.Eq(0L, lib.StoreCount(), what + ": nothing stored");
+            A.True(!lib.IndexOutOfDate(), what + ": not 'out of date'");
+            A.Eq(0, VaultLookup.Search(lib.Current, Doc("De klep sluit."), "nl", "en", 50, 5).Count, what + ": lookup gives nothing");
+        }
+
+        static void LearnIntoEmpty(VaultLibrary lib, string sl, string src, string tl, string trg)
+        {
+            lib.Learn(new[] { U(sl, src, tl, trg) });
+            Settle(lib);
+            A.Eq(VaultState.Ready, lib.Status.State, "ready after the first confirmation");
+            A.Eq(1, lib.Status.Units, "one unit indexed");
+            var b = Best(lib, src, VaultMarkup.BaseLanguage(sl), VaultMarkup.BaseLanguage(tl));
+            A.Eq(100, b.score, "the confirmed unit is found");
+            A.Eq(trg, b.target, "with its translation");
+        }
+
         public static void OncePerLanguagePairWhateverDirectionAndVariant()
         {
             var lib = Built(out _);

@@ -201,7 +201,14 @@ namespace Supervertaler.Core.SuperVault
                         s.Message = idx.Count.ToString("N0", CultureInfo.InvariantCulture) + " units";
                     }
                     else if (_broken != null) { s.State = VaultState.Broken; s.Message = "The SuperVault index could not be opened (" + _broken + "). Rebuild it."; }
-                    else { s.State = VaultState.Missing; s.Message = "SuperVault is empty: import a TMX file or a translation memory."; }
+                    else
+                    {
+                        // Empty is a normal state, not an error: SuperVault fills as you confirm segments.
+                        s.State = VaultState.Missing;
+                        s.Message = File.Exists(StorePath)
+                            ? "SuperVault has no index yet: it is built when you next confirm a segment, or click Rebuild index."
+                            : "SuperVault is empty: it fills as you confirm segments (with its Update box ticked), or import a TMX file or a translation memory.";
+                    }
                 }
                 return s;
             }
