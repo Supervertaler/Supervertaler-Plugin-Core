@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -31,6 +33,18 @@ namespace Supervertaler.Core.SuperVault
     }
 
     /// <summary>What an import did.</summary>
+    /// <summary>One translation memory in Supervertaler Workbench's database, for choosing what to import.</summary>
+    public sealed class WorkbenchTm
+    {
+        public string TmId;        // translation_units.tm_id
+        public string Name;        // translation_memories.name, or the tm_id when Workbench has no name for it
+        public long Units;         // 0 for a TM Workbench lists but holds no units for
+        public List<(string Source, string Target, long Units)> Pairs = new List<(string, string, long)>();   // largest first
+
+        /// <summary>"nl > en, en > nl", largest first; empty for a TM with no units.</summary>
+        public string PairsText => string.Join(", ", Pairs.Select(p => p.Source + " > " + p.Target));
+    }
+
     public sealed class VaultImportResult
     {
         public long Read, Added, Duplicates, Skipped;
@@ -360,14 +374,80 @@ namespace Supervertaler.Core.SuperVault
         /// Imports a Supervertaler Workbench database, if you have one: read-only, never changed. Optional: SuperVault
         /// works without Workbench.
         /// </summary>
-        public static VaultImportResult ImportWorkbench(string store, string workbenchDb, Action<string> progress, CancellationToken cancel, int busyTimeoutSeconds = 30)
+        /// <summary>
+        /// The translation memories in Workbench's database (opened read-only), sorted by name: each with its name, its
+        /// language pairs and its number of units. The counts come from one GROUP BY over translation_units, a single
+        /// pass (about 3 s for 1.55 million units), so run it off the UI thread. Names come from
+        /// translation_memories when Workbench has that table; a TM without a name is shown by its tm_id, and a named
+        /// TM with no units is listed with 0.
+        /// </summary>
+        public static List<WorkbenchTm> ListWorkbenchTms(string workbenchDb, CancellationToken cancel, int busyTimeoutSeconds = 30)
         {
             if (!File.Exists(workbenchDb)) throw new FileNotFoundException("The Workbench database was not found at " + workbenchDb + ".", workbenchDb);
+            var tms = new Dictionary<string, WorkbenchTm>(StringComparer.Ordinal);
+            using (var src = Open(workbenchDb, readOnly: true, busyTimeoutSeconds))
+            using (var cmd = src.CreateCommand())
+            {
+                cmd.CommandText = "SELECT tm_id, source_lang, target_lang, count(*) FROM translation_units GROUP BY tm_id, source_lang, target_lang";
+                using (var r = cmd.ExecuteReader())
+                    while (r.Read())
+                    {
+                        cancel.ThrowIfCancellationRequested();
+                        var id = r.IsDBNull(0) ? "" : r.GetString(0);
+                        if (!tms.TryGetValue(id, out var tm)) tms[id] = tm = new WorkbenchTm { TmId = id, Name = id };
+                        long n = r.GetInt64(3);
+                        tm.Units += n;
+                        tm.Pairs.Add((r.IsDBNull(1) ? "?" : r.GetString(1), r.IsDBNull(2) ? "?" : r.GetString(2), n));
+                    }
+                cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'translation_memories'";
+                if (Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) > 0)
+                {
+                    try
+                    {
+                        cmd.CommandText = "SELECT tm_id, name FROM translation_memories";
+                        using (var r = cmd.ExecuteReader())
+                            while (r.Read())
+                            {
+                                if (r.IsDBNull(0)) continue;
+                                var id = r.GetString(0);
+                                if (!tms.TryGetValue(id, out var tm)) tms[id] = tm = new WorkbenchTm { TmId = id, Name = id };   // named, no units
+                                var name = r.IsDBNull(1) ? null : r.GetString(1)?.Trim();
+                                if (!string.IsNullOrEmpty(name)) tm.Name = name;
+                            }
+                    }
+                    catch (SqliteException) { }   // an older Workbench without these columns: tm_ids it is
+                }
+            }
+            foreach (var tm in tms.Values) tm.Pairs.Sort((a, b) => b.Units.CompareTo(a.Units));
+            return tms.Values.OrderBy(t => t.Name, StringComparer.CurrentCultureIgnoreCase).ThenBy(t => t.TmId, StringComparer.Ordinal).ToList();
+        }
+
+        /// <summary>
+        /// Imports Workbench's units into the store (Workbench's database is only read). <paramref name="tmIds"/> limits
+        /// it to those translation memories; null imports every unit, and an empty choice imports nothing. A tm_id
+        /// Workbench doesn't have matches nothing.
+        /// </summary>
+        public static VaultImportResult ImportWorkbench(string store, string workbenchDb, Action<string> progress, CancellationToken cancel, int busyTimeoutSeconds = 30, ICollection<string> tmIds = null)
+        {
+            if (!File.Exists(workbenchDb)) throw new FileNotFoundException("The Workbench database was not found at " + workbenchDb + ".", workbenchDb);
+            if (tmIds != null && tmIds.Count == 0) return new VaultImportResult();
             using (var w = new Writer(store))
             using (var src = Open(workbenchDb, readOnly: true, busyTimeoutSeconds))
             using (var cmd = src.CreateCommand())
             {
-                cmd.CommandText = "SELECT source_text, target_text, source_lang, target_lang FROM translation_units ORDER BY id";
+                if (tmIds != null)
+                {
+                    // The choice goes into a temporary table of this connection (allowed on a read-only database): no
+                    // limit on how many TMs, and no tm_id ever becomes part of the SQL text.
+                    cmd.CommandText = "CREATE TEMP TABLE chosen (tm_id TEXT PRIMARY KEY)";
+                    cmd.ExecuteNonQuery();
+                    cmd.CommandText = "INSERT OR IGNORE INTO chosen VALUES ($id)";
+                    var p = cmd.Parameters.Add("$id", SqliteType.Text);
+                    foreach (var id in tmIds) { p.Value = id ?? ""; cmd.ExecuteNonQuery(); }
+                    cmd.Parameters.Clear();
+                }
+                cmd.CommandText = "SELECT source_text, target_text, source_lang, target_lang FROM translation_units" +
+                                  (tmIds == null ? "" : " WHERE tm_id IN (SELECT tm_id FROM chosen)") + " ORDER BY id";
                 using (var r = cmd.ExecuteReader())
                     while (r.Read())
                     {

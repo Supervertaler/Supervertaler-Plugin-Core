@@ -639,6 +639,41 @@ namespace Supervertaler.Core.SuperVault
             catch (Exception ex) { TryLog("Could not tidy the change log (harmless, retried later): " + ex.Message); }
         }
 
+        // ---- the choice of Workbench TMs ----
+
+        string WorkbenchChoiceFile => Path.Combine(Root, "workbench-unticked.txt");
+
+        /// <summary>
+        /// The Workbench TMs (tm_ids) the user left unticked at the last Import from Workbench; empty when there is no
+        /// such choice. Unticked, not ticked, is remembered: a TM added to Workbench since then shows up ticked, and the
+        /// list is always shown before anything is imported.
+        /// </summary>
+        public HashSet<string> WorkbenchUnticked()
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            try
+            {
+                var text = File.Exists(WorkbenchChoiceFile) ? AtomicFile.ReadAllText(WorkbenchChoiceFile) : null;
+                if (text != null)
+                    foreach (var line in text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)) set.Add(line);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return set;
+        }
+
+        /// <summary>Remembers the unticked Workbench TMs (see <see cref="WorkbenchUnticked"/>). Best effort: never throws.</summary>
+        public void RememberWorkbenchUnticked(IEnumerable<string> tmIds)
+        {
+            try
+            {
+                var lines = tmIds.Where(t => !string.IsNullOrEmpty(t) && t.IndexOfAny(new[] { '\r', '\n' }) < 0).Distinct(StringComparer.Ordinal);
+                System.IO.Directory.CreateDirectory(Root);
+                AtomicFile.Write(WorkbenchChoiceFile, new UTF8Encoding(false).GetBytes(string.Join("\n", lines)), true, null);
+            }
+            catch (Exception ex) { TryLog("Could not remember the choice of Workbench TMs: " + ex.Message); }
+        }
+
         // ---- learning as you work ----
 
         /// <summary>Where diagnostics go (the CAT tool's log). Never required.</summary>

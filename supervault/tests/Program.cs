@@ -19,6 +19,18 @@ namespace Supervertaler.Core.SuperVault.Tests
             if (filter == "real") return RealScale.Run(args.Skip(1).ToArray());
             if (filter == "child") return LearnTests.Child(args.Skip(1).ToArray());
             if (filter == "learnscale") return LearnScale.Run(args.Skip(1).ToArray());
+            if (filter == "workbenchlist")
+            {
+                // Times the list of Workbench TMs on a real database (read-only). Prints counts only: TM names can be client names.
+                var db = args.Length > 1 ? args[1] : VaultLibrary.WorkbenchDatabase;
+                for (int i = 0; i < 3; i++)
+                {
+                    var sw = Stopwatch.StartNew();
+                    var tms = VaultStore.ListWorkbenchTms(db, System.Threading.CancellationToken.None);
+                    Console.WriteLine($"{(Environment.Is64BitProcess ? "64" : "32")}-bit run {i + 1}: {tms.Count} TMs, {tms.Sum(t => t.Units):N0} units, {tms.Count(t => t.Units == 0)} without units, {tms.Count(t => t.Name == t.TmId)} without a name, {tms.Sum(t => t.Pairs.Count)} TM/pair rows, in {sw.ElapsedMilliseconds} ms");
+                }
+                return 0;
+            }
             VaultLibrary.CleanupDelayMs = 200;
             VaultLibrary.LearnDelayMs = 300;   // the background thread waits a little, so the tests' own LearnOnce usually goes first
             var tests = typeof(Program).Assembly.GetTypes()
