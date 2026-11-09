@@ -217,8 +217,14 @@ namespace Supervertaler.Core.SuperVault.Tests
             var lib = Built(out var db);
             using (new FileStream(Path.Combine(lib.Root, "build.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
             {
-                A.Throws<IOException>(() => lib.Build(null, CancellationToken.None), "build while another holds the lock");
-                A.Throws<IOException>(() => lib.Import(Workbench(db), null, CancellationToken.None), "import while another holds the lock");
+                int wait = VaultLibrary.LockWaitMs;
+                VaultLibrary.LockWaitMs = 300;   // they wait a little for the lock first (a moment's tidy-up holds it), then give up
+                try
+                {
+                    A.Throws<IOException>(() => lib.Build(null, CancellationToken.None), "build while another holds the lock");
+                    A.Throws<IOException>(() => lib.Import(Workbench(db), null, CancellationToken.None), "import while another holds the lock");
+                }
+                finally { VaultLibrary.LockWaitMs = wait; }
             }
         }
 
@@ -251,7 +257,7 @@ namespace Supervertaler.Core.SuperVault.Tests
                 lookups++;
             }
             A.Eq(null, error, "import result");
-            A.True(lib.LastJobResult.StartsWith("20,000 units added"), "summary: " + lib.LastJobResult);
+            A.True(lib.LastJobResult.StartsWith("20,000 translation units read: 20,000 new"), "summary: " + lib.LastJobResult);
             Thread.Sleep(2100);   // the pointer is re-read every 2 s
             A.Eq(20006, lib.Status.Units, "new index in use after " + lookups + " lookups during the import");
             A.Eq(100, VaultLookup.Search(lib.Current, Doc("Zin nummer 12345 over de pomp."), "nl", "en", 70, 5)[0].Score, "new unit found");
@@ -323,6 +329,20 @@ namespace Supervertaler.Core.SuperVault.Tests
                 Thread.Sleep(100);
             }
             throw new AssertFailed("the index was not rebuilt in the new format: " + lib.LastJobResult);
+        }
+
+        /// <summary>An import while the lock is held only for a moment (the tidy-up after a rebuild, storing confirmations) waits and goes ahead.</summary>
+        public static void AnImportWaitsForAMomentaryLock()
+        {
+            var lib = Built(out var db);
+            var held = new FileStream(Path.Combine(lib.Root, "build.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            var release = new Thread(() => { Thread.Sleep(1000); held.Dispose(); });
+            release.Start();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var r = lib.Import(Workbench(db), null, CancellationToken.None);
+            release.Join();
+            A.True(sw.ElapsedMilliseconds >= 900, "it waited for the lock (" + sw.ElapsedMilliseconds + " ms)");
+            A.Eq(0L, r.Added, "and then imported: " + r);
         }
 
         static void CopyDir(string from, string to)

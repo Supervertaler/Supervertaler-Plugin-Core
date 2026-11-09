@@ -302,7 +302,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.True(lib.StartExport(tmx, null, null, e => { error = e; done.Set(); }), "started");
             A.True(done.Wait(20000), "finished");
             A.Eq(null, error, "no error");
-            A.True(lib.LastJobResult.Contains(Mixed.Length + " units exported"), "result: " + lib.LastJobResult);
+            A.True(lib.LastJobResult.Contains(Mixed.Length + " translation units exported"), "result: " + lib.LastJobResult);
             // Lookups never touched the store; they carried on.
             A.True(lib.Lookup(LibraryTests.Doc("De pomp wordt gestart."), "nl", "en", 70, 5).Any(m => m.Score == 100), "lookups unaffected");
         }
@@ -335,7 +335,7 @@ namespace Supervertaler.Core.SuperVault.Tests
                 A.Eq(null, VaultLibrary.TooLargeFor32Bit(10), "at the limit: fine");
                 var m = VaultLibrary.TooLargeFor32Bit(11);
                 A.True(m != null && m.Contains("Studio 2026") && m.Contains("Nothing was changed"), "past it: refused, naming the way out: " + m);
-                A.True(VaultLibrary.TooLargeFor32Bit(11, importing: true).Contains("This import would take EverTM past 10 units"), "import wording");
+                A.True(VaultLibrary.TooLargeFor32Bit(11, importing: true).Contains("This import would take EverTM past 10 translation units"), "import wording");
             });
             VaultLibrary.Is32BitForTests = false;
             try { A.Eq(null, VaultLibrary.TooLargeFor32Bit(long.MaxValue), "64-bit: never refused"); }
@@ -364,7 +364,7 @@ namespace Supervertaler.Core.SuperVault.Tests
                 // ...but a rebuild of that is refused, leaving the index in use as it was.
                 var name = lib.Current.Folder;
                 var bex = Assert<VaultTooLargeException>(() => lib.Build(null, CancellationToken.None));
-                A.True(bex.Message.StartsWith("EverTM holds 11 units, more than it has been tested with in Studio 2024 (10 units)") && bex.Message.Contains("rebuild in Studio 2026"), "rebuild message: " + bex.Message);
+                A.True(bex.Message.StartsWith("EverTM holds 11 translation units, more than it has been tested with in Studio 2024 (10 translation units)") && bex.Message.Contains("rebuild in Studio 2026"), "rebuild message: " + bex.Message);
                 lib.Refresh();
                 A.Eq(name, lib.Current.Folder, "the index in use is untouched");
                 A.Eq(1, Directory.GetDirectories(lib.Root, "gen-*").Length, "no half-built generation left");

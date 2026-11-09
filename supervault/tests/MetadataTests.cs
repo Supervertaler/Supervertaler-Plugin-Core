@@ -304,7 +304,7 @@ namespace Supervertaler.Core.SuperVault.Tests
 
         // ---- Workbench, schema upgrade, export ----
 
-        /// <summary>CAT tools show the progress text as it is, as its own label ("Indexing: 10,000 of 20,000 units"): each starts with a capital.</summary>
+        /// <summary>CAT tools show the progress text as it is, as its own label ("Indexing: 10,000 of 20,000 translation units"): each starts with a capital.</summary>
         public static void ProgressTextsStartWithACapital()
         {
             var lib = Lib();
@@ -316,6 +316,19 @@ namespace Supervertaler.Core.SuperVault.Tests
             VaultExport.Export(lib.StorePath, tmx, null, null, p => seen.Add(p), CancellationToken.None);
             A.True(seen.Any(p => p.StartsWith("Importing acme.tmx: ")) && seen.Any(p => p.StartsWith("Indexing: ")) && seen.Any(p => p.StartsWith("Exporting: ")), "the kinds seen: " + string.Join(" / ", seen.Distinct().Take(8)));
             A.True(seen.All(p => p.Length > 0 && char.IsUpper(p[0])), "all capitalised: " + string.Join(" / ", seen.Where(p => p.Length == 0 || !char.IsUpper(p[0])).Distinct()));
+        }
+
+        /// <summary>The import summary counts translation units READ first, so "already in EverTM" can't look like more than EverTM holds.</summary>
+        public static void TheImportSummaryStartsWithWhatWasRead()
+        {
+            string S(long read, long added, long dup, long skipped, long enriched = 0, long split = 0) =>
+                new VaultImportResult { Read = read, Added = added, Duplicates = dup, Skipped = skipped, Enriched = enriched, NamesSplit = split }.ToString();
+            A.Eq("1,553,018 translation units read: 0 new, all others already in EverTM (1,547,951 of them brought metadata or dates); 7 TM names split into Client and End client",
+                 S(1553018, 0, 1553018, 0, 1547951, 7), "nothing new, nothing skipped: \"all others\"");
+            A.Eq("1,554,005 translation units read: 0 new, 1,553,018 already in EverTM (1,547,951 of them brought metadata or dates); 987 skipped (no text, one language, or junk); 7 TM names split into Client and End client",
+                 S(1554005, 0, 1553018, 987, 1547951, 7), "with skipped ones, the count (\"all others\" would include them)");
+            A.Eq("1 translation unit read: 1 new, 0 already in EverTM", S(1, 1, 0, 0), "singular; empty parts left out");
+            A.Eq("3 translation units read: 2 new, 1 already in EverTM; 1 TM name split into Client and End client", S(3, 2, 1, 0, 0, 1), "one name");
         }
 
         public static void TheWindowCountsProjectsClientsAndSubjects()

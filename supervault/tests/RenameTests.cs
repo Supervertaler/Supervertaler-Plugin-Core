@@ -47,9 +47,12 @@ namespace Supervertaler.Core.SuperVault.Tests
 
         static List<string> Logged(Action a)
         {
+            // Only this thread's lines: everything tested here logs on the calling thread, and another test's
+            // background thread (learning, a rebuild) can log at any moment, which made these counts flaky.
             var lines = new List<string>();
             var was = VaultLibrary.Log;
-            VaultLibrary.Log = m => { lock (lines) lines.Add(m); };
+            int me = Thread.CurrentThread.ManagedThreadId;
+            VaultLibrary.Log = m => { if (Thread.CurrentThread.ManagedThreadId == me) lock (lines) lines.Add(m); else was?.Invoke(m); };
             try { a(); } finally { VaultLibrary.Log = was; }
             return lines;
         }

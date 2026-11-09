@@ -183,7 +183,7 @@ namespace Supervertaler.Core.SuperVault
                                 if ((units & 1023) == 0)
                                 {
                                     cancel.ThrowIfCancellationRequested();
-                                    if (units % 50000 == 0) progress?.Invoke("Exporting: " + units.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
+                                    if (units % 50000 == 0) progress?.Invoke("Exporting: " + units.ToString("N0", CultureInfo.InvariantCulture) + " of " + VaultLibrary.Units(total, CultureInfo.InvariantCulture));
                                 }
                                 var unit = new VaultExportUnit
                                 {

@@ -258,7 +258,7 @@ namespace Supervertaler.Core.SuperVault.Tests
         public static void UnitWordingIsSingularForOne()
         {
             var c = System.Globalization.CultureInfo.InvariantCulture;
-            A.Eq("1 unit|0 units|2 units|1,234 units", string.Join("|", new long[] { 1, 0, 2, 1234 }.Select(n => VaultLibrary.Units(n, c))), "wording");
+            A.Eq("1 translation unit|0 translation units|2 translation units|1,234 translation units", string.Join("|", new long[] { 1, 0, 2, 1234 }.Select(n => VaultLibrary.Units(n, c))), "wording");
         }
 
         // ---- counting: one confirmation counts once, and says what it did ----

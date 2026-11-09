@@ -67,7 +67,7 @@ namespace Supervertaler.Core.SuperVault
                     if (ours && !oursV1) added = tu.Added;
                     var info = Info(tu, ours ? null : headerDate, ours ? null : fileName, oursV1);   // our export's header date is when it was exported: never a unit's date
                     if ((++tus & 255) == 0) cancel.ThrowIfCancellationRequested();
-                    if (tus % 20000 == 0) progress?.Invoke("Importing " + Path.GetFileName(tmxPath) + ": " + tus.ToString("N0", CultureInfo.InvariantCulture) + " TUs read");
+                    if (tus % 20000 == 0) progress?.Invoke("Importing " + Path.GetFileName(tmxPath) + ": " + VaultLibrary.Units(tus, CultureInfo.InvariantCulture) + " read");
                     var unitOrigin = ours ? tu.Origin : origin;   // our own file: the origin as stored, none included
                     var tuvs = tu.Tuvs;
                     // Every pair of languages in the TU. With a source language (the TU's own, else the header's), it comes first in each pair.

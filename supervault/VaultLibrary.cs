@@ -23,7 +23,7 @@ namespace Supervertaler.Core.SuperVault
         public DateTime? BuiltAt;          // UTC
         public string Message;             // for Broken: what went wrong; otherwise a one-line summary
         public bool Building;              // a build is running in this process
-        public string BuildProgress;       // "412,000 of 1,554,005 units" while building
+        public string BuildProgress;       // "Indexing: 412,000 of 1,554,005 translation units" while building
         public string LastBuildError;      // the last build's failure in this process, if it failed
         public VaultLearnCounts Learned = new VaultLearnCounts();   // what storing this process's confirmed segments did
         public string LearnError;          // why storing confirmed segments last failed (they are kept and retried)
@@ -369,9 +369,10 @@ namespace Supervertaler.Core.SuperVault
             }
         }
 
-        /// <summary>"1 unit", "0 units", "1,234 units".</summary>
+        /// <summary>"1 translation unit", "0 translation units", "1,234 translation units". Michael: "translation units"
+        /// is sure not to be misunderstood, so every count a user sees says it in full (not "units", not "TUs").</summary>
         public static string Units(long n, IFormatProvider culture = null) =>
-            n.ToString("N0", culture ?? CultureInfo.CurrentCulture) + (n == 1 ? " unit" : " units");
+            n.ToString("N0", culture ?? CultureInfo.CurrentCulture) + (n == 1 ? " translation unit" : " translation units");
 
         static DateTime? ReadBuiltAt(string folder)
         {
@@ -525,7 +526,7 @@ namespace Supervertaler.Core.SuperVault
 
         /// <summary>Starts <see cref="Build"/> on a background thread. False if a job is already running in this process.</summary>
         public bool StartBuild(Action<string> done = null) =>
-            StartJob("build", cancel => Build(p => _progress = p, cancel).ToString("N0", CultureInfo.InvariantCulture) + " units indexed", done);
+            StartJob("build", cancel => Units(Build(p => _progress = p, cancel)) + " indexed", done);
 
         /// <summary>
         /// Starts <see cref="VaultExport.Export"/> on a background thread (the same one-job-at-a-time slot as imports and
@@ -576,9 +577,18 @@ namespace Supervertaler.Core.SuperVault
 
         public void CancelBuild() { lock (_gate) _buildCancel?.Cancel(); }
 
+        /// <summary>
+        /// The build lock for an import or rebuild, waiting up to <see cref="LockWaitMs"/> for it. Without the wait, an
+        /// import refused when the lock was held for a moment only: after a rebuild, the old index is deleted under the
+        /// lock (<see cref="ScheduleCleanup"/>), and confirmed segments are stored under it. Those take seconds at most;
+        /// another Studio's import or rebuild takes minutes, so that still gets the message. Holds nothing while waiting,
+        /// so the locking scheme's rule 3 (no waiting while holding anything) is kept.
+        /// </summary>
         IDisposable TakeLock()
         {
+            var sw = Stopwatch.StartNew();
             var l = TryTakeLock();
+            while (l == null && sw.ElapsedMilliseconds < LockWaitMs) { Thread.Sleep(100); l = TryTakeLock(); }
             if (l == null) throw new IOException("Another program (a second Trados Studio, or memoQ) is importing into EverTM, building its index or storing confirmed segments right now. Try again when it has finished.");
             return l;
         }
@@ -644,7 +654,7 @@ namespace Supervertaler.Core.SuperVault
                             while (r.Read())
                             {
                                 if ((++read & 1023) == 0) cancel.ThrowIfCancellationRequested();
-                                if ((read % 10000) == 0) progress?.Invoke("Indexing: " + read.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
+                                if ((read % 10000) == 0) progress?.Invoke("Indexing: " + read.ToString("N0", CultureInfo.InvariantCulture) + " of " + Units(total, CultureInfo.InvariantCulture));
                                 string a = r.GetString(1), ta = r.GetString(2), b = r.GetString(3), tb = r.GetString(4);
                                 w.AddDocument(VaultIndex.MakeDocument(r.GetInt64(0).ToString(CultureInfo.InvariantCulture), a, ta, VaultMarkup.Plain(ta), b, tb, VaultMarkup.Plain(tb), r.IsDBNull(5) ? "" : r.GetString(5), VaultStore.ReadIndexMeta(r, 6)));
                                 added++;
@@ -659,7 +669,7 @@ namespace Supervertaler.Core.SuperVault
 
                 // Verify before switching: a generation that can't be opened never becomes current.
                 using (var check = VaultIndex.Open(genFolder))
-                    if (check.Count != added) throw new InvalidDataException($"The new index holds {check.Count} units, expected {added}.");
+                    if (check.Count != added) throw new InvalidDataException($"The new index holds {Units(check.Count, CultureInfo.InvariantCulture)}, expected {added:N0}.");
 
                 var info = new StringBuilder();
                 info.AppendLine("format=" + VaultIndex.Format);
@@ -703,6 +713,8 @@ namespace Supervertaler.Core.SuperVault
         }
 
         internal static int CleanupDelayMs = 30000;
+
+        internal static int LockWaitMs = 10000;   // settable for tests
 
         /// <summary>Deletes every generation but <paramref name="keep"/>. Call only while holding the build lock.</summary>
         void DeleteOldGenerations(string keep, bool noneIsCurrent = false)
@@ -840,7 +852,7 @@ namespace Supervertaler.Core.SuperVault
                             from = last;
                             p.Value = from;
                             cancel.ThrowIfCancellationRequested();
-                            progress?.Invoke("Updating the index: " + applied.ToString("N0", CultureInfo.InvariantCulture) + " units");
+                            progress?.Invoke("Updating the index: " + Units(applied, CultureInfo.InvariantCulture));
                         }
                     }
                     if (applied > 0)

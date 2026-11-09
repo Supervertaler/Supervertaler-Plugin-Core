@@ -93,12 +93,21 @@ namespace Supervertaler.Core.SuperVault
         public long Enriched;
         /// <summary>Workbench only: TM names split into Client and End client (<see cref="VaultFields.SplitClientName"/>).</summary>
         public long NamesSplit;
+        /// <summary>
+        /// "1,554,005 translation units read: 0 new, 1,553,018 already in EverTM (1,547,951 of them brought metadata or
+        /// dates); 987 skipped (no text, one language, or junk); 7 TM names split into Client and End client".
+        /// Every count is of units READ, which is why it starts with that number: a unit found in two TMs is read twice,
+        /// so "already in EverTM" can be more than EverTM holds. "All others" stands for the already-there count when
+        /// nothing was new and nothing skipped. The parts for metadata, skipped and split names are left out when zero.
+        /// </summary>
         public override string ToString()
         {
-            var s = $"{Added:N0} {(Added == 1 ? "unit" : "units")} added, {Duplicates:N0} already in EverTM";
-            if (Enriched > 0) s += $" ({Enriched:N0} of them brought metadata or dates)";
-            s += $", {Skipped:N0} skipped (no text, one language, or junk)";
-            if (NamesSplit > 0) s += $"; {NamesSplit:N0} TM {(NamesSplit == 1 ? "name" : "names")} split into Client and End client";
+            var f = CultureInfo.CurrentCulture;
+            var s = VaultLibrary.Units(Read, f) + " read: " + Added.ToString("N0", f) + " new, ";
+            s += Added == 0 && Skipped == 0 && Duplicates > 0 ? "all others already in EverTM" : Duplicates.ToString("N0", f) + " already in EverTM";
+            if (Enriched > 0) s += " (" + Enriched.ToString("N0", f) + " of them brought metadata or dates)";
+            if (Skipped > 0) s += "; " + Skipped.ToString("N0", f) + " skipped (no text, one language, or junk)";
+            if (NamesSplit > 0) s += "; " + NamesSplit.ToString("N0", f) + " TM " + (NamesSplit == 1 ? "name" : "names") + " split into Client and End client";
             return s;
         }
     }
@@ -799,7 +808,7 @@ namespace Supervertaler.Core.SuperVault
                     while (r.Read())
                     {
                         if ((w.Result.Read & 1023) == 0) cancel.ThrowIfCancellationRequested();
-                        if (w.Result.Read % 20000 == 0) progress?.Invoke("Importing from Workbench: " + w.Result.Read.ToString("N0", CultureInfo.InvariantCulture) + " units read");
+                        if (w.Result.Read % 20000 == 0) progress?.Invoke("Importing from Workbench: " + VaultLibrary.Units(w.Result.Read, CultureInfo.InvariantCulture) + " read");
                         var tm = r.IsDBNull(4) ? "" : r.GetString(4);
                         if (!infos.TryGetValue(tm, out var info))
                         {
