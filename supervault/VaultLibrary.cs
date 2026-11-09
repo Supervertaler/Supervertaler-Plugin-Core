@@ -319,7 +319,12 @@ namespace Supervertaler.Core.SuperVault
             using (TakeLock())
             {
                 VaultStore.Create(StorePath);   // upgrade an older store first, so the import's units are logged as changes
-                var result = importer(StorePath, progress, cancel);
+                VaultImportResult result;
+                // In a 32-bit process, an import that would take SuperVault past the size it can index safely stops
+                // as soon as it gets there, and its transaction is rolled back: nothing is added (VaultStore.Writer).
+                VaultStore.ImportLimit = Is32Bit ? Max32BitUnits : 0;
+                try { result = importer(StorePath, progress, cancel); }
+                finally { VaultStore.ImportLimit = 0; }
                 if (result.Added > 0 || Current == null) SyncIndexLocked(progress, cancel, rebuildIfLarge: true);
                 FlushWhileLocked();
                 return result;
@@ -359,6 +364,14 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>Starts <see cref="Build"/> on a background thread. False if a job is already running in this process.</summary>
         public bool StartBuild(Action<string> done = null) =>
             StartJob("build", cancel => Build(p => _progress = p, cancel).ToString("N0", CultureInfo.InvariantCulture) + " units indexed", done);
+
+        /// <summary>
+        /// Starts <see cref="VaultExport.Export"/> on a background thread (the same one-job-at-a-time slot as imports and
+        /// builds, so Stop and the progress line work alike). Takes no lock: it reads a snapshot of the store, so
+        /// lookups, learning and imports in other Studios carry on meanwhile. False if a job is already running here.
+        /// </summary>
+        public bool StartExport(string tmxPath, string pair, ICollection<string> origins, Action<string> done = null) =>
+            StartJob("export", cancel => VaultExport.Export(StorePath, tmxPath, pair, origins, p => _progress = p, cancel).ToString(), done);
 
         /// <summary>The last background job's outcome in this process: its summary, or the error.</summary>
         public string LastJobResult { get { lock (_gate) return _lastResult; } }
@@ -453,6 +466,8 @@ namespace Supervertaler.Core.SuperVault
                         long.TryParse(Convert.ToString(q.ExecuteScalar(), CultureInfo.InvariantCulture), out version);
                     }
                     lastChange = VaultStore.LastChange(conn, tx);
+                    var tooLarge = TooLargeFor32Bit(total);
+                    if (tooLarge != null) throw new VaultTooLargeException(tooLarge);
                     using (var dir = FSDirectory.Open(genFolder))
                     using (var w = new IndexWriter(dir, new IndexWriterConfig(VaultIndex.V, new VaultIndex.NoAnalyzer()) { OpenMode = OpenMode.CREATE, RAMBufferSizeMB = 48 }))
                     using (var cmd = conn.CreateCommand())
@@ -543,6 +558,42 @@ namespace Supervertaler.Core.SuperVault
             try { System.IO.Directory.Delete(folder, true); }
             catch (IOException) { }                    // open in another process: next build tries again
             catch (UnauthorizedAccessException) { }
+        }
+
+        // ---- the size limit in a 32-bit process (Studio 2024) ----
+
+        /// <summary>
+        /// The most units a 32-bit process (Studio 2024) may import into SuperVault or build an index for: the largest size
+        /// measured. Measured 9 Nov 2026 in a 32-bit process, on copies of the real store padded to size:
+        ///   full build   1M: 279 s, peak 109 MB private / 280 MB address space; 5M: 1,411 s, 118 / 293 MB;
+        ///                10M: 2,650 s, 122 / 309 MB (index 2.3 GB).
+        ///   lookups      a few tens of MB at any size.
+        /// Memory hardly grows with size: in a 32-bit process Lucene reads the index with SimpleFSDirectory (no memory
+        /// mapping), so even a 2+ GB index takes no address space, and building is bounded by the 48 MB buffer and
+        /// streaming merges. The limit is where the measurements stop, not where trouble was seen. Confirmed segments
+        /// are never refused: the index is updated a piece at a time, with merges capped at 512 MB segments.
+        /// </summary>
+        public static long Max32BitUnits { get; internal set; } = 10000000;   // settable for tests only
+
+        /// <summary>Tests only: decide as a 32-bit (true) or 64-bit (false) process would; null for this process.</summary>
+        internal static bool? Is32BitForTests;
+        internal static bool Is32Bit => Is32BitForTests ?? !Environment.Is64BitProcess;
+
+        /// <summary>
+        /// Null when a SuperVault of <paramref name="units"/> units is safe to index here; otherwise the message that says
+        /// why not and what to do instead. Always null in a 64-bit process. <paramref name="importing"/>: the message is
+        /// for an import that was stopped on the way (its final size is unknown), not for a rebuild.
+        /// </summary>
+        public static string TooLargeFor32Bit(long units, bool importing = false)
+        {
+            if (!Is32Bit || units <= Max32BitUnits) return null;
+            var f = CultureInfo.CurrentCulture;
+            return (importing
+                       ? "This import would take SuperVault past " + Units(Max32BitUnits, f) + ", the most it has been tested with in Studio 2024. "
+                       : "SuperVault holds " + Units(units, f) + ", more than it has been tested with in Studio 2024 (" + Units(Max32BitUnits, f) + "). ") +
+                   "Studio 2024 is a 32-bit program, with far less memory to work with than Studio 2026. " +
+                   "Do this " + (importing ? "import" : "rebuild") + " in Studio 2026 (64-bit) instead; Studio 2024 can still look things up in the result " +
+                   "and learn from the segments you confirm. Nothing was changed.";
         }
 
         // ---- the index a piece at a time ----

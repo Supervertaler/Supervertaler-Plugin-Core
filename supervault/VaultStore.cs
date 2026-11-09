@@ -45,6 +45,12 @@ namespace Supervertaler.Core.SuperVault
         public string PairsText => string.Join(", ", Pairs.Select(p => p.Source + " > " + p.Target));
     }
 
+    /// <summary>An import or rebuild refused because SuperVault would be too large for this (32-bit) process. Nothing was changed.</summary>
+    public sealed class VaultTooLargeException : InvalidOperationException
+    {
+        public VaultTooLargeException(string message) : base(message) { }
+    }
+
     public sealed class VaultImportResult
     {
         public long Read, Added, Duplicates, Skipped;
@@ -79,6 +85,14 @@ namespace Supervertaler.Core.SuperVault
     public static class VaultStore
     {
         public const int Schema = 2;
+
+        /// <summary>
+        /// Set by <see cref="VaultLibrary.Import"/> for the length of one import, on its thread: the most units the store
+        /// may hold after it (0: no limit). A <see cref="Writer"/> created meanwhile throws <see cref="VaultTooLargeException"/>
+        /// as soon as its additions would pass it, so the import's transaction is rolled back. Only imports: confirmed
+        /// segments are always stored.
+        /// </summary>
+        [ThreadStatic] internal static long ImportLimit;
 
         /// <summary>Creates the store if it doesn't exist yet. Safe to call while other processes have it open.</summary>
         public static void Create(string path, int busyTimeoutSeconds = 30)
@@ -230,6 +244,7 @@ namespace Supervertaler.Core.SuperVault
             readonly SqliteParameter _la, _ta, _lb, _tb, _key, _variant, _origin, _added;
             public VaultImportResult Result { get; } = new VaultImportResult();
             bool _done, _changed;
+            readonly string _now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
             SqliteCommand _findLearned, _findKey, _update, _delete, _forget, _remember;
 
             public Writer(string path, int busyTimeoutSeconds = 30)
@@ -244,12 +259,23 @@ namespace Supervertaler.Core.SuperVault
                 _lb = _insert.Parameters.Add("$lb", SqliteType.Text); _tb = _insert.Parameters.Add("$tb", SqliteType.Text);
                 _key = _insert.Parameters.Add("$key", SqliteType.Text); _variant = _insert.Parameters.Add("$v", SqliteType.Text);
                 _origin = _insert.Parameters.Add("$o", SqliteType.Text); _added = _insert.Parameters.Add("$d", SqliteType.Text);
-                _added.Value = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                _added.Value = _now;
                 _insert.Prepare();
+                _limit = ImportLimit;
+                if (_limit > 0)
+                    using (var cmd = _c.CreateCommand())
+                    {
+                        cmd.Transaction = _tx;
+                        cmd.CommandText = "SELECT count(*) FROM units";
+                        _start = Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+                    }
             }
 
+            readonly long _limit, _start;
+
             /// <summary>Adds one unit, given in whatever direction and variants it came in.</summary>
-            public VaultAddOutcome Add(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin)
+            /// <param name="added">When the unit was first added (ISO 8601, UTC), for a unit coming back from SuperVault's own export; null for now.</param>
+            public VaultAddOutcome Add(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin, string added = null)
             {
                 Result.Read++;
                 string a = VaultMarkup.BaseLanguage(sourceCulture), b = VaultMarkup.BaseLanguage(targetCulture);
@@ -261,7 +287,14 @@ namespace Supervertaler.Core.SuperVault
                 _key.Value = Key(a, sourceRaw, b, targetRaw);
                 _variant.Value = (sourceCulture ?? "") + ">" + (targetCulture ?? "");
                 _origin.Value = (object)origin ?? DBNull.Value;
-                if (_insert.ExecuteNonQuery() == 1) { Result.Added++; _changed = true; return VaultAddOutcome.Added; }
+                _added.Value = added ?? _now;
+                if (_insert.ExecuteNonQuery() == 1)
+                {
+                    Result.Added++; _changed = true;
+                    if (_limit > 0 && _start + Result.Added > _limit)
+                        throw new VaultTooLargeException(VaultLibrary.TooLargeFor32Bit(_start + Result.Added, importing: true) ?? "SuperVault would be too large.");
+                    return VaultAddOutcome.Added;
+                }
                 Result.Duplicates++;
                 return VaultAddOutcome.Duplicate;
             }
@@ -315,7 +348,7 @@ namespace Supervertaler.Core.SuperVault
                 _update.Parameters.AddWithValue("$key", key);
                 _update.Parameters.AddWithValue("$v", (sourceCulture ?? "") + ">" + (targetCulture ?? ""));
                 _update.Parameters.AddWithValue("$o", (object)origin ?? DBNull.Value);
-                _update.Parameters.AddWithValue("$d", _added.Value);
+                _update.Parameters.AddWithValue("$d", _now);
                 _update.Parameters.AddWithValue("$id", learnedId.Value);
                 if (_update.ExecuteNonQuery() == 1) { Result.Read++; Result.Added++; _changed = true; return VaultLearnOutcome.Updated; }
                 // The learned unit is gone (removed by hand, say): forget it and learn this one afresh.
