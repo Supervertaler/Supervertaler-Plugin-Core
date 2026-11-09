@@ -20,6 +20,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             if (filter == "child") return LearnTests.Child(args.Skip(1).ToArray());
             if (filter == "learnscale") return LearnScale.Run(args.Skip(1).ToArray());
             if (filter == "limits") return Limits.Run(args.Skip(1).ToArray());
+            if (filter == "metascale") return MetaScale.Run(args.Skip(1).ToArray());
             if (filter == "workbenchlist")
             {
                 // Times the list of Workbench TMs on a real database (read-only). Prints counts only: TM names can be client names.

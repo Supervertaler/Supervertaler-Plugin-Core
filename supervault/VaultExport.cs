@@ -47,7 +47,11 @@ namespace Supervertaler.Core.SuperVault
     ///  - each unit in the direction and language variants it was first stored with (column <c>variant</c>, e.g.
     ///    "nl-BE>en-US"), source first; the TU's own <c>srclang</c> says which, since the header can only say
     ///    <c>*all*</c> for a memory that holds both directions;
-    ///  - <c>creationdate</c> from <c>added</c>; a <c>&lt;prop type="x-SuperVault-Origin"&gt;</c> with where it came from;
+    ///  - its own dates and users (<c>creationdate</c>/<c>creationid</c>, <c>changedate</c>/<c>changeid</c>), left out
+    ///    when EverTM doesn't know them; its fields as props named as EverTM names them ("Project", "End client"), its
+    ///    notes as &lt;note&gt;; <c>x-EverTM-Origin</c> (where it came from) and <c>x-EverTM-Added</c> (when it entered
+    ///    EverTM), which only EverTM reads back. Version 1 of this export (creationtoolversion="1") wrote the added date
+    ///    as the creationdate; <see cref="VaultTmx"/> still reads such files as before;
     ///  - tags as TMX inline elements: a pair as &lt;bpt&gt;/&lt;ept&gt;, a standalone as &lt;ph&gt;, an opening or closing
     ///    tag whose partner isn't in the segment as &lt;it&gt;. The same tag in source and target gets the same <c>x</c>.
     ///    The code exactly as SuperVault stores it (<c>&lt;g id="1"&gt;</c>, <c>&lt;b&gt;</c>, memoQ's <c>[1}</c>) is the
@@ -77,6 +81,13 @@ namespace Supervertaler.Core.SuperVault
         /// in Studio the origin is not kept; in SuperVault and in tools that read props it is.
         /// </summary>
         public const string OriginProp = "x-EverTM-Origin";
+        /// <summary>The prop with the date a unit entered EverTM (column added), a TMX date.</summary>
+        public const string AddedProp = "x-EverTM-Added";
+        /// <summary>2: dates are the unit's own, metadata included. 1 (before schema 3): creationdate was the added date.</summary>
+        public const string ToolVersion = "2";
+
+        internal static bool IsAddedProp(string type) =>
+            type == AddedProp || (type != null && type.StartsWith(AddedProp + ":", StringComparison.Ordinal));
 
         internal static bool IsOriginProp(string type) =>
             type == "x-EverTM-Origin" || (type != null && type.StartsWith("x-EverTM-Origin:", StringComparison.Ordinal));
@@ -147,7 +158,10 @@ namespace Supervertaler.Core.SuperVault
                     var filter = where.Count == 0 ? "" : " WHERE " + string.Join(" AND ", where);
                     cmd.CommandText = "SELECT count(*) FROM units" + filter;
                     long total = Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
-                    cmd.CommandText = "SELECT lang_a, text_a, lang_b, text_b, variant, origin, added FROM units" + filter + " ORDER BY id";
+                    cmd.CommandText = "SELECT lang_a, text_a, lang_b, text_b, variant, origin, added, created, changed, " +
+                                      "(SELECT value FROM vals WHERE id = u.created_by), (SELECT value FROM vals WHERE id = u.changed_by), " +
+                                      "(SELECT group_concat(v.field || char(9) || v.value, char(10)) FROM unit_vals uv JOIN vals v ON v.id = uv.val_id WHERE uv.unit_id = u.id) " +
+                                      "FROM units u" + filter + " ORDER BY id";
 
                     var settings = new XmlWriterSettings
                     {
@@ -175,9 +189,17 @@ namespace Supervertaler.Core.SuperVault
                                 {
                                     LangA = r.GetString(0), TextA = r.GetString(1), LangB = r.GetString(2), TextB = r.GetString(3),
                                     Variant = r.IsDBNull(4) ? null : r.GetString(4),
-                                    Created = r.IsDBNull(6) ? null : r.GetString(6),
+                                    Created = r.IsDBNull(7) ? null : Iso(r.GetInt64(7)),
+                                    Changed = r.IsDBNull(8) ? null : Iso(r.GetInt64(8)),
+                                    CreatedBy = r.IsDBNull(9) ? null : r.GetString(9),
+                                    ChangedBy = r.IsDBNull(10) ? null : r.GetString(10),
                                 };
+                                if (!r.IsDBNull(11))
+                                    foreach (var (field, value) in VaultFields.Unpack(Sorted(r.GetString(11))))
+                                        if (field == VaultFields.Note) unit.Notes.Add(value); else unit.Props.Add((field, value));
                                 if (!r.IsDBNull(5)) unit.Props.Add((OriginProp, r.GetString(5)));
+                                if (!r.IsDBNull(6) && DateTime.TryParse(r.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var added))
+                                    unit.Props.Add((AddedProp, TmxDate(added)));
                                 WriteTu(w, unit, xs);
                                 units++;
                             }
@@ -219,7 +241,7 @@ namespace Supervertaler.Core.SuperVault
             w.WriteWhitespace("\n");
             w.WriteStartElement("header");
             w.WriteAttributeString("creationtool", CreationTool);
-            w.WriteAttributeString("creationtoolversion", "1");
+            w.WriteAttributeString("creationtoolversion", ToolVersion);
             w.WriteAttributeString("segtype", "sentence");
             w.WriteAttributeString("o-tmf", "EverTM");
             w.WriteAttributeString("adminlang", "en-US");
@@ -240,8 +262,10 @@ namespace Supervertaler.Core.SuperVault
         {
             public string LangA, TextA, LangB, TextB, Variant;
             public string Created;   // ISO 8601 UTC (column added); null: no creationdate is written
-            public string Changed;   // ISO 8601 UTC; null: no changedate (the store has no such column yet)
+            public string Changed;   // ISO 8601 UTC; null: no changedate
+            public string CreatedBy, ChangedBy;
             public readonly List<(string Type, string Value)> Props = new List<(string, string)>();
+            public readonly List<string> Notes = new List<string>();
         }
 
         static void WriteDate(XmlWriter w, string attribute, string iso)
@@ -258,13 +282,22 @@ namespace Supervertaler.Core.SuperVault
             w.WriteStartElement("tu");
             w.WriteAttributeString("srclang", srcCulture);
             WriteDate(w, "creationdate", u.Created);
+            if (u.Created != null && !string.IsNullOrEmpty(u.CreatedBy)) w.WriteAttributeString("creationid", XmlSafe(u.CreatedBy));
             WriteDate(w, "changedate", u.Changed);
+            if (u.Changed != null && !string.IsNullOrEmpty(u.ChangedBy)) w.WriteAttributeString("changeid", XmlSafe(u.ChangedBy));
             foreach (var (type, value) in u.Props)
             {
                 if (string.IsNullOrEmpty(value)) continue;
                 w.WriteStartElement("prop");
                 w.WriteAttributeString("type", type);
                 w.WriteString(XmlSafe(value));
+                w.WriteEndElement();
+            }
+            foreach (var note in u.Notes)
+            {
+                if (string.IsNullOrEmpty(note)) continue;
+                w.WriteStartElement("note");
+                w.WriteString(XmlSafe(note));
                 w.WriteEndElement();
             }
             xs.Clear();   // x links a tag in the source to the same tag in the target: numbered per TU
@@ -403,6 +436,11 @@ namespace Supervertaler.Core.SuperVault
             if (char.IsLowSurrogate(c)) return i > 0 && char.IsHighSurrogate(s[i - 1]);
             return true;
         }
+
+        static string Iso(long seconds) => VaultFields.FromSeconds(seconds).ToString("o", CultureInfo.InvariantCulture);
+
+        /// <summary>The store's field lines (group_concat, in no set order) in a fixed order, so an export is the same every time.</summary>
+        static string Sorted(string lines) => VaultFields.Pack(VaultFields.Unpack(lines).OrderBy(x => x.Field, StringComparer.Ordinal).ThenBy(x => x.Value, StringComparer.Ordinal));
 
         internal static string TmxDate(DateTime utc) => utc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
 

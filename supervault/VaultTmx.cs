@@ -21,6 +21,13 @@ namespace Supervertaler.Core.SuperVault
     /// is read back exactly: each tag's native code is SuperVault's own stored code, so it is kept as it was, and the
     /// unit keeps its origin (<c>x-SuperVault-Origin</c>) and the date it was added (<c>creationdate</c>). Other files
     /// are read as before: their origin is the file's name, and their date the day of the import.
+    ///
+    /// Metadata (schema 3; docs/design/evertm-metadata.md): each unit's dates and users (<c>creationdate</c>,
+    /// <c>creationid</c>, <c>changedate</c>, <c>changeid</c> on the &lt;tu&gt;, or on its &lt;tuv&gt;s as DéjàVu writes
+    /// them; else the header's <c>creationdate</c>, ranked below a unit's own), the fields EverTM keeps
+    /// (<see cref="VaultFields.Canonical"/>: Project, Client, Subject with Domain merged in, ...), its &lt;note&gt;s, and the
+    /// file's name as Source. A unit already in EverTM gets them merged in, so re-importing a file fills in the
+    /// metadata of units imported before it had any.
     /// </summary>
     public static class VaultTmx
     {
@@ -33,7 +40,9 @@ namespace Supervertaler.Core.SuperVault
             using (var reader = XmlReader.Create(tmxPath, settings))
             {
                 string headerLang = null;
-                bool ours = false;
+                bool ours = false, oursV1 = false;
+                DateTime? headerDate = null;
+                var fileName = Path.GetFileName(tmxPath);
                 int tus = 0;
                 while (reader.Read())
                 {
@@ -42,11 +51,21 @@ namespace Supervertaler.Core.SuperVault
                     {
                         headerLang = reader.GetAttribute("srclang");
                         ours = reader.GetAttribute("creationtool") == VaultExport.CreationTool;
+                        // Version 1 of EverTM's export wrote the date a unit was added as its creationdate, and no metadata.
+                        oursV1 = ours && reader.GetAttribute("creationtoolversion") == "1";
+                        headerDate = VaultFields.ParseTmxDate(reader.GetAttribute("creationdate"));
                     }
                     if (reader.LocalName != "tu") continue;
                     var tuLang = reader.GetAttribute("srclang") ?? headerLang;
-                    var added = ours ? VaultExport.FromTmxDate(reader.GetAttribute("creationdate")) : null;
-                    var tu = ReadTu(reader.ReadSubtree(), ours);
+                    var tu = new Tu
+                    {
+                        Created = VaultFields.ParseTmxDate(reader.GetAttribute("creationdate")), CreatedBy = reader.GetAttribute("creationid"),
+                        Changed = VaultFields.ParseTmxDate(reader.GetAttribute("changedate")), ChangedBy = reader.GetAttribute("changeid"),
+                    };
+                    var added = oursV1 ? VaultExport.FromTmxDate(reader.GetAttribute("creationdate")) : null;
+                    ReadTu(reader.ReadSubtree(), ours, tu);
+                    if (ours && !oursV1) added = tu.Added;
+                    var info = Info(tu, ours ? null : headerDate, ours ? null : fileName, oursV1);   // our export's header date is when it was exported: never a unit's date
                     if ((++tus & 255) == 0) cancel.ThrowIfCancellationRequested();
                     if (tus % 20000 == 0) progress?.Invoke(Path.GetFileName(tmxPath) + ": " + tus.ToString("N0", CultureInfo.InvariantCulture) + " TUs read");
                     var unitOrigin = ours ? tu.Origin : origin;   // our own file: the origin as stored, none included
@@ -56,7 +75,7 @@ namespace Supervertaler.Core.SuperVault
                         for (int j = i + 1; j < tuvs.Count; j++)
                         {
                             var (a, b) = string.Equals(tuvs[j].lang, tuLang, StringComparison.OrdinalIgnoreCase) ? (tuvs[j], tuvs[i]) : (tuvs[i], tuvs[j]);
-                            w.Add(a.lang, a.text, b.lang, b.text, unitOrigin, added);
+                            w.Add(a.lang, a.text, b.lang, b.text, unitOrigin, added, info);
                         }
                 }
                 cancel.ThrowIfCancellationRequested();
@@ -68,25 +87,66 @@ namespace Supervertaler.Core.SuperVault
         sealed class Tu
         {
             public readonly List<(string lang, string text)> Tuvs = new List<(string, string)>();
-            public string Origin;
+            public readonly List<(string type, string value)> Props = new List<(string, string)>();
+            public readonly List<string> Notes = new List<string>();
+            public string Origin, Added;   // EverTM's own export only
+            public DateTime? Created, Changed;
+            public string CreatedBy, ChangedBy;
+            public bool TuvDates;          // the dates came from the <tuv>s, not the <tu>
         }
 
-        static Tu ReadTu(XmlReader tu, bool ours)
+        /// <summary>
+        /// A TU's metadata: its kept fields, its notes, <paramref name="source"/> (the file's name; null for EverTM's own
+        /// export, whose Source values are props) and its dates, the header's when it has none of its own.
+        /// </summary>
+        static VaultUnitInfo Info(Tu tu, DateTime? headerDate, string source, bool noDates)
         {
-            var result = new Tu();
+            var info = new VaultUnitInfo();
+            foreach (var (type, value) in tu.Props) info.Add(VaultFields.Canonical(type), value);
+            foreach (var note in tu.Notes) info.Add(VaultFields.Note, note);
+            if (source != null) info.Add(VaultFields.Source, source);
+            if (noDates) return info;
+            if (tu.Created != null || tu.Changed != null)
+            {
+                info.Created = tu.Created; info.Changed = tu.Changed;
+                info.CreatedBy = Clean(tu.CreatedBy); info.ChangedBy = Clean(tu.ChangedBy);
+            }
+            else if (headerDate != null) { info.Created = info.Changed = headerDate; info.FileDate = true; }
+            return info;
+        }
+
+        static string Clean(string user) { var u = VaultFields.Clean(user); return u.Length == 0 ? null : u; }
+
+        static void ReadTu(XmlReader tu, bool ours, Tu result)
+        {
             using (tu)
             {
                 tu.Read();   // on <tu>
                 while (!tu.EOF)
                 {
                     if (tu.NodeType != XmlNodeType.Element) { tu.Read(); continue; }
-                    if (ours && tu.LocalName == "prop" && tu.Depth == 1 && VaultExport.IsOriginProp(tu.GetAttribute("type")))
+                    if (tu.LocalName == "prop" && tu.Depth == 1)
                     {
-                        result.Origin = tu.ReadElementContentAsString();   // leaves the reader on the next node
+                        var type = tu.GetAttribute("type");
+                        var value = tu.ReadElementContentAsString();   // leaves the reader on the next node
+                        if (ours && VaultExport.IsOriginProp(type)) result.Origin = value;
+                        else if (ours && VaultExport.IsAddedProp(type)) result.Added = VaultExport.FromTmxDate(value);
+                        else if (result.Props.Count < 50) result.Props.Add((type, value));
+                        continue;
+                    }
+                    if (tu.LocalName == "note" && tu.Depth == 1)
+                    {
+                        var note = tu.ReadElementContentAsString();
+                        if (result.Notes.Count < 5) result.Notes.Add(note);
                         continue;
                     }
                     if (tu.LocalName != "tuv") { tu.Read(); continue; }
                     var lang = tu.GetAttribute("xml:lang") ?? tu.GetAttribute("lang") ?? "";
+                    // Dates on the <tuv> (DéjàVu): the earliest creation and the latest change, when the <tu> has none.
+                    var tc = VaultFields.ParseTmxDate(tu.GetAttribute("creationdate"));
+                    if (tc != null && (result.Created == null || (result.TuvDates && tc < result.Created))) { result.Created = tc; result.CreatedBy = tu.GetAttribute("creationid"); result.TuvDates = true; }
+                    var tch = VaultFields.ParseTmxDate(tu.GetAttribute("changedate"));
+                    if (tch != null && (result.Changed == null || (result.TuvDates && tch > result.Changed))) { result.Changed = tch; result.ChangedBy = tu.GetAttribute("changeid"); result.TuvDates = true; }
                     string text = null;
                     using (var tuv = tu.ReadSubtree())
                         while (tuv.Read())
@@ -95,7 +155,6 @@ namespace Supervertaler.Core.SuperVault
                     tu.Read();   // past the </tuv>
                 }
             }
-            return result;
         }
 
         static string ReadSeg(XmlReader seg, bool ours)

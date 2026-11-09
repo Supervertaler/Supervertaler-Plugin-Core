@@ -275,7 +275,8 @@ namespace Supervertaler.Core.SuperVault
                     if (name == null) { Swap(null, null); return null; }
                     if (name == _brokenName) return null;      // already failed to open; wait for a new build
                     var info = ReadInfo(Path.Combine(Root, name));
-                    if (!info.TryGetValue("format", out var format) || format != VaultIndex.Format.ToString(CultureInfo.InvariantCulture))
+                    int fmt = info.TryGetValue("format", out var format) && int.TryParse(format, NumberStyles.None, CultureInfo.InvariantCulture, out var f) ? f : 0;
+                    if (fmt < VaultIndex.OldestReadable || fmt > VaultIndex.Format)
                     {
                         Swap(null, null);
                         _broken = "it was built by another version of Supervertaler";
@@ -289,6 +290,7 @@ namespace Supervertaler.Core.SuperVault
                         Swap(idx, name);
                         _broken = _brokenName = null;
                         if (replaced) ScheduleCleanup();
+                        if (fmt < VaultIndex.Format) UpgradeSoon();
                     }
                     catch (Exception ex)
                     {
@@ -300,6 +302,24 @@ namespace Supervertaler.Core.SuperVault
                 }
             }
         }
+
+        bool _upgradeStarted;   // under _gate
+
+        /// <summary>
+        /// The index in use is of an older format (before metadata): it is still searched as it is, so Studio keeps its
+        /// matches and never sees EverTM as unavailable, and a rebuild in the new format is started in the background,
+        /// once per process. If another Studio holds the build lock, that Studio's next build or this one's next start
+        /// does it. Caller holds _gate.
+        /// </summary>
+        void UpgradeSoon()
+        {
+            if (_upgradeStarted || _buildThread != null || NoAutoUpgradeForTests) return;
+            _upgradeStarted = true;
+            TryLog("The EverTM index is of an older format; rebuilding it in the background (lookups go on meanwhile).");
+            ThreadPool.QueueUserWorkItem(_ => { try { StartBuild(e => { if (e != null) TryLog("Rebuilding the index in the new format: " + e); }); } catch (Exception ex) { TryLog("Could not start the rebuild: " + ex.Message); } });
+        }
+
+        internal static bool NoAutoUpgradeForTests;
 
         void Swap(VaultIndex idx, string name)
         {
@@ -421,6 +441,19 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>Units in the store. Opens the file: for a settings dialog, not for every lookup.</summary>
         public long StoreCount() => VaultStore.Count(StorePath);
 
+        /// <summary>
+        /// "Metadata: 285 projects, 55 clients, 15 subjects", or null when EverTM holds none. Opens the file: for a
+        /// settings dialog.
+        /// </summary>
+        public string MetadataSummary()
+        {
+            var counts = VaultStore.FieldCounts(StorePath);
+            var parts = new List<string>();
+            foreach (var (field, one, many) in new[] { (VaultFields.Project, "project", "projects"), (VaultFields.Client, "client", "clients"), (VaultFields.EndClient, "end client", "end clients"), (VaultFields.Subject, "subject", "subjects") })
+                if (counts.TryGetValue(field, out var n) && n > 0) parts.Add(n.ToString("N0", CultureInfo.CurrentCulture) + " " + (n == 1 ? one : many));
+            return parts.Count == 0 ? null : "Metadata: " + string.Join(", ", parts);
+        }
+
         /// <summary>True when the store holds changes the index in use doesn't have yet.</summary>
         public bool IndexOutOfDate()
         {
@@ -452,7 +485,9 @@ namespace Supervertaler.Core.SuperVault
                 VaultStore.ImportLimit = Is32Bit ? Max32BitUnits : 0;
                 try { result = importer(StorePath, progress, cancel); }
                 finally { VaultStore.ImportLimit = 0; }
-                if (result.Added > 0 || Current == null) SyncIndexLocked(progress, cancel, rebuildIfLarge: true);
+                // Units that only gained metadata are changes too: a re-import that fills in most of EverTM rebuilds the
+                // index (the 25% rule) rather than leaving it to learning to apply them one by one.
+                if (result.Added > 0 || result.Enriched > 0 || Current == null) SyncIndexLocked(progress, cancel, rebuildIfLarge: true);
                 FlushWhileLocked();
                 return result;
             }
@@ -603,7 +638,7 @@ namespace Supervertaler.Core.SuperVault
                     using (var cmd = conn.CreateCommand())
                     {
                         cmd.Transaction = tx;
-                        cmd.CommandText = "SELECT id, lang_a, text_a, lang_b, text_b, variant FROM units ORDER BY id";
+                        cmd.CommandText = "SELECT " + VaultStore.IndexColumns + " FROM units u ORDER BY u.id";
                         using (var r = cmd.ExecuteReader())
                         {
                             while (r.Read())
@@ -611,7 +646,7 @@ namespace Supervertaler.Core.SuperVault
                                 if ((++read & 1023) == 0) cancel.ThrowIfCancellationRequested();
                                 if ((read % 10000) == 0) progress?.Invoke("indexing: " + read.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
                                 string a = r.GetString(1), ta = r.GetString(2), b = r.GetString(3), tb = r.GetString(4);
-                                w.AddDocument(VaultIndex.MakeDocument(r.GetInt64(0).ToString(CultureInfo.InvariantCulture), a, ta, VaultMarkup.Plain(ta), b, tb, VaultMarkup.Plain(tb), r.IsDBNull(5) ? "" : r.GetString(5)));
+                                w.AddDocument(VaultIndex.MakeDocument(r.GetInt64(0).ToString(CultureInfo.InvariantCulture), a, ta, VaultMarkup.Plain(ta), b, tb, VaultMarkup.Plain(tb), r.IsDBNull(5) ? "" : r.GetString(5), VaultStore.ReadIndexMeta(r, 6)));
                                 added++;
                             }
                         }
@@ -779,7 +814,7 @@ namespace Supervertaler.Core.SuperVault
                     using (var conn = VaultStore.Open(StorePath, readOnly: true))
                     using (var cmd = conn.CreateCommand())
                     {
-                        cmd.CommandText = "SELECT c.seq, c.unit_id, u.id, u.lang_a, u.text_a, u.lang_b, u.text_b, u.variant FROM changes c LEFT JOIN units u ON u.id = c.unit_id WHERE c.seq > $from ORDER BY c.seq LIMIT 2000";
+                        cmd.CommandText = "SELECT c.seq, c.unit_id, " + VaultStore.IndexColumns + " FROM changes c LEFT JOIN units u ON u.id = c.unit_id WHERE c.seq > $from ORDER BY c.seq LIMIT 2000";
                         var p = cmd.Parameters.AddWithValue("$from", from);
                         while (true)
                         {
@@ -793,7 +828,7 @@ namespace Supervertaler.Core.SuperVault
                                     long id = r.GetInt64(1);
                                     if (r.IsDBNull(2)) { page[id] = null; continue; }   // removed
                                     string a = r.GetString(3), ta = r.GetString(4), b = r.GetString(5), tb = r.GetString(6);
-                                    page[id] = VaultIndex.MakeDocument(id.ToString(CultureInfo.InvariantCulture), a, ta, VaultMarkup.Plain(ta), b, tb, VaultMarkup.Plain(tb), r.IsDBNull(7) ? "" : r.GetString(7));
+                                    page[id] = VaultIndex.MakeDocument(id.ToString(CultureInfo.InvariantCulture), a, ta, VaultMarkup.Plain(ta), b, tb, VaultMarkup.Plain(tb), r.IsDBNull(7) ? "" : r.GetString(7), VaultStore.ReadIndexMeta(r, 8));
                                 }
                             if (last == from) break;
                             foreach (var kv in page)
@@ -904,6 +939,7 @@ namespace Supervertaler.Core.SuperVault
         {
             public string OtherLang, Raw, OtherRaw, Variant;
             public long AddedAt;
+            public VaultUnitInfo Info;   // shown on the match until the index has the unit
         }
 
         readonly Dictionary<string, List<RecentUnit>> _recent = new Dictionary<string, List<RecentUnit>>(StringComparer.Ordinal);   // "lang|plain text"; under _learnGate
@@ -931,9 +967,10 @@ namespace Supervertaler.Core.SuperVault
                 string srcPlain = VaultLookup.PlainOf(VaultMarkup.Parse(src)), trgPlain = VaultLookup.PlainOf(VaultMarkup.Parse(trg));
                 if (srcPlain.Length == 0 || trgPlain.Length == 0) continue;
                 var variant = (u.SourceCulture ?? a) + ">" + (u.TargetCulture ?? b);
+                var info = u.Info(DateTime.UtcNow);
                 // A corrected translation replaces the one handed over before for the same source.
-                prepared.Add((RecentKey(a, srcPlain), new RecentUnit { OtherLang = b, Raw = src, OtherRaw = trg, Variant = variant, AddedAt = now }, true));
-                prepared.Add((RecentKey(b, trgPlain), new RecentUnit { OtherLang = a, Raw = trg, OtherRaw = src, Variant = variant, AddedAt = now }, false));
+                prepared.Add((RecentKey(a, srcPlain), new RecentUnit { OtherLang = b, Raw = src, OtherRaw = trg, Variant = variant, AddedAt = now, Info = info }, true));
+                prepared.Add((RecentKey(b, trgPlain), new RecentUnit { OtherLang = a, Raw = trg, OtherRaw = src, Variant = variant, AddedAt = now, Info = info }, false));
             }
             return prepared;
         }
@@ -985,7 +1022,12 @@ namespace Supervertaler.Core.SuperVault
                 if (_recent.TryGetValue(RecentKey(sourceLang, docPlain), out var list))
                     foreach (var r in list)
                         if (r.OtherLang == targetLang)
-                            found.Add(new VaultCandidate { Id = "0", SourceRaw = r.Raw, TargetRaw = r.OtherRaw, Variant = r.Variant, Exact = true });
+                            found.Add(new VaultCandidate
+                            {
+                                Id = "0", SourceRaw = r.Raw, TargetRaw = r.OtherRaw, Variant = r.Variant, Exact = true,
+                                Fields = r.Info?.Fields.ToList() ?? new List<(string, string)>(),
+                                Created = r.Info?.Created, Changed = r.Info?.Changed, CreatedBy = r.Info?.CreatedBy, ChangedBy = r.Info?.ChangedBy,
+                            });
             }
             return found;
         }
@@ -994,10 +1036,11 @@ namespace Supervertaler.Core.SuperVault
         /// A lookup: the index in use, plus (as exact matches) the units this process was handed in the last minute and
         /// may not have stored yet. This is what a CAT tool should call; never throws for an empty SuperVault.
         /// </summary>
-        public List<VaultMatch> Lookup(IList<VaultPiece> document, string sourceLang, string targetLang, int minScore, int maxResults)
+        /// <param name="targetCulture">The project's target language with its variant ("en-GB"): units in that exact variant win first.</param>
+        public List<VaultMatch> Lookup(IList<VaultPiece> document, string sourceLang, string targetLang, int minScore, int maxResults, string targetCulture = null)
         {
             var recent = document == null ? null : RecentCandidates(VaultLookup.PlainOf(document), sourceLang, targetLang);
-            return VaultLookup.Search(Current, document, sourceLang, targetLang, minScore, maxResults, recent);
+            return VaultLookup.Search(Current, document, sourceLang, targetLang, minScore, maxResults, recent, targetCulture);
         }
 
         /// <summary>
@@ -1009,6 +1052,8 @@ namespace Supervertaler.Core.SuperVault
             try
             {
                 var list = units?.Where(u => u != null).ToList() ?? new List<VaultLearnUnit>();
+                var now = DateTime.UtcNow;
+                foreach (var u in list) if (u.ConfirmedAt == null) u.ConfirmedAt = now;   // confirmed now, whenever it is stored
                 // Only for interactive confirms (a unit or two per call): a batch such as Update Main TMs doesn't look
                 // its segments up meanwhile, and parsing thousands of units would slow its hand-over.
                 var recent = list.Count <= MaxRecentPerCall ? PrepareRecent(list) : null;
@@ -1078,10 +1123,31 @@ namespace Supervertaler.Core.SuperVault
         /// One round: this process's queue to inbox.db; then, if the build lock is free, every waiting unit into the
         /// store and the index. True when everything is done; false to try again later.
         /// </summary>
+        /// <summary>
+        /// The CAT tool's way to find a document's project name and client (Trados: the .sdlproj above it). Called on
+        /// the learning thread, never on the UI thread, once per unit with a <see cref="VaultLearnUnit.DocumentPath"/> and
+        /// no project yet; it should cache. Null, or a failure: the unit is stored without them.
+        /// </summary>
+        public static Func<string, (string Project, string Client)> ProjectOf { get; set; }
+
+        static void DescribeProjects(List<VaultLearnUnit> batch)
+        {
+            var find = ProjectOf;
+            if (find == null) return;
+            foreach (var u in batch)
+            {
+                if (u.Project != null || string.IsNullOrEmpty(u.DocumentPath)) continue;
+                try { var p = find(u.DocumentPath); u.Project = p.Project; if (string.IsNullOrWhiteSpace(u.Client)) u.Client = p.Client; }
+                catch (Exception ex) { TryLog("Could not read the project of " + u.DocumentPath + ": " + ex.Message); }
+                u.DocumentPath = null;
+            }
+        }
+
         internal bool LearnOnce()
         {
             List<VaultLearnUnit> batch;
             lock (_learnGate) { batch = _waiting; _waiting = new List<VaultLearnUnit>(); }
+            DescribeProjects(batch);
             try { VaultInbox.Append(InboxPath, batch, InboxBusySeconds); }
             catch (Exception ex)
             {
@@ -1124,7 +1190,7 @@ namespace Supervertaler.Core.SuperVault
                     foreach (var u in units)
                     {
                         if (!seen.Add(u.SourceCulture + "" + u.Source + "" + u.TargetCulture + "" + u.Target)) continue;
-                        try { counts.Count(w.Learn(u.SourceCulture, u.Source, u.TargetCulture, u.Target, u.Origin)); }
+                        try { counts.Count(w.Learn(u)); }
                         catch (SqliteException ex) when (ex.SqliteErrorCode != 5 && ex.SqliteErrorCode != 6)   // not BUSY/LOCKED: this unit only
                         { counts.Skipped++; TryLog("Learning: one unit could not be stored and was skipped: " + ex.Message); }
                     }

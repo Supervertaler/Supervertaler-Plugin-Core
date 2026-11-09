@@ -30,6 +30,37 @@ namespace Supervertaler.Core.SuperVault
     public sealed class VaultLearnUnit
     {
         public string SourceCulture, Source, TargetCulture, Target, Origin;
+        /// <summary>When it was confirmed (UTC). It travels with the unit through the inbox, so two Studios' confirmations
+        /// are ordered by when they were made, not by when they were stored. Null: when it is stored.</summary>
+        public DateTime? ConfirmedAt;
+        /// <summary>Who confirmed it, and where: the CAT tool's user, its project's name and client, the project's subject, the document's file name.</summary>
+        public string User, Project, Client, Subject, Document;
+        /// <summary>The document's path, for <see cref="VaultLibrary.ProjectOf"/> to find its project's name and client on
+        /// the learning thread (not on the CAT tool's UI thread). Not stored.</summary>
+        public string DocumentPath;
+
+        /// <summary>
+        /// The metadata stored with it: confirmed at = created and changed, by <see cref="User"/>; Project, Client (and
+        /// End client, when the project's name is CLIENT_Endclient; its first part is the Client when none is set),
+        /// Subject, Document, and Source "Studio: &lt;project&gt;".
+        /// </summary>
+        public VaultUnitInfo Info(DateTime now)
+        {
+            var info = new VaultUnitInfo { Created = ConfirmedAt ?? now, Changed = ConfirmedAt ?? now };
+            info.CreatedBy = info.ChangedBy = string.IsNullOrWhiteSpace(User) ? null : VaultFields.Clean(User);
+            info.Add(VaultFields.Project, Project);
+            var client = Client;
+            if (VaultFields.SplitClientName(Project, out var c, out var end))
+            {
+                if (string.IsNullOrWhiteSpace(client)) client = c;
+                info.Add(VaultFields.EndClient, end);
+            }
+            info.Add(VaultFields.Client, client);
+            info.Add(VaultFields.Subject, Subject);
+            info.Add(VaultFields.Document, Document);
+            if (!string.IsNullOrWhiteSpace(Project)) info.Add(VaultFields.Source, (Origin == "studio" ? "Studio" : Origin ?? "") + ": " + Project.Trim());
+            return info;
+        }
     }
 
     /// <summary>What an import did.</summary>
@@ -54,8 +85,22 @@ namespace Supervertaler.Core.SuperVault
     public sealed class VaultImportResult
     {
         public long Read, Added, Duplicates, Skipped;
-        public override string ToString() =>
-            $"{Added:N0} {(Added == 1 ? "unit" : "units")} added, {Duplicates:N0} already in EverTM, {Skipped:N0} skipped (no text, one language, or junk)";
+        /// <summary>
+        /// Of the duplicates: how many brought metadata or dates the unit in EverTM didn't have yet. Counted per unit read,
+        /// like <see cref="Duplicates"/>: a unit found in two of the file's TMs counts twice. (Counting distinct units
+        /// would mean remembering every id touched: 10M units would not fit a 32-bit Studio.)
+        /// </summary>
+        public long Enriched;
+        /// <summary>Workbench only: TM names split into Client and End client (<see cref="VaultFields.SplitClientName"/>).</summary>
+        public long NamesSplit;
+        public override string ToString()
+        {
+            var s = $"{Added:N0} {(Added == 1 ? "unit" : "units")} added, {Duplicates:N0} already in EverTM";
+            if (Enriched > 0) s += $" ({Enriched:N0} of them brought metadata or dates)";
+            s += $", {Skipped:N0} skipped (no text, one language, or junk)";
+            if (NamesSplit > 0) s += $"; {NamesSplit:N0} TM {(NamesSplit == 1 ? "name" : "names")} split into Client and End client";
+            return s;
+        }
     }
 
     /// <summary>
@@ -84,7 +129,7 @@ namespace Supervertaler.Core.SuperVault
     /// </summary>
     public static class VaultStore
     {
-        public const int Schema = 2;
+        public const int Schema = 3;
 
         /// <summary>
         /// Set by <see cref="VaultLibrary.Import"/> for the length of one import, on its thread: the most units the store
@@ -118,8 +163,61 @@ namespace Supervertaler.Core.SuperVault
                 Exec(c, "CREATE TRIGGER IF NOT EXISTS units_ai AFTER INSERT ON units BEGIN INSERT INTO changes (unit_id) VALUES (new.id); END");
                 Exec(c, "CREATE TRIGGER IF NOT EXISTS units_au AFTER UPDATE ON units BEGIN INSERT INTO changes (unit_id) VALUES (new.id); END");
                 Exec(c, "CREATE TRIGGER IF NOT EXISTS units_ad AFTER DELETE ON units BEGIN INSERT INTO changes (unit_id) VALUES (old.id); END");
+                // Schema 3: metadata (docs/design/evertm-metadata.md, section 2). Again nothing reads the existing units:
+                // the new columns start empty (no date known), and re-importing fills them in.
+                //   created, changed     seconds since 1970, UTC; NULL = not known
+                //   created_by, ...      vals.id of the user (field '@user')
+                //   date_from            'unit' (the unit's own date, or a confirmation), 'file' (a TMX header's), NULL
+                //   vals / unit_vals     each field value stored once; units refer to them
+                var cols = Columns(c, "units");
+                foreach (var col in new[] { "created INTEGER", "changed INTEGER", "created_by INTEGER", "changed_by INTEGER", "date_from TEXT" })
+                    if (!cols.Contains(col.Split(' ')[0])) Exec(c, "ALTER TABLE units ADD COLUMN " + col);
+                Exec(c, "CREATE TABLE IF NOT EXISTS vals (id INTEGER PRIMARY KEY, field TEXT NOT NULL, value TEXT NOT NULL, UNIQUE (field, value))");
+                Exec(c, "CREATE TABLE IF NOT EXISTS unit_vals (unit_id INTEGER NOT NULL, val_id INTEGER NOT NULL, added INTEGER, PRIMARY KEY (unit_id, val_id)) WITHOUT ROWID");
+                Exec(c, "CREATE INDEX IF NOT EXISTS unit_vals_val ON unit_vals (val_id)");
+                Exec(c, "CREATE TRIGGER IF NOT EXISTS unit_vals_ai AFTER INSERT ON unit_vals BEGIN INSERT INTO changes (unit_id) VALUES (new.unit_id); END");
+                Exec(c, "CREATE TRIGGER IF NOT EXISTS unit_vals_ad AFTER DELETE ON unit_vals BEGIN INSERT INTO changes (unit_id) VALUES (old.unit_id); END");
+                // A removed unit takes its values with it (a corrected confirmation replaced by an existing unit).
+                Exec(c, "CREATE TRIGGER IF NOT EXISTS units_ad_vals AFTER DELETE ON units BEGIN DELETE FROM unit_vals WHERE unit_id = old.id; END");
                 Exec(c, "UPDATE meta SET value = '" + Schema + "' WHERE name = 'schema' AND CAST(value AS INTEGER) < " + Schema);
             }
+        }
+
+        static HashSet<string> Columns(SqliteConnection c, string table)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = "PRAGMA table_info(" + table + ")";
+                using (var r = cmd.ExecuteReader()) while (r.Read()) set.Add(r.GetString(1));
+            }
+            return set;
+        }
+
+        /// <summary>
+        /// The store's columns and subqueries the index is built from, in this order: id, lang_a, text_a, lang_b,
+        /// text_b, variant, created, changed, the creator's and changer's user names, added, and the unit's fields as
+        /// "field TAB value" lines (unordered). One correlated lookup per unit on unit_vals' primary key: linear in the
+        /// number of units. For "SELECT ... FROM units u".
+        /// </summary>
+        internal const string IndexColumns =
+            "u.id, u.lang_a, u.text_a, u.lang_b, u.text_b, u.variant, u.created, u.changed, " +
+            "(SELECT value FROM vals WHERE id = u.created_by), (SELECT value FROM vals WHERE id = u.changed_by), u.added, " +
+            "(SELECT group_concat(v.field || char(9) || v.value, char(10)) FROM unit_vals uv JOIN vals v ON v.id = uv.val_id WHERE uv.unit_id = u.id)";
+
+        /// <summary>The metadata columns of a row read with <see cref="IndexColumns"/>, starting at column <paramref name="at"/> (created).</summary>
+        internal static VaultIndexMeta ReadIndexMeta(SqliteDataReader r, int at)
+        {
+            var m = new VaultIndexMeta
+            {
+                Created = r.IsDBNull(at) ? (long?)null : r.GetInt64(at),
+                Changed = r.IsDBNull(at + 1) ? (long?)null : r.GetInt64(at + 1),
+                CreatedBy = r.IsDBNull(at + 2) ? null : r.GetString(at + 2),
+                ChangedBy = r.IsDBNull(at + 3) ? null : r.GetString(at + 3),
+                Added = r.IsDBNull(at + 4) ? null : r.GetString(at + 4),
+            };
+            if (!r.IsDBNull(at + 5)) m.Fields = VaultFields.Unpack(r.GetString(at + 5));
+            return m;
         }
 
         static int CurrentSchema(SqliteConnection c)
@@ -145,7 +243,7 @@ namespace Supervertaler.Core.SuperVault
             }
         }
 
-        /// <summary>Number of changes after <paramref name="seq"/>, i.e. not yet in an index that has applied up to it. 0 without a store.</summary>
+        /// <summary>Number of units changed after <paramref name="seq"/>, i.e. not yet in an index that has applied up to it. 0 without a store.</summary>
         public static long ChangesAfter(string path, long seq)
         {
             if (!File.Exists(path)) return 0;
@@ -154,7 +252,7 @@ namespace Supervertaler.Core.SuperVault
             {
                 cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'changes'";
                 if (Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return 0;
-                cmd.CommandText = "SELECT count(*) FROM changes WHERE seq > $s";
+                cmd.CommandText = "SELECT count(DISTINCT unit_id) FROM changes WHERE seq > $s";   // a unit and its values: one change
                 cmd.Parameters.AddWithValue("$s", seq);
                 return Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
             }
@@ -205,6 +303,25 @@ namespace Supervertaler.Core.SuperVault
             }
         }
 
+        /// <summary>
+        /// How many distinct values EverTM holds per field ("Project" -> 285): for its window. One GROUP BY over the
+        /// small vals table (each value stored once), not over the units. Empty without a store or before schema 3.
+        /// </summary>
+        public static Dictionary<string, long> FieldCounts(string path)
+        {
+            var d = new Dictionary<string, long>(StringComparer.Ordinal);
+            if (!File.Exists(path)) return d;
+            using (var c = Open(path, readOnly: true))
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'vals'";
+                if (Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return d;
+                cmd.CommandText = "SELECT field, count(*) FROM vals GROUP BY field";
+                using (var r = cmd.ExecuteReader()) while (r.Read()) d[r.GetString(0)] = r.GetInt64(1);
+            }
+            return d;
+        }
+
         /// <summary>Goes up by one with every import that added something; the index records the version it was built from.</summary>
         public static long Version(string path)
         {
@@ -235,30 +352,45 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>
         /// Adds units in one transaction: <see cref="Commit"/> makes them all permanent, disposing without it (an error,
         /// a cancelled import) leaves the store exactly as it was.
+        ///
+        /// Metadata (schema 3): a unit's fields and dates come as a <see cref="VaultUnitInfo"/>. A new unit gets them; a
+        /// unit already there (a duplicate) has them merged in (<see cref="Merge"/>), so re-importing a file fills in
+        /// what an earlier import, or the Workbench import, didn't bring.
         /// </summary>
         public sealed class Writer : IDisposable
         {
             readonly SqliteConnection _c;
             readonly SqliteTransaction _tx;
             readonly SqliteCommand _insert;
-            readonly SqliteParameter _la, _ta, _lb, _tb, _key, _variant, _origin, _added;
+            readonly SqliteParameter _la, _ta, _lb, _tb, _key, _variant, _origin, _added, _pCreated, _pChanged, _pCreatedBy, _pChangedBy, _pDateFrom;
             public VaultImportResult Result { get; } = new VaultImportResult();
             bool _done, _changed;
-            readonly string _now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            SqliteCommand _findLearned, _findKey, _update, _delete, _forget, _remember;
+            readonly DateTime _nowTime = DateTime.UtcNow;
+            readonly string _now;
+            readonly long _nowSeconds;
+            SqliteCommand _findLearned, _findKey, _update, _delete, _forget, _remember, _readDates, _writeDates, _findVal, _addVal, _linkVal, _lastId;
+            // field|value -> vals.id, for this transaction. Bounded by the number of distinct values an import brings
+            // (Michael's 890k TMX units: a few hundred projects and documents), not by the number of units.
+            readonly Dictionary<string, long> _valIds = new Dictionary<string, long>(StringComparer.Ordinal);
 
             public Writer(string path, int busyTimeoutSeconds = 30)
             {
+                _now = _nowTime.ToString("o", CultureInfo.InvariantCulture);
+                _nowSeconds = VaultFields.ToSeconds(_nowTime);
                 Create(path, busyTimeoutSeconds);
                 _c = Open(path, readOnly: false, busyTimeoutSeconds);
                 _tx = _c.BeginTransaction();
                 _insert = _c.CreateCommand();
                 _insert.Transaction = _tx;
-                _insert.CommandText = "INSERT OR IGNORE INTO units (lang_a, text_a, lang_b, text_b, key, variant, origin, added) VALUES ($la, $ta, $lb, $tb, $key, $v, $o, $d)";
+                _insert.CommandText = "INSERT OR IGNORE INTO units (lang_a, text_a, lang_b, text_b, key, variant, origin, added, created, changed, created_by, changed_by, date_from) " +
+                                      "VALUES ($la, $ta, $lb, $tb, $key, $v, $o, $d, $cr, $ch, $cb, $hb, $df)";
                 _la = _insert.Parameters.Add("$la", SqliteType.Text); _ta = _insert.Parameters.Add("$ta", SqliteType.Text);
                 _lb = _insert.Parameters.Add("$lb", SqliteType.Text); _tb = _insert.Parameters.Add("$tb", SqliteType.Text);
                 _key = _insert.Parameters.Add("$key", SqliteType.Text); _variant = _insert.Parameters.Add("$v", SqliteType.Text);
                 _origin = _insert.Parameters.Add("$o", SqliteType.Text); _added = _insert.Parameters.Add("$d", SqliteType.Text);
+                _pCreated = _insert.Parameters.Add("$cr", SqliteType.Integer); _pChanged = _insert.Parameters.Add("$ch", SqliteType.Integer);
+                _pCreatedBy = _insert.Parameters.Add("$cb", SqliteType.Integer); _pChangedBy = _insert.Parameters.Add("$hb", SqliteType.Integer);
+                _pDateFrom = _insert.Parameters.Add("$df", SqliteType.Text);
                 _added.Value = _now;
                 _insert.Prepare();
                 _limit = ImportLimit;
@@ -274,8 +406,9 @@ namespace Supervertaler.Core.SuperVault
             readonly long _limit, _start;
 
             /// <summary>Adds one unit, given in whatever direction and variants it came in.</summary>
-            /// <param name="added">When the unit was first added (ISO 8601, UTC), for a unit coming back from SuperVault's own export; null for now.</param>
-            public VaultAddOutcome Add(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin, string added = null)
+            /// <param name="added">When the unit was first added (ISO 8601, UTC), for a unit coming back from EverTM's own export; null for now.</param>
+            /// <param name="info">Its fields and dates, if any: stored with a new unit, merged into one already there.</param>
+            public VaultAddOutcome Add(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin, string added = null, VaultUnitInfo info = null)
             {
                 Result.Read++;
                 string a = VaultMarkup.BaseLanguage(sourceCulture), b = VaultMarkup.BaseLanguage(targetCulture);
@@ -283,30 +416,162 @@ namespace Supervertaler.Core.SuperVault
                 if (a.Length == 0 || b.Length == 0 || a == b || VaultMarkup.IsJunk(VaultMarkup.Plain(sourceRaw), VaultMarkup.Plain(targetRaw)))
                 { Result.Skipped++; return VaultAddOutcome.Skipped; }
                 if (string.CompareOrdinal(a, b) > 0) { (a, b) = (b, a); (sourceRaw, targetRaw) = (targetRaw, sourceRaw); }
+                var key = Key(a, sourceRaw, b, targetRaw);
                 _la.Value = a; _ta.Value = sourceRaw; _lb.Value = b; _tb.Value = targetRaw;
-                _key.Value = Key(a, sourceRaw, b, targetRaw);
+                _key.Value = key;
                 _variant.Value = (sourceCulture ?? "") + ">" + (targetCulture ?? "");
                 _origin.Value = (object)origin ?? DBNull.Value;
                 _added.Value = added ?? _now;
+                bool dated = info != null && info.HasDates;
+                _pCreated.Value = dated ? (object)Seconds(info.Created ?? info.Changed) : DBNull.Value;
+                _pChanged.Value = dated ? (object)Seconds(info.Changed ?? info.Created) : DBNull.Value;
+                _pCreatedBy.Value = dated && info.CreatedBy != null ? (object)ValId("@user", info.CreatedBy) : DBNull.Value;
+                _pChangedBy.Value = dated && (info.ChangedBy ?? info.CreatedBy) != null ? (object)ValId("@user", info.ChangedBy ?? info.CreatedBy) : DBNull.Value;
+                _pDateFrom.Value = dated ? (info.FileDate ? "file" : "unit") : (object)DBNull.Value;
                 if (_insert.ExecuteNonQuery() == 1)
                 {
                     Result.Added++; _changed = true;
                     if (_limit > 0 && _start + Result.Added > _limit)
                         throw new VaultTooLargeException(VaultLibrary.TooLargeFor32Bit(_start + Result.Added, importing: true) ?? "EverTM would be too large.");
+                    if (info != null && info.Fields.Count > 0) AddValues(LastId(), info);
                     return VaultAddOutcome.Added;
                 }
                 Result.Duplicates++;
+                if (info != null && !info.IsEmpty)
+                {
+                    long? id = Scalar(ref _findKey, "SELECT id FROM units WHERE key = $p", key);
+                    if (id != null && Merge(id.Value, info)) Result.Enriched++;
+                }
                 return VaultAddOutcome.Duplicate;
             }
+
+            static long Seconds(DateTime? t) => VaultFields.ToSeconds(t.Value);
+
+            long LastId()
+            {
+                if (_lastId == null) { _lastId = _c.CreateCommand(); _lastId.Transaction = _tx; _lastId.CommandText = "SELECT last_insert_rowid()"; }
+                return Convert.ToInt64(_lastId.ExecuteScalar(), CultureInfo.InvariantCulture);
+            }
+
+            /// <summary>
+            /// Merges <paramref name="info"/> into unit <paramref name="id"/>. True if anything changed.
+            ///  - Fields: the union of values, at most <see cref="VaultFields.MaxValuesPerField"/> per field (the first ones kept).
+            ///  - Dates: a unit's own date beats a TMX header's, which beats none. Between dates of the same kind, the
+            ///    earliest created and the latest changed win, each with its user. So re-confirming a unit, or importing
+            ///    a newer copy of it, makes it newer; an older copy never makes it older.
+            /// </summary>
+            internal bool Merge(long id, VaultUnitInfo info)
+            {
+                bool changed = info.HasDates && MergeDates(id, info);
+                if (info.Fields.Count > 0 && AddValues(id, info)) changed = true;
+                if (changed) _changed = true;
+                return changed;
+            }
+
+            bool MergeDates(long id, VaultUnitInfo info)
+            {
+                if (_readDates == null)
+                {
+                    _readDates = _c.CreateCommand(); _readDates.Transaction = _tx;
+                    _readDates.CommandText = "SELECT created, changed, created_by, changed_by, date_from FROM units WHERE id = $id";
+                    _readDates.Parameters.Add("$id", SqliteType.Integer);
+                }
+                _readDates.Parameters[0].Value = id;
+                long? oc, och, ocb, ochb; string from;
+                using (var r = _readDates.ExecuteReader())
+                {
+                    if (!r.Read()) return false;
+                    oc = r.IsDBNull(0) ? (long?)null : r.GetInt64(0); och = r.IsDBNull(1) ? (long?)null : r.GetInt64(1);
+                    ocb = r.IsDBNull(2) ? (long?)null : r.GetInt64(2); ochb = r.IsDBNull(3) ? (long?)null : r.GetInt64(3);
+                    from = r.IsDBNull(4) ? null : r.GetString(4);
+                }
+                int oldRank = from == "unit" ? 2 : from == "file" ? 1 : 0, newRank = info.FileDate ? 1 : 2;
+                if (newRank < oldRank) return false;
+                long nc = Seconds(info.Created ?? info.Changed), nch = Seconds(info.Changed ?? info.Created);
+                long? ncb = info.CreatedBy != null ? ValId("@user", info.CreatedBy) : (long?)null;
+                var changer = info.ChangedBy ?? info.CreatedBy;
+                long? nchb = changer != null ? ValId("@user", changer) : (long?)null;
+                long? c = oc, ch = och, cb = ocb, chb = ochb;
+                if (newRank > oldRank || oc == null) { c = nc; cb = ncb; ch = nch; chb = nchb; }
+                else
+                {
+                    if (nc < oc) { c = nc; cb = ncb; }
+                    if (och == null || nch > och) { ch = nch; chb = nchb; }
+                }
+                var newFrom = newRank == 2 ? "unit" : "file";
+                if (c == oc && ch == och && cb == ocb && chb == ochb && newFrom == from) return false;
+                if (_writeDates == null)
+                {
+                    _writeDates = _c.CreateCommand(); _writeDates.Transaction = _tx;
+                    _writeDates.CommandText = "UPDATE units SET created = $c, changed = $ch, created_by = $cb, changed_by = $hb, date_from = $f WHERE id = $id";
+                    foreach (var n in new[] { "$c", "$ch", "$cb", "$hb", "$f", "$id" }) _writeDates.Parameters.Add(new SqliteParameter { ParameterName = n });
+                }
+                var ps = _writeDates.Parameters;
+                ps[0].Value = c; ps[1].Value = ch; ps[2].Value = (object)cb ?? DBNull.Value; ps[3].Value = (object)chb ?? DBNull.Value;
+                ps[4].Value = newFrom; ps[5].Value = id;
+                _writeDates.ExecuteNonQuery();
+                return true;
+            }
+
+            /// <summary>Links the info's field values to the unit. True if any was new for it.</summary>
+            bool AddValues(long unitId, VaultUnitInfo info)
+            {
+                if (_linkVal == null)
+                {
+                    _linkVal = _c.CreateCommand(); _linkVal.Transaction = _tx;
+                    // Only a value the unit doesn't have yet, and only while the unit has fewer than the maximum for that field.
+                    _linkVal.CommandText = "INSERT OR IGNORE INTO unit_vals (unit_id, val_id, added) SELECT $u, $v, $t " +
+                                           "WHERE (SELECT count(*) FROM unit_vals uv JOIN vals x ON x.id = uv.val_id WHERE uv.unit_id = $u AND x.field = $f) < " +
+                                           VaultFields.MaxValuesPerField.ToString(CultureInfo.InvariantCulture);
+                    foreach (var n in new[] { "$u", "$v", "$t", "$f" }) _linkVal.Parameters.Add(new SqliteParameter { ParameterName = n });
+                }
+                bool any = false;
+                foreach (var (field, value) in info.Fields)
+                {
+                    var ps = _linkVal.Parameters;
+                    ps[0].Value = unitId; ps[1].Value = ValId(field, value); ps[2].Value = _nowSeconds; ps[3].Value = field;
+                    if (_linkVal.ExecuteNonQuery() == 1) any = true;
+                }
+                return any;
+            }
+
+            long ValId(string field, string value)
+            {
+                var k = field + "\t" + value;
+                if (_valIds.TryGetValue(k, out var id)) return id;
+                if (_addVal == null)
+                {
+                    _addVal = _c.CreateCommand(); _addVal.Transaction = _tx;
+                    _addVal.CommandText = "INSERT OR IGNORE INTO vals (field, value) VALUES ($f, $v)";
+                    _addVal.Parameters.Add(new SqliteParameter { ParameterName = "$f" }); _addVal.Parameters.Add(new SqliteParameter { ParameterName = "$v" });
+                    _findVal = _c.CreateCommand(); _findVal.Transaction = _tx;
+                    _findVal.CommandText = "SELECT id FROM vals WHERE field = $f AND value = $v";
+                    _findVal.Parameters.Add(new SqliteParameter { ParameterName = "$f" }); _findVal.Parameters.Add(new SqliteParameter { ParameterName = "$v" });
+                }
+                _addVal.Parameters[0].Value = field; _addVal.Parameters[1].Value = value;
+                _addVal.ExecuteNonQuery();
+                _findVal.Parameters[0].Value = field; _findVal.Parameters[1].Value = value;
+                id = Convert.ToInt64(_findVal.ExecuteScalar(), CultureInfo.InvariantCulture);
+                if (_valIds.Count < 100000) _valIds[k] = id;   // a cache, bounded; beyond it each value is looked up
+                return id;
+            }
+
+            /// <summary>Learns one confirmed segment, with what came with it (<see cref="VaultLearnUnit.Info"/>).</summary>
+            public VaultLearnOutcome Learn(VaultLearnUnit u) =>
+                Learn(u.SourceCulture, u.Source, u.TargetCulture, u.Target, u.Origin, u.Info(_nowTime));
 
             /// <summary>
             /// Learns one confirmed segment. "The same source" is: the same base languages in the same direction
             /// (nl>en; nl-BE>en-US and nl-NL>en-GB alike) and the same source text and tag shape, as in <see cref="Key"/>.
-            /// If SuperVault learned a unit for that source before, its translation is replaced; otherwise the unit is
-            /// added like an imported one (a duplicate of any existing unit adds nothing). Imported units are never
-            /// changed: a confirmation that differs from an imported unit adds a second translation, as a TM would.
+            /// If EverTM learned a unit for that source before, its translation is replaced; otherwise the unit is
+            /// added like an imported one. Imported units are never changed or removed: a confirmation that differs from
+            /// an imported unit adds a second translation, which is then the newest (lookups show only the newest).
+            ///
+            /// With <paramref name="info"/> (schema 3), confirming makes the unit the newest: a confirmation of a unit
+            /// already there (imported, or learned) moves its changed date to the time of confirming. A confirmation
+            /// that arrives after a newer one for the same source (two Studios, stored out of order) changes nothing.
             /// </summary>
-            public VaultLearnOutcome Learn(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin)
+            public VaultLearnOutcome Learn(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin, VaultUnitInfo info = null)
             {
                 string a = VaultMarkup.BaseLanguage(sourceCulture), b = VaultMarkup.BaseLanguage(targetCulture);
                 string src = sourceRaw?.Trim() ?? "", trg = targetRaw?.Trim() ?? "";
@@ -316,7 +581,7 @@ namespace Supervertaler.Core.SuperVault
                 long? learnedId = Scalar(ref _findLearned, "SELECT unit_id FROM learned WHERE src_key = $p", srcKey);
                 if (learnedId == null)
                 {
-                    var added = Add(sourceCulture, src, targetCulture, trg, origin);
+                    var added = Add(sourceCulture, src, targetCulture, trg, origin, null, info);   // a duplicate gets the info merged: it is now the newest
                     if (added != VaultAddOutcome.Added) return added == VaultAddOutcome.Skipped ? VaultLearnOutcome.Skipped : VaultLearnOutcome.Duplicate;
                     Exec2(ref _remember, "INSERT OR REPLACE INTO learned (src_key, unit_id) VALUES ($p, last_insert_rowid())", srcKey);
                     return VaultLearnOutcome.Added;
@@ -326,13 +591,31 @@ namespace Supervertaler.Core.SuperVault
                 if (string.CompareOrdinal(la, lb) > 0) { (la, lb) = (lb, la); (ta, tb) = (tb, ta); }
                 var key = Key(la, ta, lb, tb);
                 long? existing = Scalar(ref _findKey, "SELECT id FROM units WHERE key = $p", key);
-                if (existing == learnedId) { Result.Read++; Result.Duplicates++; return VaultLearnOutcome.Duplicate; }
+                if (existing == learnedId)
+                {
+                    Result.Read++; Result.Duplicates++;
+                    if (info != null) Merge(existing.Value, info);
+                    return VaultLearnOutcome.Duplicate;
+                }
+                // A confirmation older than what was learned for this source since (it waited in another Studio's
+                // inbox): the newer one stays. Its translation still counts as seen: merged where it already exists.
+                if (info?.Changed != null)
+                {
+                    long? learnedChanged = Scalar(ref _readChanged, "SELECT changed FROM units WHERE id = $p", learnedId.Value);
+                    if (learnedChanged != null && learnedChanged.Value > Seconds(info.Changed))
+                    {
+                        Result.Read++; Result.Duplicates++;
+                        if (existing != null) Merge(existing.Value, info);
+                        return VaultLearnOutcome.Duplicate;
+                    }
+                }
                 if (existing != null)
                 {
                     // The new translation is already a unit (imported, or learned for another source): the one learned
                     // earlier for this source is superseded, so it goes, rather than staying as a near-duplicate.
                     Exec2(ref _delete, "DELETE FROM units WHERE id = $p", learnedId.Value);
                     Exec2(ref _forget, "DELETE FROM learned WHERE src_key = $p", srcKey);
+                    if (info != null) Merge(existing.Value, info);
                     Result.Read++; Result.Duplicates++; _changed = true;
                     return VaultLearnOutcome.Replaced;
                 }
@@ -350,11 +633,17 @@ namespace Supervertaler.Core.SuperVault
                 _update.Parameters.AddWithValue("$o", (object)origin ?? DBNull.Value);
                 _update.Parameters.AddWithValue("$d", _now);
                 _update.Parameters.AddWithValue("$id", learnedId.Value);
-                if (_update.ExecuteNonQuery() == 1) { Result.Read++; Result.Added++; _changed = true; return VaultLearnOutcome.Updated; }
+                if (_update.ExecuteNonQuery() == 1)
+                {
+                    if (info != null) Merge(learnedId.Value, info);
+                    Result.Read++; Result.Added++; _changed = true; return VaultLearnOutcome.Updated;
+                }
                 // The learned unit is gone (removed by hand, say): forget it and learn this one afresh.
                 Exec2(ref _forget, "DELETE FROM learned WHERE src_key = $p", srcKey);
-                return Learn(sourceCulture, sourceRaw, targetCulture, targetRaw, origin);
+                return Learn(sourceCulture, sourceRaw, targetCulture, targetRaw, origin, info);
             }
+
+            SqliteCommand _readChanged;
 
             long? Scalar(ref SqliteCommand cmd, string sql, object p)
             {
@@ -397,7 +686,7 @@ namespace Supervertaler.Core.SuperVault
             {
                 try { if (!_done) _tx.Rollback(); } catch { }
                 _insert.Dispose();
-                foreach (var cmd in new[] { _findLearned, _findKey, _update, _delete, _forget, _remember }) cmd?.Dispose();
+                foreach (var cmd in new[] { _findLearned, _findKey, _update, _delete, _forget, _remember, _readDates, _writeDates, _findVal, _addVal, _linkVal, _lastId, _readChanged }) cmd?.Dispose();
                 _tx.Dispose();
                 _c.Dispose();
             }
@@ -455,6 +744,26 @@ namespace Supervertaler.Core.SuperVault
             return tms.Values.OrderBy(t => t.Name, StringComparer.CurrentCultureIgnoreCase).ThenBy(t => t.TmId, StringComparer.Ordinal).ToList();
         }
 
+        /// <summary>tm_id -> name, from Workbench's translation_memories table; empty when it has none.</summary>
+        static Dictionary<string, string> WorkbenchNames(SqliteCommand cmd)
+        {
+            var names = new Dictionary<string, string>(StringComparer.Ordinal);
+            cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'translation_memories'";
+            if (Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return names;
+            try
+            {
+                cmd.CommandText = "SELECT tm_id, name FROM translation_memories";
+                using (var r = cmd.ExecuteReader())
+                    while (r.Read())
+                    {
+                        var name = r.IsDBNull(1) ? null : r.GetString(1)?.Trim();
+                        if (!r.IsDBNull(0) && !string.IsNullOrEmpty(name)) names[r.GetString(0)] = name;
+                    }
+            }
+            catch (SqliteException) { }   // an older Workbench without these columns: tm_ids it is
+            return names;
+        }
+
         /// <summary>
         /// Imports Workbench's units into the store (Workbench's database is only read). <paramref name="tmIds"/> limits
         /// it to those translation memories; null imports every unit, and an empty choice imports nothing. A tm_id
@@ -479,14 +788,32 @@ namespace Supervertaler.Core.SuperVault
                     foreach (var id in tmIds) { p.Value = id ?? ""; cmd.ExecuteNonQuery(); }
                     cmd.Parameters.Clear();
                 }
-                cmd.CommandText = "SELECT source_text, target_text, source_lang, target_lang FROM translation_units" +
+                // Each unit's metadata is its TM's name, as Source, and Client and End client when the name is
+                // CLIENT_Endclient. Workbench's own dates are when a unit entered Workbench, not when it was
+                // translated, so they are not used.
+                var names = WorkbenchNames(cmd);
+                var infos = new Dictionary<string, VaultUnitInfo>(StringComparer.Ordinal);
+                cmd.CommandText = "SELECT source_text, target_text, source_lang, target_lang, tm_id FROM translation_units" +
                                   (tmIds == null ? "" : " WHERE tm_id IN (SELECT tm_id FROM chosen)") + " ORDER BY id";
                 using (var r = cmd.ExecuteReader())
                     while (r.Read())
                     {
                         if ((w.Result.Read & 1023) == 0) cancel.ThrowIfCancellationRequested();
                         if (w.Result.Read % 20000 == 0) progress?.Invoke("Workbench: " + w.Result.Read.ToString("N0", CultureInfo.InvariantCulture) + " units read");
-                        w.Add(r.IsDBNull(2) ? "" : r.GetString(2), r.IsDBNull(0) ? "" : r.GetString(0), r.IsDBNull(3) ? "" : r.GetString(3), r.IsDBNull(1) ? "" : r.GetString(1), "workbench");
+                        var tm = r.IsDBNull(4) ? "" : r.GetString(4);
+                        if (!infos.TryGetValue(tm, out var info))
+                        {
+                            infos[tm] = info = new VaultUnitInfo();
+                            var name = names.TryGetValue(tm, out var n) ? n : tm;
+                            info.Add(VaultFields.Source, name);
+                            if (VaultFields.SplitClientName(name, out var client, out var end))
+                            {
+                                info.Add(VaultFields.Client, client);
+                                info.Add(VaultFields.EndClient, end);
+                                w.Result.NamesSplit++;
+                            }
+                        }
+                        w.Add(r.IsDBNull(2) ? "" : r.GetString(2), r.IsDBNull(0) ? "" : r.GetString(0), r.IsDBNull(3) ? "" : r.GetString(3), r.IsDBNull(1) ? "" : r.GetString(1), "workbench", null, info);
                     }
                 cancel.ThrowIfCancellationRequested();
                 w.Commit();

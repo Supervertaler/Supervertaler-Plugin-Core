@@ -290,13 +290,39 @@ namespace Supervertaler.Core.SuperVault.Tests
             var root = CopyOfBuilt(gen =>
             {
                 var info = Path.Combine(gen, "info.txt");
-                File.WriteAllText(info, File.ReadAllText(info).Replace("format=" + VaultIndex.Format, "format=" + (VaultIndex.Format - 1)));
+                File.WriteAllText(info, File.ReadAllText(info).Replace("format=" + VaultIndex.Format, "format=" + (VaultIndex.OldestReadable - 1)));
             });
             var lib = VaultLibrary.For(root);
             A.True(lib.Current == null, "an index in an older format is not used");
             A.True(lib.Status.State == VaultState.Broken && lib.Status.Message.Contains("another version"), "status: " + lib.Status.Message);
             lib.Build(null, CancellationToken.None);
             A.Eq(VaultState.Ready, lib.Status.State, "rebuilt");
+        }
+
+        /// <summary>
+        /// The previous format (before metadata) is still searched, so Studio never sees EverTM as unavailable after an
+        /// update, and a rebuild in the new format starts on its own, in the background.
+        /// </summary>
+        public static void IndexOfThePreviousFormatIsSearchedAndUpgraded()
+        {
+            var root = CopyOfBuilt(gen =>
+            {
+                var info = Path.Combine(gen, "info.txt");
+                File.WriteAllText(info, File.ReadAllText(info).Replace("format=" + VaultIndex.Format, "format=" + VaultIndex.OldestReadable));
+            });
+            var lib = VaultLibrary.For(root);
+            A.True(lib.Current != null, "the older index is still searched");
+            A.Eq(VaultState.Ready, lib.Status.State, "and EverTM stays available");
+            A.Eq(100, VaultLookup.Search(lib.Current, Doc("De pomp wordt gestart."), "nl", "en", 50, 5).FirstOrDefault()?.Score ?? 0, "found meanwhile");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sw.Elapsed.TotalSeconds < 60)
+            {
+                lib.Refresh();
+                var idx = lib.Current;
+                if (!lib.IsBuilding && idx != null && VaultLibrary.ReadInfo(idx.Folder).TryGetValue("format", out var f) && f == VaultIndex.Format.ToString()) return;
+                Thread.Sleep(100);
+            }
+            throw new AssertFailed("the index was not rebuilt in the new format: " + lib.LastJobResult);
         }
 
         static void CopyDir(string from, string to)

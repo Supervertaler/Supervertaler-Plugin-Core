@@ -354,7 +354,10 @@ namespace Supervertaler.Core.SuperVault.Tests
             lib.Learn(new[] { U("en-GB", "Close the valve before you start the pump.", "nl-NL", "Sluit de klep vóór het starten van de pomp.") });
             Settle(lib);
             A.Eq(8L, lib.StoreCount(), "a second unit");
-            A.Eq(2, Best(lib, "Close the valve before you start the pump.", "en", "nl").count, "en>nl finds both translations");
+            // Both translations are kept; en>nl offers only the newest (newest wins), the nl>en unit's source.
+            var back = Best(lib, "Close the valve before you start the pump.", "en", "nl");
+            A.Eq(1, back.count, "en>nl offers one translation");
+            A.Eq("Sluit de klep vóór het starten van de pomp.", back.target, "the one confirmed last");
             A.Eq("Close the valve before you start the pump.", Best(lib, src).target, "nl>en unchanged");
         }
 
@@ -365,7 +368,9 @@ namespace Supervertaler.Core.SuperVault.Tests
             lib.Learn(new[] { U("nl-BE", src, "en-US", "The pump starts.") });
             Settle(lib);
             A.Eq(7L, lib.StoreCount(), "a second translation, the imported one kept");
-            A.Eq(2, Best(lib, src).count, "both found");
+            var first = Best(lib, src);
+            A.Eq(1, first.count, "one translation offered: newest wins");
+            A.Eq("The pump starts.", first.target, "the confirmed one: newer than an undated import");
             lib.Learn(new[] { U("nl-BE", src, "en-US", "The pump starts up.") });
             Settle(lib);
             A.Eq(7L, lib.StoreCount(), "the learned one updated, not a third");

@@ -123,7 +123,11 @@ namespace Supervertaler.Core.SuperVault.Tests
                 A.Eq(Mixed[i].sl, tu.GetAttribute("srclang"), "tu " + i + " srclang is the variant it came with");
                 A.Eq(Mixed[i].sl, tuvs[0].GetAttribute("xml:lang"), "tu " + i + " source tuv first, in its variant");
                 A.Eq(Mixed[i].tl, tuvs[1].GetAttribute("xml:lang"), "tu " + i + " target tuv in its variant");
-                A.True(System.Text.RegularExpressions.Regex.IsMatch(tu.GetAttribute("creationdate"), @"^\d{8}T\d{6}Z$"), "creationdate in TMX form: " + tu.GetAttribute("creationdate"));
+                // These units have no date of their own: no creationdate (never the export's or the import's time);
+                // when they entered EverTM goes in EverTM's own prop, in TMX form.
+                A.True(!tu.HasAttribute("creationdate") && !tu.HasAttribute("changedate"), "no date for an undated unit");
+                var added = (XmlElement)tu.SelectSingleNode("prop[@type='x-EverTM-Added']");
+                A.True(added != null && System.Text.RegularExpressions.Regex.IsMatch(added.InnerText, @"^\d{8}T\d{6}Z$"), "added date in TMX form: " + added?.InnerText);
                 var prop = (XmlElement)tu.SelectSingleNode("prop[@type='x-EverTM-Origin']");
                 A.Eq(Mixed[i].origin, prop?.InnerText, "origin prop");
                 foreach (var seg in tu.SelectNodes("tuv/seg").Cast<XmlElement>())

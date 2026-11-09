@@ -36,8 +36,11 @@ namespace Supervertaler.Core.SuperVault
     {
         const int Aligned = 40;
 
+        /// <param name="extra">Units just confirmed and not yet in the index, as exact matches. They are the newest of
+        /// their group: when one is there, the index's other translations of the same source are hidden.</param>
+        /// <param name="targetCulture">The project's target language with its variant ("en-GB"): that variant wins first.</param>
         public static List<VaultMatch> Search(VaultIndex index, IList<VaultPiece> document, string sourceLang, string targetLang, int minScore, int maxResults,
-                                              IEnumerable<VaultCandidate> extra = null)
+                                              IEnumerable<VaultCandidate> extra = null, string targetCulture = null)
         {
             var matches = new List<VaultMatch>();
             var extras = extra?.ToList() ?? new List<VaultCandidate>();
@@ -50,7 +53,25 @@ namespace Supervertaler.Core.SuperVault
 
             // Cheap first pass: word overlap with the document. Exact matches always go through.
             var ranked = new List<(VaultCandidate c, List<VaultPiece> src, List<VaultPiece> trg, string srcPlain, int quick)>();
-            var candidates = index == null ? (IEnumerable<VaultCandidate>)extras : index.Candidates(docPlain, sourceLang, targetLang, maxResults * 2, minScore).Concat(extras);
+            var found = index == null ? new List<VaultCandidate>() : index.Candidates(docPlain, sourceLang, targetLang, maxResults * 2, minScore, targetCulture);
+            var newest = extras.LastOrDefault(c => c.Exact);   // the last one handed over: a correction comes after what it corrects
+            // ... unless the index already has a newer translation (this one was confirmed earlier, elsewhere, and arrived late).
+            var indexed = found.FirstOrDefault(c => c.Exact);
+            if (newest != null && indexed != null && newest.Changed != null && indexed.Date > VaultFields.ToSeconds(newest.Changed.Value))
+            {
+                var keepIndexed = PlainOf(VaultMarkup.Parse(indexed.TargetRaw));
+                extras.RemoveAll(c => c.Exact && PlainOf(VaultMarkup.Parse(c.TargetRaw)) != keepIndexed);
+                newest = null;
+            }
+            if (newest != null)
+            {
+                var keep = PlainOf(VaultMarkup.Parse(newest.TargetRaw));
+                int hidden = found.Where(c => c.Exact).Select(c => PlainOf(VaultMarkup.Parse(c.TargetRaw))).Where(t => t != keep).Distinct().Count();
+                found.RemoveAll(c => c.Exact && PlainOf(VaultMarkup.Parse(c.TargetRaw)) != keep);
+                extras.RemoveAll(c => c.Exact && c != newest && PlainOf(VaultMarkup.Parse(c.TargetRaw)) != keep);
+                foreach (var c in found.Concat(extras)) if (c.Exact) c.Older = Math.Max(c.Older, hidden);
+            }
+            var candidates = found.Concat(extras);
             foreach (var c in candidates)
             {
                 var src = VaultMarkup.Parse(c.SourceRaw);
@@ -88,14 +109,14 @@ namespace Supervertaler.Core.SuperVault
         /// Concordance search: units whose <paramref name="searchLang"/> side contains the query's words. Score = the
         /// share of the query's words the unit contains. Results are oriented searchLang → otherLang, as plain text.
         /// </summary>
-        public static List<VaultMatch> Concordance(VaultIndex index, string query, string searchLang, string otherLang, int minScore, int maxResults)
+        public static List<VaultMatch> Concordance(VaultIndex index, string query, string searchLang, string otherLang, int minScore, int maxResults, string otherCulture = null)
         {
             var matches = new List<VaultMatch>();
             var plain = VaultMarkup.Normalize(query);
             if (index == null || plain.Length == 0 || maxResults <= 0) return matches;
             var words = new HashSet<string>(VaultDiff.Words(plain));
             if (words.Count == 0) return matches;
-            foreach (var c in index.Concordance(plain, searchLang, otherLang, maxResults))
+            foreach (var c in index.Concordance(plain, searchLang, otherLang, maxResults, otherCulture))
             {
                 var src = Strip(VaultMarkup.Parse(c.SourceRaw));
                 var unitWords = new HashSet<string>(VaultDiff.Words(PlainOf(src)));
