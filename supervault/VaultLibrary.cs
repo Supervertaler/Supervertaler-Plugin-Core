@@ -549,7 +549,7 @@ namespace Supervertaler.Core.SuperVault
             {
                 if (_buildThread != null) return false;
                 _buildCancel = new CancellationTokenSource();
-                _progress = "starting";
+                _progress = "Starting";   // progress texts are shown as they are, so each starts with a capital (CAT tools show them in a status line)
                 _lastError = null;
                 var cancel = _buildCancel.Token;
                 _buildThread = new Thread(() =>
@@ -644,14 +644,14 @@ namespace Supervertaler.Core.SuperVault
                             while (r.Read())
                             {
                                 if ((++read & 1023) == 0) cancel.ThrowIfCancellationRequested();
-                                if ((read % 10000) == 0) progress?.Invoke("indexing: " + read.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
+                                if ((read % 10000) == 0) progress?.Invoke("Indexing: " + read.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
                                 string a = r.GetString(1), ta = r.GetString(2), b = r.GetString(3), tb = r.GetString(4);
                                 w.AddDocument(VaultIndex.MakeDocument(r.GetInt64(0).ToString(CultureInfo.InvariantCulture), a, ta, VaultMarkup.Plain(ta), b, tb, VaultMarkup.Plain(tb), r.IsDBNull(5) ? "" : r.GetString(5), VaultStore.ReadIndexMeta(r, 6)));
                                 added++;
                             }
                         }
                         cancel.ThrowIfCancellationRequested();
-                        progress?.Invoke("saving the index");
+                        progress?.Invoke("Saving the index");
                         w.SetCommitData(new Dictionary<string, string> { [VaultIndex.SeqKey] = lastChange.ToString(CultureInfo.InvariantCulture) });
                         w.Commit();
                     }
@@ -840,7 +840,7 @@ namespace Supervertaler.Core.SuperVault
                             from = last;
                             p.Value = from;
                             cancel.ThrowIfCancellationRequested();
-                            progress?.Invoke("updating the index: " + applied.ToString("N0", CultureInfo.InvariantCulture) + " units");
+                            progress?.Invoke("Updating the index: " + applied.ToString("N0", CultureInfo.InvariantCulture) + " units");
                         }
                     }
                     if (applied > 0)

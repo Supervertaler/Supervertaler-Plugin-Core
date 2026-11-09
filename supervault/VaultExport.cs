@@ -183,7 +183,7 @@ namespace Supervertaler.Core.SuperVault
                                 if ((units & 1023) == 0)
                                 {
                                     cancel.ThrowIfCancellationRequested();
-                                    if (units % 50000 == 0) progress?.Invoke("exporting: " + units.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
+                                    if (units % 50000 == 0) progress?.Invoke("Exporting: " + units.ToString("N0", CultureInfo.InvariantCulture) + " of " + total.ToString("N0", CultureInfo.InvariantCulture) + " units");
                                 }
                                 var unit = new VaultExportUnit
                                 {
@@ -215,7 +215,7 @@ namespace Supervertaler.Core.SuperVault
                     }
                 }
                 cancel.ThrowIfCancellationRequested();
-                progress?.Invoke("saving " + System.IO.Path.GetFileName(tmxPath));
+                progress?.Invoke("Saving " + System.IO.Path.GetFileName(tmxPath));
                 FailPoint?.Invoke("rename");
                 if (File.Exists(tmxPath)) File.Replace(temp, tmxPath, null);
                 else File.Move(temp, tmxPath);

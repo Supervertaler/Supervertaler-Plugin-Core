@@ -304,6 +304,20 @@ namespace Supervertaler.Core.SuperVault.Tests
 
         // ---- Workbench, schema upgrade, export ----
 
+        /// <summary>CAT tools show the progress text as it is, as its own label ("Indexing: 10,000 of 20,000 units"): each starts with a capital.</summary>
+        public static void ProgressTextsStartWithACapital()
+        {
+            var lib = Lib();
+            var seen = new List<string>();
+            var body = string.Concat(Enumerable.Range(0, 20001).Select(i => T("Zin nummer " + i + " van de reeks.", "Sentence number " + i + " of the series.")));
+            lib.Import(Tmx(TmxFile(body)), p => seen.Add(p), CancellationToken.None);
+            lib.Build(p => seen.Add(p), CancellationToken.None);
+            var tmx = Path.Combine(Scratch.Folder("export"), "evertm.tmx");
+            VaultExport.Export(lib.StorePath, tmx, null, null, p => seen.Add(p), CancellationToken.None);
+            A.True(seen.Any(p => p.StartsWith("Importing acme.tmx: ")) && seen.Any(p => p.StartsWith("Indexing: ")) && seen.Any(p => p.StartsWith("Exporting: ")), "the kinds seen: " + string.Join(" / ", seen.Distinct().Take(8)));
+            A.True(seen.All(p => p.Length > 0 && char.IsUpper(p[0])), "all capitalised: " + string.Join(" / ", seen.Where(p => p.Length == 0 || !char.IsUpper(p[0])).Distinct()));
+        }
+
         public static void TheWindowCountsProjectsClientsAndSubjects()
         {
             var lib = Lib();

@@ -799,7 +799,7 @@ namespace Supervertaler.Core.SuperVault
                     while (r.Read())
                     {
                         if ((w.Result.Read & 1023) == 0) cancel.ThrowIfCancellationRequested();
-                        if (w.Result.Read % 20000 == 0) progress?.Invoke("Workbench: " + w.Result.Read.ToString("N0", CultureInfo.InvariantCulture) + " units read");
+                        if (w.Result.Read % 20000 == 0) progress?.Invoke("Importing from Workbench: " + w.Result.Read.ToString("N0", CultureInfo.InvariantCulture) + " units read");
                         var tm = r.IsDBNull(4) ? "" : r.GetString(4);
                         if (!infos.TryGetValue(tm, out var info))
                         {

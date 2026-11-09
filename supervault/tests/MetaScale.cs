@@ -37,7 +37,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             sw.Restart();
             double indexFrom = 0;
             var r = lib.Import((store, p, c) => VaultStore.ImportWorkbench(store, db, p, c),
-                               p => { if (indexFrom == 0 && (p.StartsWith("indexing") || p.StartsWith("updating"))) indexFrom = sw.Elapsed.TotalSeconds; }, CancellationToken.None);
+                               p => { if (indexFrom == 0 && (p.StartsWith("Indexing") || p.StartsWith("Updating"))) indexFrom = sw.Elapsed.TotalSeconds; }, CancellationToken.None);
             Console.WriteLine($"index rebuilt: {(VaultLibrary.ReadInfo(lib.Current.Folder).TryGetValue("built", out var built) ? built : "no")}");
             Console.WriteLine($"Workbench re-import: {sw.Elapsed.TotalSeconds:F0} s in all, of which the store {indexFrom:F0} s and the index {sw.Elapsed.TotalSeconds - indexFrom:F0} s: {r.Added:N0} added, {r.Duplicates:N0} already there, {r.Enriched:N0} gained metadata, {r.NamesSplit} TM names split");
             using (var c = new SqliteConnection("Data Source=" + lib.StorePath + ";Mode=ReadOnly;Pooling=False"))
