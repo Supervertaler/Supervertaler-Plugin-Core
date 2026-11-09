@@ -17,7 +17,7 @@ namespace Supervertaler.Core.SuperVault.Tests
         static VaultLearnUnit U(string sl, string s, string tl, string t) => new VaultLearnUnit { SourceCulture = sl, Source = s, TargetCulture = tl, Target = t, Origin = "studio" };
 
         /// <summary>Stores everything waiting, as the background thread would, and fails the test if that doesn't finish.</summary>
-        static void Settle(VaultLibrary lib, int seconds = 30)
+        internal static void Settle(VaultLibrary lib, int seconds = 30)
         {
             var sw = Stopwatch.StartNew();
             while (sw.Elapsed.TotalSeconds < seconds)
@@ -277,7 +277,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             lib.Learn(new[] { U(u.SourceCulture, u.Source, u.TargetCulture, u.Target) });   // the auto-propagated repetition
             Settle(lib);
             A.Eq(6L, lib.StoreCount(), "nothing added");
-            A.Eq("1 confirmed: 0 added, 1 already in SuperVault", lib.LearnedThisSession.ToString(), "counted once, as already there");
+            A.Eq("1 confirmed: 0 added, 1 already in EverTM", lib.LearnedThisSession.ToString(), "counted once, as already there");
             A.Eq(1L, lib.Status.Learned.Already, "the status says the same");
         }
 
@@ -288,10 +288,10 @@ namespace Supervertaler.Core.SuperVault.Tests
             lib.Learn(new[] { u, U(u.SourceCulture, u.Source, u.TargetCulture, u.Target) });
             Settle(lib);
             A.Eq(7L, lib.StoreCount(), "one new unit");
-            A.Eq("1 confirmed: 1 added, 0 already in SuperVault", lib.LearnedThisSession.ToString(), "counted once, as added");
+            A.Eq("1 confirmed: 1 added, 0 already in EverTM", lib.LearnedThisSession.ToString(), "counted once, as added");
             lib.Learn(new[] { U(u.SourceCulture, u.Source, u.TargetCulture, u.Target) });   // confirmed again later, unchanged
             Settle(lib);
-            A.Eq("2 confirmed: 1 added, 1 already in SuperVault", lib.LearnedThisSession.ToString(), "later: already there");
+            A.Eq("2 confirmed: 1 added, 1 already in EverTM", lib.LearnedThisSession.ToString(), "later: already there");
         }
 
         public static void CountsSayAddedReplacedAlreadyAndSkipped()
@@ -307,7 +307,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             Settle(lib);
             var c = lib.LearnedThisSession;
             A.Eq((1L, 1L, 1L, 1L), (c.Added, c.Replaced, c.Already, c.Skipped), "added, replaced, already, skipped");
-            A.Eq("4 confirmed: 1 added, 1 replaced, 1 already in SuperVault, 1 skipped (empty or not text)", c.ToString(), "wording");
+            A.Eq("4 confirmed: 1 added, 1 replaced, 1 already in EverTM, 1 skipped (empty or not text)", c.ToString(), "wording");
             A.Eq(1, Best(lib, src).count, "one unit for the source");
         }
 
@@ -319,7 +319,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             Settle(lib);
             A.Eq("Close the lid.", Best(lib, src).target, "the last translation is kept");
             A.Eq(1, Best(lib, src).count, "once");
-            A.Eq("2 confirmed: 1 added, 1 replaced, 0 already in SuperVault", lib.LearnedThisSession.ToString(), "the identical third one counts once with the second");
+            A.Eq("2 confirmed: 1 added, 1 replaced, 0 already in EverTM", lib.LearnedThisSession.ToString(), "the identical third one counts once with the second");
         }
 
         public static void OncePerLanguagePairWhateverDirectionAndVariant()
@@ -467,7 +467,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             finally { VaultLibrary.FailPoint = null; }
             Settle(lib);
             A.Eq(100, Best(lib, "Een zin die eerst niet lukt.").score, "stored on the next try");
-            A.Eq("1 confirmed: 1 added, 0 already in SuperVault", lib.LearnedThisSession.ToString(), "counted once, when stored");
+            A.Eq("1 confirmed: 1 added, 0 already in EverTM", lib.LearnedThisSession.ToString(), "counted once, when stored");
             A.Eq(null, lib.LearnError, "error cleared");
         }
 

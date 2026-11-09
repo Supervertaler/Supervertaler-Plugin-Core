@@ -26,8 +26,8 @@ namespace Supervertaler.Core.SuperVault.Tests
         {
             if (args.Length < 2) { Console.WriteLine("usage: limits build|lookup|sync|export <folder> [arg]"); return 2; }
             var root = Path.GetFullPath(args[1]);
-            if (string.Equals(root.TrimEnd('\\'), Path.GetFullPath(VaultLibrary.DefaultRoot).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) || root.StartsWith(@"D:\Supervertaler", StringComparison.OrdinalIgnoreCase))
-            { Console.WriteLine("Refusing to use the real SuperVault folder."); return 2; }
+            if (Scratch.IsReal(root) || root.StartsWith(@"D:\Supervertaler", StringComparison.OrdinalIgnoreCase))
+            { Console.WriteLine("Refusing to use the real EverTM folder."); return 2; }
             VaultLibrary.Max32BitUnits = long.MaxValue;   // measuring what the guard is based on: never refused here
             var lib = VaultLibrary.For(root);
             Console.WriteLine($"{(Environment.Is64BitProcess ? "64" : "32")}-bit; {args[0]} on {root}; store {VaultStore.Count(lib.StorePath):N0} units");

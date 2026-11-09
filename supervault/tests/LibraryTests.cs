@@ -58,7 +58,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.Eq(VaultState.Missing, lib.Status.State, "state");
             A.True(lib.Status.Message.Contains("import"), "message says what to do: " + lib.Status.Message);
             A.Eq(0L, lib.StoreCount(), "no store");
-            A.Throws<FileNotFoundException>(() => lib.Build(null, CancellationToken.None), "building an empty SuperVault");
+            A.Throws<FileNotFoundException>(() => lib.Build(null, CancellationToken.None), "building an empty EverTM");
             A.Eq(0, VaultLookup.Search(null, Doc("x"), "nl", "en", 50, 5).Count, "lookup on no index");
         }
 

@@ -278,7 +278,7 @@ namespace Supervertaler.Core.SuperVault
         internal sealed class NoAnalyzer : Analyzer
         {
             protected override TokenStreamComponents CreateComponents(string fieldName, TextReader reader) =>
-                throw new NotSupportedException("SuperVault indexes pre-split words only.");
+                throw new NotSupportedException("EverTM indexes pre-split words only.");
         }
     }
 }

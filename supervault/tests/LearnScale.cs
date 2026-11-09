@@ -22,8 +22,8 @@ namespace Supervertaler.Core.SuperVault.Tests
         public static int Run(string[] args)
         {
             var root = Path.GetFullPath(args[0]);
-            if (string.Equals(root.TrimEnd('\\'), Path.GetFullPath(VaultLibrary.DefaultRoot).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
-            { Console.WriteLine("Refusing to use the real SuperVault folder for a test."); return 2; }
+            if (Scratch.IsReal(root))
+            { Console.WriteLine("Refusing to use the real EverTM folder for a test."); return 2; }
             Directory.CreateDirectory(root);
             var store = Path.Combine(root, "supervault.db");
             if (!File.Exists(store))

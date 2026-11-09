@@ -78,6 +78,13 @@ namespace Supervertaler.Core.SuperVault.Tests
     static class Scratch
     {
         static readonly string Base = Path.Combine(Path.GetTempPath(), "sv-supervault-tests-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        /// <summary>True for the real EverTM folder, under either name, or anything inside it: a test must never use those.</summary>
+        public static bool IsReal(string root)
+        {
+            var full = Path.GetFullPath(root).TrimEnd('\\') + "\\";
+            return new[] { VaultLibrary.DefaultRoot, VaultLibrary.OldDefaultRoot }.Any(r => full.StartsWith(Path.GetFullPath(r).TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase));
+        }
+
         public static string Folder(string name) { var p = Path.Combine(Base, name + "-" + Guid.NewGuid().ToString("N").Substring(0, 6)); Directory.CreateDirectory(p); return p; }
 
         public static string Database(IEnumerable<(string src, string trg, string sl, string tl)> units)

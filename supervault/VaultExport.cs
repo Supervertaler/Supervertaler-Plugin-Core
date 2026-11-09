@@ -70,16 +70,16 @@ namespace Supervertaler.Core.SuperVault
     /// </summary>
     public static class VaultExport
     {
-        public const string CreationTool = "Supervertaler SuperVault";
+        public const string CreationTool = "Supervertaler EverTM";
         /// <summary>
         /// The prop with a unit's origin. Read back with or without a Studio-style type suffix ("x-SuperVault-Origin:SingleString").
         /// Studio's TMX import keeps x- props as fields only in files Studio itself wrote (checked offline, 9 Nov 2026):
         /// in Studio the origin is not kept; in SuperVault and in tools that read props it is.
         /// </summary>
-        public const string OriginProp = "x-SuperVault-Origin";
+        public const string OriginProp = "x-EverTM-Origin";
 
         internal static bool IsOriginProp(string type) =>
-            type == "x-SuperVault-Origin" || (type != null && type.StartsWith("x-SuperVault-Origin:", StringComparison.Ordinal));
+            type == "x-EverTM-Origin" || (type != null && type.StartsWith("x-EverTM-Origin:", StringComparison.Ordinal));
 
         /// <summary>
         /// What SuperVault holds, per language pair and origin: one GROUP BY over the store, a single pass (seconds for
@@ -110,7 +110,7 @@ namespace Supervertaler.Core.SuperVault
         /// </summary>
         public static VaultExportResult Export(string store, string tmxPath, string pair, ICollection<string> origins, Action<string> progress, CancellationToken cancel)
         {
-            if (!File.Exists(store)) throw new FileNotFoundException("SuperVault is empty: there is nothing to export.", store);
+            if (!File.Exists(store)) throw new FileNotFoundException("EverTM is empty: there is nothing to export.", store);
             tmxPath = System.IO.Path.GetFullPath(tmxPath);
             var folder = System.IO.Path.GetDirectoryName(tmxPath);
             if (!Directory.Exists(folder)) throw new DirectoryNotFoundException("The folder " + folder + " does not exist.");
@@ -221,7 +221,7 @@ namespace Supervertaler.Core.SuperVault
             w.WriteAttributeString("creationtool", CreationTool);
             w.WriteAttributeString("creationtoolversion", "1");
             w.WriteAttributeString("segtype", "sentence");
-            w.WriteAttributeString("o-tmf", "SuperVault");
+            w.WriteAttributeString("o-tmf", "EverTM");
             w.WriteAttributeString("adminlang", "en-US");
             w.WriteAttributeString("srclang", "*all*");   // each TU says its own source language
             w.WriteAttributeString("datatype", "plaintext");

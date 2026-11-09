@@ -55,7 +55,7 @@ namespace Supervertaler.Core.SuperVault
     {
         public long Read, Added, Duplicates, Skipped;
         public override string ToString() =>
-            $"{Added:N0} {(Added == 1 ? "unit" : "units")} added, {Duplicates:N0} already in SuperVault, {Skipped:N0} skipped (no text, one language, or junk)";
+            $"{Added:N0} {(Added == 1 ? "unit" : "units")} added, {Duplicates:N0} already in EverTM, {Skipped:N0} skipped (no text, one language, or junk)";
     }
 
     /// <summary>
@@ -292,7 +292,7 @@ namespace Supervertaler.Core.SuperVault
                 {
                     Result.Added++; _changed = true;
                     if (_limit > 0 && _start + Result.Added > _limit)
-                        throw new VaultTooLargeException(VaultLibrary.TooLargeFor32Bit(_start + Result.Added, importing: true) ?? "SuperVault would be too large.");
+                        throw new VaultTooLargeException(VaultLibrary.TooLargeFor32Bit(_start + Result.Added, importing: true) ?? "EverTM would be too large.");
                     return VaultAddOutcome.Added;
                 }
                 Result.Duplicates++;

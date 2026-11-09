@@ -62,7 +62,7 @@ namespace Supervertaler.Core.SuperVault
             var f = CultureInfo.CurrentCulture;
             var s = Total.ToString("N0", f) + " confirmed: " + Added.ToString("N0", f) + " added";
             if (Replaced > 0) s += ", " + Replaced.ToString("N0", f) + " replaced";
-            s += ", " + Already.ToString("N0", f) + " already in SuperVault";
+            s += ", " + Already.ToString("N0", f) + " already in EverTM";
             if (Skipped > 0) s += ", " + Skipped.ToString("N0", f) + " skipped (empty or not text)";
             return s;
         }
@@ -71,8 +71,9 @@ namespace Supervertaler.Core.SuperVault
     /// <summary>
     /// SuperVault on disk: its own memory (<see cref="VaultStore"/>), and the search index built from it.
     ///
-    /// Layout of <see cref="Root"/> (by default <c>&lt;data folder&gt;\supervault\</c>):
-    ///   supervault.db       the memory itself (SQLite), filled by imports
+    /// Layout of <see cref="Root"/> (by default <c>&lt;data folder&gt;\evertm\</c>; <c>supervault\</c> before the rename,
+    /// moved by <see cref="MoveToNewName"/>):
+    ///   evertm.db           the memory itself (SQLite), filled by imports (supervault.db before the rename)
     ///   current.txt         name of the generation in use, replaced in one step (AtomicFile)
     ///   gen-&lt;utc&gt;-&lt;n&gt;\    one complete index per build, never changed once current
     ///   build.lock          held open, unshared, by the process building; the OS drops it if that process dies
@@ -135,8 +136,96 @@ namespace Supervertaler.Core.SuperVault
             }
         }
 
-        /// <summary>Where SuperVault lives for this user: <c>&lt;Supervertaler data folder&gt;\supervault</c>.</summary>
-        public static string DefaultRoot => Path.Combine(SupervertalerPaths.Root, "supervault");
+        /// <summary>
+        /// Where EverTM lives for this user: <c>&lt;Supervertaler data folder&gt;\evertm</c>. Only the path: it moves
+        /// nothing (tests compare against it). A product opens <see cref="DefaultRootInUse"/>.
+        /// </summary>
+        public static string DefaultRoot => Path.Combine(SupervertalerPaths.Root, FolderName);
+
+        /// <summary>The folder before EverTM was renamed (it was called SuperVault): <c>&lt;data folder&gt;\supervault</c>.</summary>
+        public static string OldDefaultRoot => Path.Combine(SupervertalerPaths.Root, OldFolderName);
+
+        public const string FolderName = "evertm";
+        public const string OldFolderName = "supervault";
+
+        static FileStream _oldFolderPin;   // held until the process ends while it uses the old folder: see ResolveInUse
+        static readonly Lazy<string> InUse = new Lazy<string>(() => ResolveInUse(SupervertalerPaths.Root, out _oldFolderPin));
+
+        /// <summary>
+        /// The folder a product opens: <see cref="DefaultRoot"/>, after moving the old <c>supervault</c> folder there
+        /// the first time it is asked for in this process (<see cref="ResolveInUse"/>). Set <see cref="Log"/> first.
+        /// </summary>
+        public static string DefaultRootInUse => InUse.Value;
+
+        /// <summary>
+        /// <see cref="MoveToNewName"/>, and if the old folder has to be used for now, a file in it held open (shared)
+        /// until this process ends. That keeps any other Studio from renaming the folder while this one still uses it
+        /// under the old name: an open index alone doesn't (in 64-bit it is mapped into memory and holds no file open),
+        /// and this process would otherwise go on to recreate an empty <c>supervault</c> folder beside the moved one.
+        /// </summary>
+        internal static string ResolveInUse(string dataFolder, out FileStream pin)
+        {
+            pin = null;
+            var root = MoveToNewName(dataFolder);
+            if (!string.Equals(Path.GetFileName(root), OldFolderName, StringComparison.OrdinalIgnoreCase)) return root;
+            try
+            {
+                pin = new FileStream(Path.Combine(root, PinFileName), FileMode.OpenOrCreate, FileAccess.ReadWrite,
+                                     FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.DeleteOnClose);
+                return root;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                if (!System.IO.Directory.Exists(root)) return MoveToNewName(dataFolder);   // another Studio moved it a moment ago
+                TryLog("Could not mark " + root + " as in use (" + ex.Message + ").");
+                return root;
+            }
+        }
+
+        internal const string PinFileName = "in-use-before-rename.lock";
+
+        /// <summary>
+        /// Renames <c>&lt;dataFolder&gt;\supervault</c> to <c>&lt;dataFolder&gt;\evertm</c> and returns the folder to use.
+        ///
+        /// One rename of the folder, on the same disk: Windows does it in one step, whatever the store's size (it is
+        /// never copied), and refuses it while any file inside is open by anyone (another Studio looking up,
+        /// importing or holding build.lock, or Explorer). That refusal is the lock: if the rename succeeds, nobody had
+        /// the store open. If it fails, nothing has changed: the old folder is used, the reason is logged, and the
+        /// next start tries again. There is no half-moved state, so there is nothing to repair.
+        ///
+        /// Both folders already there (an older Supervertaler in another Studio recreated the old one): the new one is
+        /// used and the old one is left as it is (deleted only if completely empty), with a line in the log. A new
+        /// folder that is completely empty is removed first, so it can't hide the store.
+        /// </summary>
+        public static string MoveToNewName(string dataFolder)
+        {
+            var old = Path.Combine(dataFolder, OldFolderName);
+            var now = Path.Combine(dataFolder, FolderName);
+            try
+            {
+                if (!System.IO.Directory.Exists(old)) return now;
+                if (System.IO.Directory.Exists(now))
+                {
+                    if (System.IO.Directory.EnumerateFileSystemEntries(now).Any())
+                    {
+                        if (System.IO.Directory.EnumerateFileSystemEntries(old).Any())
+                            TryLog("Both " + old + " and " + now + " exist. Using " + now + "; " + old + " is left as it is (nothing in it is deleted).");
+                        else try { System.IO.Directory.Delete(old); } catch { }   // an empty leftover: Delete refuses a folder that isn't empty
+                        return now;
+                    }
+                    System.IO.Directory.Delete(now);   // empty: refused (and logged below) if anything appeared in it meanwhile
+                }
+                System.IO.Directory.Move(old, now);
+                TryLog("Moved " + old + " to " + now + ".");
+                return now;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                bool movedByOther = !System.IO.Directory.Exists(old) && System.IO.Directory.Exists(now);   // another Studio starting at the same moment
+                if (!movedByOther) TryLog("Could not move " + old + " to " + now + " (" + ex.Message + "). Using " + old + " for now; trying again next time.");
+                return movedByOther ? now : old;
+            }
+        }
 
         /// <summary>
         /// Where a Supervertaler Workbench database would be, for the optional "Import from Workbench":
@@ -246,14 +335,14 @@ namespace Supervertaler.Core.SuperVault
                         s.BuiltAt = ReadBuiltAt(idx.Folder);
                         s.Message = Units(idx.Count, CultureInfo.InvariantCulture);
                     }
-                    else if (_broken != null) { s.State = VaultState.Broken; s.Message = "The SuperVault index could not be opened (" + _broken + "). Rebuild it."; }
+                    else if (_broken != null) { s.State = VaultState.Broken; s.Message = "The EverTM index could not be opened (" + _broken + "). Rebuild it."; }
                     else
                     {
                         // Empty is a normal state, not an error: SuperVault fills as you confirm segments.
                         s.State = VaultState.Missing;
                         s.Message = File.Exists(StorePath)
-                            ? "SuperVault has no index yet: it is built when you next confirm a segment, or click Rebuild index."
-                            : "SuperVault is empty: it fills as you confirm segments (with its Update box ticked), or import a TMX file or a translation memory.";
+                            ? "EverTM has no index yet: it is built when you next confirm a segment, or click Rebuild index."
+                            : "EverTM is empty: it fills as you confirm segments (with its Update box ticked), or import a TMX file or a translation memory.";
                     }
                 }
                 return s;
@@ -288,8 +377,46 @@ namespace Supervertaler.Core.SuperVault
 
         // ---- importing and building ----
 
-        /// <summary>SuperVault's own memory, which the index is built from: <c>supervault.db</c> in <see cref="Root"/>.</summary>
-        public string StorePath => Path.Combine(Root, "supervault.db");
+        /// <summary>
+        /// EverTM's own memory, which the index is built from: <c>evertm.db</c> in <see cref="Root"/>, or the
+        /// <c>supervault.db</c> of a store from before the rename until <see cref="RenameOldStore"/> has renamed it.
+        /// </summary>
+        public string StorePath => File.Exists(OldStorePath) && !File.Exists(NewStorePath) ? OldStorePath : NewStorePath;
+        string NewStorePath => Path.Combine(Root, "evertm.db");
+        string OldStorePath => Path.Combine(Root, "supervault.db");
+
+        bool _storeNameChecked;   // RenameOldStore has been tried in this process (only under the build lock)
+
+        /// <summary>
+        /// Renames a <c>supervault.db</c> from before the rename to <c>evertm.db</c>, once the folder has its new name
+        /// (never inside a folder still called <c>supervault</c>). Caller holds the build lock, so
+        /// no writer can be using the old name; a reader that has it open makes the rename fail, harmlessly. Skipped
+        /// while its <c>-wal</c> file holds changes not yet written into it (renaming only the main file would lose
+        /// them); SQLite folds them in when the last connection closes, so a later start renames it. A failure
+        /// changes nothing: <see cref="StorePath"/> keeps finding the old name.
+        /// </summary>
+        void RenameOldStore()
+        {
+            if (_storeNameChecked) return;
+            _storeNameChecked = true;
+            try
+            {
+                if (!File.Exists(OldStorePath) || File.Exists(NewStorePath)) return;
+                // Never in the old folder: it is still there because something had it open, maybe an older Supervertaler
+                // in another Studio, which knows only supervault.db and would start a new, empty one beside ours.
+                if (string.Equals(Path.GetFileName(Root.TrimEnd(Path.DirectorySeparatorChar)), OldFolderName, StringComparison.OrdinalIgnoreCase)) return;
+                var wal = new FileInfo(OldStorePath + "-wal");
+                if (wal.Exists && wal.Length > 0) { TryLog(OldStorePath + " was not renamed: its -wal file still holds changes. Trying again next time."); return; }
+                File.Move(OldStorePath, NewStorePath);
+                TryLog("Renamed " + OldStorePath + " to " + NewStorePath + ".");
+                foreach (var leftover in new[] { OldStorePath + "-wal", OldStorePath + "-shm" })
+                    try { File.Delete(leftover); } catch { }   // empty or SQLite's scratch index: nothing in them is needed
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                TryLog("Could not rename " + OldStorePath + " to " + NewStorePath + " (" + ex.Message + "). Using it as it is; trying again next time.");
+            }
+        }
 
         /// <summary>Units in the store. Opens the file: for a settings dialog, not for every lookup.</summary>
         public long StoreCount() => VaultStore.Count(StorePath);
@@ -406,7 +533,7 @@ namespace Supervertaler.Core.SuperVault
                     }
                     try { done?.Invoke(error); } catch { }
                 })
-                { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "SuperVault " + kind };
+                { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "EverTM " + kind };
                 _buildThread.Start();
                 return true;
             }
@@ -417,7 +544,7 @@ namespace Supervertaler.Core.SuperVault
         IDisposable TakeLock()
         {
             var l = TryTakeLock();
-            if (l == null) throw new IOException("Another program (a second Trados Studio, or memoQ) is importing into SuperVault, building its index or storing confirmed segments right now. Try again when it has finished.");
+            if (l == null) throw new IOException("Another program (a second Trados Studio, or memoQ) is importing into EverTM, building its index or storing confirmed segments right now. Try again when it has finished.");
             return l;
         }
 
@@ -425,9 +552,12 @@ namespace Supervertaler.Core.SuperVault
         FileStream TryTakeLock()
         {
             System.IO.Directory.CreateDirectory(Root);
-            try { return new FileStream(LockFile, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose); }
+            FileStream l;
+            try { l = new FileStream(LockFile, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose); }
             catch (IOException) { return null; }
             catch (UnauthorizedAccessException) { return null; }   // the file is being deleted by its last holder this instant
+            RenameOldStore();   // once per process, under the lock; never throws
+            return l;
         }
 
         /// <summary>
@@ -443,7 +573,7 @@ namespace Supervertaler.Core.SuperVault
             string genFolder = null;
             try
             {
-                if (!File.Exists(StorePath)) throw new FileNotFoundException("SuperVault is empty: import a TMX file or a translation memory first.", StorePath);
+                if (!File.Exists(StorePath)) throw new FileNotFoundException("EverTM is empty: import a TMX file or a translation memory first.", StorePath);
                 var current = ReadPointer();
                 DeleteOldGenerations(current, noneIsCurrent: current == null && !File.Exists(PointerFile));   // e.g. a build that died half-way
 
@@ -505,7 +635,7 @@ namespace Supervertaler.Core.SuperVault
                 File.WriteAllText(Path.Combine(genFolder, "info.txt"), info.ToString(), new UTF8Encoding(false));
 
                 if (AtomicFile.Write(PointerFile, new UTF8Encoding(false).GetBytes(name), true, null) != AtomicFile.Outcome.Written)
-                    throw new IOException("Could not switch to the new SuperVault index (" + PointerFile + " is in use). The previous index stays in use.");
+                    throw new IOException("Could not switch to the new EverTM index (" + PointerFile + " is in use). The previous index stays in use.");
                 genFolder = null;   // it is current now: never delete it below
                 lock (_gate) _checkedAt = 0;
                 DeleteOldGenerations(keep: name);
@@ -589,8 +719,8 @@ namespace Supervertaler.Core.SuperVault
             if (!Is32Bit || units <= Max32BitUnits) return null;
             var f = CultureInfo.CurrentCulture;
             return (importing
-                       ? "This import would take SuperVault past " + Units(Max32BitUnits, f) + ", the most it has been tested with in Studio 2024. "
-                       : "SuperVault holds " + Units(units, f) + ", more than it has been tested with in Studio 2024 (" + Units(Max32BitUnits, f) + "). ") +
+                       ? "This import would take EverTM past " + Units(Max32BitUnits, f) + ", the most it has been tested with in Studio 2024. "
+                       : "EverTM holds " + Units(units, f) + ", more than it has been tested with in Studio 2024 (" + Units(Max32BitUnits, f) + "). ") +
                    "Studio 2024 is a 32-bit program, with far less memory to work with than Studio 2026. " +
                    "Do this " + (importing ? "import" : "rebuild") + " in Studio 2026 (64-bit) instead; Studio 2024 can still look things up in the result " +
                    "and learn from the segments you confirm. Nothing was changed.";
@@ -890,11 +1020,11 @@ namespace Supervertaler.Core.SuperVault
                     {
                         int drop = _waiting.Count - MaxWaiting;
                         _waiting.RemoveRange(0, drop);
-                        TryLog(drop + " confirmed segments were not stored: SuperVault could not save them (" + _learnError + ").");
+                        TryLog(drop + " confirmed segments were not stored: EverTM could not save them (" + _learnError + ").");
                     }
                     if (_learner == null)
                     {
-                        _learner = new Thread(LearnLoop) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "SuperVault learning" };
+                        _learner = new Thread(LearnLoop) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "EverTM learning" };
                         _learner.Start();
                         AppDomain.CurrentDomain.ProcessExit += (s, e) => SaveWaiting();
                     }

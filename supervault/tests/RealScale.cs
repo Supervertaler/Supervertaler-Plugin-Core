@@ -20,8 +20,8 @@ namespace Supervertaler.Core.SuperVault.Tests
         {
             var db = args.Length > 0 ? args[0] : @"D:\Supervertaler\resources\supervertaler.db";
             var root = args.Length > 1 ? args[1] : Path.Combine(Path.GetTempPath(), "sv-supervault-scale");
-            if (string.Equals(Path.GetFullPath(root).TrimEnd('\\'), Path.GetFullPath(VaultLibrary.DefaultRoot).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
-            { Console.WriteLine("Refusing to use the real SuperVault folder for a test."); return 2; }
+            if (Scratch.IsReal(root))
+            { Console.WriteLine("Refusing to use the real EverTM folder for a test."); return 2; }
             var lib = VaultLibrary.For(root);
             Console.WriteLine($"database {db}\nindex    {root}");
             if (lib.Current == null)

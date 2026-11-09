@@ -95,7 +95,7 @@ namespace Supervertaler.Core.SuperVault.Tests
 
             // And into a SuperVault that already holds them: all duplicates.
             var dup = lib.Import((store, p, c) => VaultTmx.Import(store, tmx, p, c), null, CancellationToken.None);
-            A.Eq(0L, dup.Added, "nothing new when imported into the SuperVault it came from");
+            A.Eq(0L, dup.Added, "nothing new when imported into the EverTM it came from");
             A.Eq((long)Mixed.Length, dup.Duplicates, "every unit recognised as already there");
         }
 
@@ -124,7 +124,7 @@ namespace Supervertaler.Core.SuperVault.Tests
                 A.Eq(Mixed[i].sl, tuvs[0].GetAttribute("xml:lang"), "tu " + i + " source tuv first, in its variant");
                 A.Eq(Mixed[i].tl, tuvs[1].GetAttribute("xml:lang"), "tu " + i + " target tuv in its variant");
                 A.True(System.Text.RegularExpressions.Regex.IsMatch(tu.GetAttribute("creationdate"), @"^\d{8}T\d{6}Z$"), "creationdate in TMX form: " + tu.GetAttribute("creationdate"));
-                var prop = (XmlElement)tu.SelectSingleNode("prop[@type='x-SuperVault-Origin']");
+                var prop = (XmlElement)tu.SelectSingleNode("prop[@type='x-EverTM-Origin']");
                 A.Eq(Mixed[i].origin, prop?.InnerText, "origin prop");
                 foreach (var seg in tu.SelectNodes("tuv/seg").Cast<XmlElement>())
                 {
@@ -215,7 +215,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.Eq(6L, Count(null, new[] { "studio", "sdltm:Acme.sdltm", "tmx:Acme PROJ-001.tmx" }), "several origins");
             A.Eq(3L, Count("en|nl", new[] { "studio" }), "pair and origin together");
             A.Eq(1L, Count(null, new[] { "" }), "units without an origin");
-            A.Eq(0L, Count("fr|nl", null), "a pair SuperVault doesn't hold: an empty, valid TMX");
+            A.Eq(0L, Count("fr|nl", null), "a pair EverTM doesn't hold: an empty, valid TMX");
             A.Eq(0L, Count(null, new string[0]), "no origins chosen: nothing");
         }
 
@@ -331,7 +331,7 @@ namespace Supervertaler.Core.SuperVault.Tests
                 A.Eq(null, VaultLibrary.TooLargeFor32Bit(10), "at the limit: fine");
                 var m = VaultLibrary.TooLargeFor32Bit(11);
                 A.True(m != null && m.Contains("Studio 2026") && m.Contains("Nothing was changed"), "past it: refused, naming the way out: " + m);
-                A.True(VaultLibrary.TooLargeFor32Bit(11, importing: true).Contains("This import would take SuperVault past 10 units"), "import wording");
+                A.True(VaultLibrary.TooLargeFor32Bit(11, importing: true).Contains("This import would take EverTM past 10 units"), "import wording");
             });
             VaultLibrary.Is32BitForTests = false;
             try { A.Eq(null, VaultLibrary.TooLargeFor32Bit(long.MaxValue), "64-bit: never refused"); }
@@ -360,7 +360,7 @@ namespace Supervertaler.Core.SuperVault.Tests
                 // ...but a rebuild of that is refused, leaving the index in use as it was.
                 var name = lib.Current.Folder;
                 var bex = Assert<VaultTooLargeException>(() => lib.Build(null, CancellationToken.None));
-                A.True(bex.Message.StartsWith("SuperVault holds 11 units, more than it has been tested with in Studio 2024 (10 units)") && bex.Message.Contains("rebuild in Studio 2026"), "rebuild message: " + bex.Message);
+                A.True(bex.Message.StartsWith("EverTM holds 11 units, more than it has been tested with in Studio 2024 (10 units)") && bex.Message.Contains("rebuild in Studio 2026"), "rebuild message: " + bex.Message);
                 lib.Refresh();
                 A.Eq(name, lib.Current.Folder, "the index in use is untouched");
                 A.Eq(1, Directory.GetDirectories(lib.Root, "gen-*").Length, "no half-built generation left");
