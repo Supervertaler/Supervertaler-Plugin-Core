@@ -317,10 +317,19 @@ namespace Supervertaler.Core.SuperVault.Tests
 
         public static void TheRealFoldersAreNeverUsedByTests()
         {
-            A.True(Scratch.IsReal(VaultLibrary.DefaultRoot) && Scratch.IsReal(VaultLibrary.OldDefaultRoot), "both names count as real");
-            A.True(Scratch.IsReal(Path.Combine(VaultLibrary.OldDefaultRoot, "gen-1")), "and anything inside");
+            string realNew = Path.Combine(Scratch.RealDataRoot, "evertm"), realOld = Path.Combine(Scratch.RealDataRoot, "supervault");
+            A.True(Scratch.IsReal(realNew) && Scratch.IsReal(realOld), "both names count as real");
+            A.True(Scratch.IsReal(Path.Combine(realOld, "gen-1")), "and anything inside");
             A.True(!Scratch.IsReal(Scratch.Folder("x")), "a scratch folder doesn't");
             A.True(!VaultLibrary.DefaultRoot.EndsWith("supervault"), "DefaultRoot is the new name and moves nothing");
+        }
+
+        /// <summary>The whole run uses its own data folder: Supervertaler's data folder, and so EverTM's default, are under scratch.</summary>
+        public static void TheRunUsesItsOwnDataFolder()
+        {
+            A.True(SupervertalerPaths.Root.StartsWith(Scratch.DataRoot, StringComparison.OrdinalIgnoreCase), "data folder: " + SupervertalerPaths.Root);
+            A.True(!Scratch.IsReal(VaultLibrary.DefaultRoot), "EverTM's default folder is not the real one: " + VaultLibrary.DefaultRoot);
+            A.True(!string.Equals(Path.GetFullPath(Scratch.RealDataRoot).TrimEnd('\\'), Path.GetFullPath(SupervertalerPaths.Root).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase), "differs from the real one");
         }
     }
 }

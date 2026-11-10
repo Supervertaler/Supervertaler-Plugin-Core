@@ -15,6 +15,10 @@ namespace Supervertaler.Core.SuperVault.Tests
     {
         static int Main(string[] args)
         {
+            // Before anything else: remember where the user's real data folder is (for Scratch.IsReal), then point
+            // Supervertaler's data folder at the scratch folder for the whole run, so nothing a test does can reach
+            // D:\Supervertaler (logs, settings, EverTM). In memory only: config.json is not written.
+            Scratch.Isolate();
             var filter = args.Length > 0 ? args[0] : null;
             if (filter == "real") return RealScale.Run(args.Skip(1).ToArray());
             if (filter == "child") return LearnTests.Child(args.Skip(1).ToArray());
@@ -24,7 +28,7 @@ namespace Supervertaler.Core.SuperVault.Tests
             if (filter == "workbenchlist")
             {
                 // Times the list of Workbench TMs on a real database (read-only). Prints counts only: TM names can be client names.
-                var db = args.Length > 1 ? args[1] : VaultLibrary.WorkbenchDatabase;
+                var db = args.Length > 1 ? args[1] : Path.Combine(Scratch.RealDataRoot, "resources", "supervertaler.db");   // read-only
                 for (int i = 0; i < 3; i++)
                 {
                     var sw = Stopwatch.StartNew();
@@ -79,11 +83,29 @@ namespace Supervertaler.Core.SuperVault.Tests
     static class Scratch
     {
         static readonly string Base = Path.Combine(Path.GetTempPath(), "sv-supervault-tests-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+
+        /// <summary>The user's real Supervertaler data folder, read before <see cref="Isolate"/> replaced it for this run.</summary>
+        public static string RealDataRoot { get; private set; }
+
+        /// <summary>This run's own data folder: Supervertaler's data folder while the tests run.</summary>
+        public static string DataRoot => Path.Combine(Base, "data");
+
+        /// <summary>Points Supervertaler's data folder at <see cref="DataRoot"/> (in memory; config.json untouched).</summary>
+        public static void Isolate()
+        {
+            if (RealDataRoot != null) return;
+            RealDataRoot = SupervertalerPaths.Root;
+            Directory.CreateDirectory(DataRoot);
+            SupervertalerPaths.Set(DataRoot);
+        }
+
         /// <summary>True for the real EverTM folder, under either name, or anything inside it: a test must never use those.</summary>
         public static bool IsReal(string root)
         {
+            var real = RealDataRoot ?? SupervertalerPaths.Root;
             var full = Path.GetFullPath(root).TrimEnd('\\') + "\\";
-            return new[] { VaultLibrary.DefaultRoot, VaultLibrary.OldDefaultRoot }.Any(r => full.StartsWith(Path.GetFullPath(r).TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase));
+            return new[] { Path.Combine(real, VaultLibrary.FolderName), Path.Combine(real, VaultLibrary.OldFolderName) }
+                .Any(r => full.StartsWith(Path.GetFullPath(r).TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase));
         }
 
         public static string Folder(string name) { var p = Path.Combine(Base, name + "-" + Guid.NewGuid().ToString("N").Substring(0, 6)); Directory.CreateDirectory(p); return p; }
