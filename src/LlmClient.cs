@@ -3588,7 +3588,7 @@ namespace Supervertaler.Core
         // beginning up to a breakpoint (cache_control) for five minutes from its
         // last use; a later request that begins with the same bytes reads it for
         // a tenth of the input price (a twentieth on Opus 5.5, a fortieth on Fable
-        // 5.1), and writing it costs 1.25 times. At most four breakpoints per
+        // 5.1 and 5.2), and writing it costs 1.25 times. At most four breakpoints per
         // request; below the model's minimum (512 tokens on the Claude 5 models,
         // up to 4,096 on older ones) a breakpoint is silently ignored and nothing
         // is charged. Only the markers are added here: the text sent is the text

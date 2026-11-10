@@ -115,7 +115,8 @@ namespace Supervertaler.Core
         // works - and their runs are still costed. So Sonnet 5 (superseded by
         // Sonnet 5.5, same price, released 2026-09-28), Opus 5 (by Opus 5.5,
         // 2026-09-24) and Haiku 4.5 (out of the short list, same day as Sonnet
-        // 5.5) all still run.
+        // 5.5) all still run, and so does Fable 5.1 (by Fable 5.2, released
+        // 2026-11-10, at $8/$40 against 5.1's $10/$50).
         public static readonly LlmModelInfo[] ClaudeModels =
         {
             new LlmModelInfo
@@ -132,8 +133,8 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "claude-fable-5-1", DisplayName = "Claude Fable 5.1",
-                Description = "Maximum capability – Anthropic's most capable model, always-on reasoning at double Opus pricing; for the hardest legal/technical work when cost is secondary",
+                Id = "claude-fable-5-2", DisplayName = "Claude Fable 5.2",
+                Description = "Maximum capability – Anthropic's most capable model ($8/$40), always-on reasoning at double Opus pricing; for the hardest legal/technical work when cost is secondary",
                 Provider = LlmProvider.Claude
             }
         };
@@ -267,7 +268,7 @@ namespace Supervertaler.Core
             },
             new LlmModelInfo
             {
-                Id = "anthropic/claude-fable-5.1", DisplayName = "Claude Fable 5.1",
+                Id = "anthropic/claude-fable-5.2", DisplayName = "Claude Fable 5.2",
                 Description = "Maximum capability – Anthropic's most capable model, at double Opus pricing",
                 Provider = LlmProvider.OpenRouter
             },

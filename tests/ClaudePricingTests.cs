@@ -16,13 +16,13 @@ namespace Supervertaler.Core.Tests
 
         public static void TheShortList_IsTheNewestSonnetOpusAndFable()
         {
-            Assert.True(LlmModels.ClaudeModels.Select(m => m.Id).SequenceEqual(new[] { "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1" }),
-                "Sonnet 5.5, Opus 5.5, Fable 5.1: " + string.Join(", ", LlmModels.ClaudeModels.Select(m => m.Id)));
+            Assert.True(LlmModels.ClaudeModels.Select(m => m.Id).SequenceEqual(new[] { "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2" }),
+                "Sonnet 5.5, Opus 5.5, Fable 5.2: " + string.Join(", ", LlmModels.ClaudeModels.Select(m => m.Id)));
         }
 
         public static void SupersededModels_StayPriced()
         {
-            foreach (var model in new[] { "claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001" })
+            foreach (var model in new[] { "claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001", "claude-fable-5-1" })
                 Assert.True(TokenEstimator.HasPricing(model), model + " is still costed for anyone who has it saved");
         }
 
@@ -31,6 +31,14 @@ namespace Supervertaler.Core.Tests
             Costs("claude-sonnet-5-5", 1_000_000, 0, 0, 0, 2.00m, "input $2/MTok");
             Costs("claude-sonnet-5-5", 0, 0, 0, 1_000_000, 10.00m, "output $10/MTok");
             Costs("claude-sonnet-5-5", 0, 0, 1_000_000, 0, 2.50m, "5-minute cache write $2.50/MTok");
+        }
+
+        public static void Fable52_IsPricedAsPublished()
+        {
+            Costs("claude-fable-5-2", 1_000_000, 0, 0, 0, 8.00m, "input $8/MTok");
+            Costs("claude-fable-5-2", 0, 0, 0, 1_000_000, 40.00m, "output $40/MTok");
+            Costs("claude-fable-5-2", 0, 1_000_000, 0, 0, 0.20m, "cache read $0.20/MTok (0.025x)");
+            Costs("claude-fable-5-2", 0, 0, 1_000_000, 0, 10.00m, "5-minute cache write $10/MTok (1.25x)");
         }
 
         public static void CacheReads_AreCostedAtEachModelsOwnRate()
