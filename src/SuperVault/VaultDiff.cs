@@ -34,6 +34,9 @@ namespace Supervertaler.Core.SuperVault
         public VaultEditOp Op;
         public int A, B;
         public double Cost;
+        /// <summary>A number replaced in the proposal by the document's (<see cref="VaultNumbers"/>): no charge, and not
+        /// drawn as a difference, as Studio does with the numbers it replaces itself.</summary>
+        public bool Replaced;
     }
 
     /// <summary>How a document segment compares with a stored one: the match % and the token alignment behind it.</summary>
@@ -257,7 +260,8 @@ namespace Supervertaler.Core.SuperVault
         /// says whether their normalised plain texts are equal: only then is the score 100. <paramref name="rules"/> gives
         /// the source language's stems and stopwords (null: none, which only ever lowers a score).
         /// </summary>
-        public static VaultDiffResult Compare(List<VaultToken> a, List<VaultToken> b, bool identical, VaultWordRules rules = null)
+        public static VaultDiffResult Compare(List<VaultToken> a, List<VaultToken> b, bool identical, VaultWordRules rules = null,
+                                             (HashSet<int> doc, HashSet<int> source)? replaced = null)
         {
             var ids = new Dictionary<string, int>(StringComparer.Ordinal);
             var x = Prepare(a, rules, ids);
@@ -280,7 +284,10 @@ namespace Supervertaler.Core.SuperVault
                     case VaultEditOp.Identity:
                         if (x[e.A].Kind == K.Word) { if (rules?.IsStopword != null && rules.IsStopword(x[e.A].Lower)) sameStop++; else sameOther++; }
                         e.Cost = 0; break;
-                    case VaultEditOp.Change: e.Cost = ChangeCharge(x[e.A], y[e.B]); break;
+                    case VaultEditOp.Change:
+                        if (replaced != null && replaced.Value.doc.Contains(e.A) && replaced.Value.source.Contains(e.B)) { e.Cost = 0; e.Replaced = true; }
+                        else e.Cost = ChangeCharge(x[e.A], y[e.B]);
+                        break;
                     case VaultEditOp.Move: e.Cost = MoveCharge; break;
                     case VaultEditOp.Delete: e.Cost = Gap(x[e.A]); break;
                     default: e.Cost = Gap(y[e.B]); break;
@@ -459,7 +466,7 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>
         /// The least the differences between the two can be charged, from what they share (exact words, punctuation
         /// marks and spaces): every word one has and the other lacks is at best a near-identical change (0.2; two
-        /// numbers <see cref="NumberChange"/> if that is lower), or, where one side has more, a missing short word
+        /// numbers nothing, as one may be replaced by the other), or, where one side has more, a missing short word
         /// (0.7); every unshared punctuation mark or space at least 0.1.
         /// </summary>
         static double LeastCharge(Profile p, Profile q, int unsharedNumbersP, int unsharedNumbersQ)
@@ -467,7 +474,7 @@ namespace Supervertaler.Core.SuperVault
             int common = Common(p.Words, q.Words);
             int up = p.WordCount - common, uq = q.WordCount - common;
             int pairs = Math.Min(up, uq), numberPairs = Math.Min(pairs, Math.Min(unsharedNumbersP, unsharedNumbersQ));
-            double words = ChangeNear * (pairs - numberPairs) + Math.Min(ChangeNear, NumberChange) * numberPairs + GapShortWord * Math.Abs(up - uq);
+            double words = ChangeNear * (pairs - numberPairs) + 0 * numberPairs + GapShortWord * Math.Abs(up - uq);   // a number may be replaced: free
             int pp = p.PunctCount - Common(p.Punct, q.Punct), pq = q.PunctCount - Common(p.Punct, q.Punct);
             int sp = p.SpaceCount - Common(p.Spaces, q.Spaces), sq = q.SpaceCount - Common(p.Spaces, q.Spaces);
             return words + GapMinor * Math.Max(pp, pq) + GapMinor * Math.Max(sp, sq);

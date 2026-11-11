@@ -19,6 +19,10 @@ namespace Supervertaler.Core.SuperVault
         public VaultTagOutcome Tags;
         public string TagReason;
         public VaultDiffResult Diff;          // document tokens against Source tokens
+        /// <summary>How many numbers of the stored translation were replaced by the document's (<see cref="VaultNumbers"/>).</summary>
+        public int NumbersReplaced;
+        /// <summary>The tokens of those numbers, in the document and in <see cref="Source"/>; null when none were replaced.</summary>
+        public (HashSet<int> doc, HashSet<int> source)? ReplacedTokens;
         public List<VaultToken> DocumentTokens, SourceTokens;
         /// <summary>Concordance only: the query's words in the searched side's text (its text pieces run together, tags
         /// left out), for the CAT tool to highlight. Offset and Length are characters in that text.</summary>
@@ -101,7 +105,15 @@ namespace Supervertaler.Core.SuperVault
             {
                 if (best.Count >= maxResults && best.Values.OrderByDescending(v => v).ElementAt(maxResults - 1) > r.quick) break;
                 var m = r.m;
-                m.Diff = VaultDiff.Compare(docTokens, m.SourceTokens, m.Candidate.Exact, rules);
+                // A different number put right in the proposal, where that can't go wrong (VaultNumbers).
+                var plan = m.Candidate.Exact ? null : VaultNumbers.Make(document, m.Source, m.Target);
+                if (plan != null)
+                {
+                    m.Target = VaultNumbers.Apply(plan, m.Target);
+                    m.NumbersReplaced = plan.Swaps.Count;
+                }
+                if (plan != null) m.ReplacedTokens = VaultNumbers.Tokens(plan, docTokens, m.SourceTokens);
+                m.Diff = VaultDiff.Compare(docTokens, m.SourceTokens, m.Candidate.Exact, rules, m.ReplacedTokens);
                 m.Score = m.Diff.Score;
                 if (m.Score < minScore) continue;
                 matches.Add(m);
@@ -120,7 +132,16 @@ namespace Supervertaler.Core.SuperVault
             // The differences as they are drawn: the display alignment, for these rows only (VaultDisplay). The score
             // stays the Studio-like one computed above.
             foreach (var m in shown)
-                if (m.Diff?.Edits != null) m.Diff.Edits = VaultDisplay.Edits(docTokens, m.SourceTokens);
+            {
+                if (m.Diff?.Edits == null) continue;
+                var edits = VaultDisplay.Edits(docTokens, m.SourceTokens);
+                // A replaced number is marked as such in the drawn differences too (not drawn as a difference).
+                if (edits != null && m.ReplacedTokens != null)
+                    for (int i = 0; i < edits.Count; i++)
+                        if (edits[i].Op == VaultEditOp.Change && m.ReplacedTokens.Value.doc.Contains(edits[i].A) && m.ReplacedTokens.Value.source.Contains(edits[i].B))
+                            edits[i] = new VaultEdit { Op = VaultEditOp.Change, A = edits[i].A, B = edits[i].B, Cost = 0, Replaced = true };
+                m.Diff.Edits = edits;
+            }
             return shown;
         }
 
