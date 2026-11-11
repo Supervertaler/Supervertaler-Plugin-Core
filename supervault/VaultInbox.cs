@@ -22,7 +22,7 @@ namespace Supervertaler.Core.SuperVault
     internal static class VaultInbox
     {
         public const int ReadBatch = 5000;
-        static readonly string[] Extra = { "confirmed_at", "user", "project", "client", "subject", "document" };
+        static readonly string[] Extra = { "confirmed_at", "user", "project", "client", "subject", "document", "omit" };
 
         static SqliteConnection Open(string path, int busySeconds)
         {
@@ -55,10 +55,11 @@ namespace Supervertaler.Core.SuperVault
             using (var cmd = c.CreateCommand())
             {
                 cmd.Transaction = tx;
-                cmd.CommandText = "INSERT INTO pending (src_lang, src, trg_lang, trg, origin, confirmed_at, user, project, client, subject, document) VALUES ($sl, $s, $tl, $t, $o, $ca, $u, $p, $c, $sj, $d)";
+                cmd.CommandText = "INSERT INTO pending (src_lang, src, trg_lang, trg, origin, confirmed_at, user, project, client, subject, document, omit) VALUES ($sl, $s, $tl, $t, $o, $ca, $u, $p, $c, $sj, $d, $om)";
                 var ca = cmd.Parameters.Add("$ca", SqliteType.Integer); var us = cmd.Parameters.Add("$u", SqliteType.Text);
                 var pr = cmd.Parameters.Add("$p", SqliteType.Text); var cl = cmd.Parameters.Add("$c", SqliteType.Text);
                 var sj = cmd.Parameters.Add("$sj", SqliteType.Text); var dc = cmd.Parameters.Add("$d", SqliteType.Text);
+                var om = cmd.Parameters.Add("$om", SqliteType.Text);
                 var sl = cmd.Parameters.Add("$sl", SqliteType.Text); var s = cmd.Parameters.Add("$s", SqliteType.Text);
                 var tl = cmd.Parameters.Add("$tl", SqliteType.Text); var t = cmd.Parameters.Add("$t", SqliteType.Text);
                 var o = cmd.Parameters.Add("$o", SqliteType.Text);
@@ -70,6 +71,7 @@ namespace Supervertaler.Core.SuperVault
                     ca.Value = u.ConfirmedAt != null ? (object)VaultFields.ToSeconds(u.ConfirmedAt.Value) : DBNull.Value;
                     us.Value = (object)u.User ?? DBNull.Value; pr.Value = (object)u.Project ?? DBNull.Value; cl.Value = (object)u.Client ?? DBNull.Value;
                     sj.Value = (object)u.Subject ?? DBNull.Value; dc.Value = (object)u.Document ?? DBNull.Value;
+                    om.Value = (object)u.Omit ?? DBNull.Value;
                     cmd.ExecuteNonQuery();
                 }
                 tx.Commit();
@@ -85,7 +87,7 @@ namespace Supervertaler.Core.SuperVault
             using (var c = Open(path, busySeconds))
             using (var cmd = c.CreateCommand())
             {
-                cmd.CommandText = "SELECT id, src_lang, src, trg_lang, trg, origin, confirmed_at, user, project, client, subject, document FROM pending ORDER BY id LIMIT " + ReadBatch.ToString(CultureInfo.InvariantCulture);
+                cmd.CommandText = "SELECT id, src_lang, src, trg_lang, trg, origin, confirmed_at, user, project, client, subject, document, omit FROM pending ORDER BY id LIMIT " + ReadBatch.ToString(CultureInfo.InvariantCulture);
                 using (var r = cmd.ExecuteReader())
                     while (r.Read())
                     {
@@ -96,7 +98,7 @@ namespace Supervertaler.Core.SuperVault
                             TargetCulture = r.IsDBNull(3) ? "" : r.GetString(3), Target = r.IsDBNull(4) ? "" : r.GetString(4),
                             Origin = r.IsDBNull(5) ? null : r.GetString(5),
                             ConfirmedAt = r.IsDBNull(6) ? (DateTime?)null : VaultFields.FromSeconds(r.GetInt64(6)),
-                            User = Text(r, 7), Project = Text(r, 8), Client = Text(r, 9), Subject = Text(r, 10), Document = Text(r, 11),
+                            User = Text(r, 7), Project = Text(r, 8), Client = Text(r, 9), Subject = Text(r, 10), Document = Text(r, 11), Omit = Text(r, 12),
                         });
                     }
             }
