@@ -20,7 +20,11 @@ namespace Supervertaler.Core.SuperVault
 
     public enum VaultEditOp { Identity, Change, Insert, Delete }
 
-    /// <summary>One step of the alignment: document token <see cref="A"/> against memory token <see cref="B"/>.</summary>
+    /// <summary>
+    /// One step of the alignment: document token <see cref="A"/> against memory token <see cref="B"/>. For a Delete (a
+    /// document token the memory lacks), B is the memory position it goes before; for an Insert (a memory token the
+    /// document lacks), A is the document position it goes before: Studio's convention for its edit lists.
+    /// </summary>
     public struct VaultEdit
     {
         public VaultEditOp Op;
@@ -146,6 +150,21 @@ namespace Supervertaler.Core.SuperVault
 
         static double GapCost(VaultToken t) => t.IsContent ? WordCost : MinorCost;
 
+        // Where two alignments cost the same, prefer the one Studio would draw: a word paired with a word that starts
+        // the same way ("disable" changed into "disabling", "determine" into "determining"), never a word with a
+        // punctuation mark ("disable" changed into ","; 11 Nov 2026). Only a tie-break: costs are multiples of
+        // MinorCost, and KindTieBreak times the longest alignment (2 x MaxAlignTokens) stays far below it, so the
+        // cheapest alignment, and with it the score, is unchanged.
+        const double KindTieBreak = 1e-6;
+        static double Pairing(VaultToken x, VaultToken y)
+        {
+            if (!x.IsContent || !y.IsContent) return 0;
+            if (x.Kind != y.Kind) return KindTieBreak;
+            int len = Math.Max(x.Text.Length, y.Text.Length), common = 0;
+            while (common < x.Text.Length && common < y.Text.Length && char.ToLowerInvariant(x.Text[common]) == char.ToLowerInvariant(y.Text[common])) common++;
+            return len == 0 || common == len ? 0 : KindTieBreak / 2 * (1 - (double)common / len);
+        }
+
         /// <summary>Minimum-cost alignment (Levenshtein with the costs above). Also returns the content-only distance.</summary>
         static List<VaultEdit> Align(List<VaultToken> a, List<VaultToken> b, out double contentDistance)
         {
@@ -156,7 +175,7 @@ namespace Supervertaler.Core.SuperVault
             for (int i = 1; i <= n; i++)
                 for (int j = 1; j <= m; j++)
                 {
-                    double best = d[i - 1, j - 1] + SubCost(a[i - 1], b[j - 1]);
+                    double best = d[i - 1, j - 1] + SubCost(a[i - 1], b[j - 1]) + Pairing(a[i - 1], b[j - 1]);
                     double del = d[i - 1, j] + GapCost(a[i - 1]);
                     double ins = d[i, j - 1] + GapCost(b[j - 1]);
                     if (del < best) best = del;
@@ -172,7 +191,7 @@ namespace Supervertaler.Core.SuperVault
                 if (x > 0 && y > 0)
                 {
                     double sub = SubCost(a[x - 1], b[y - 1]);
-                    if (Same(d[x, y], d[x - 1, y - 1] + sub))
+                    if (Same(d[x, y], d[x - 1, y - 1] + sub + Pairing(a[x - 1], b[y - 1])))
                     {
                         var op = sub == 0 ? VaultEditOp.Identity : VaultEditOp.Change;
                         edits.Add(new VaultEdit { Op = op, A = x - 1, B = y - 1, Cost = sub });
@@ -182,12 +201,15 @@ namespace Supervertaler.Core.SuperVault
                 }
                 if (x > 0 && Same(d[x, y], d[x - 1, y] + GapCost(a[x - 1])))
                 {
-                    // A document token the memory lacks. Studio calls this Delete and keeps the memory position.
-                    edits.Add(new VaultEdit { Op = VaultEditOp.Delete, A = x - 1, B = Math.Max(0, y - 1), Cost = GapCost(a[x - 1]) });
+                    // A document token the memory lacks. Studio calls this Delete; B is the position in the memory it
+                    // goes BEFORE (the memory token that follows it; the memory's length at the end), as in Studio's own
+                    // edit lists. Studio draws the inserted word there: one less put it a token too early (11 Nov 2026).
+                    edits.Add(new VaultEdit { Op = VaultEditOp.Delete, A = x - 1, B = y, Cost = GapCost(a[x - 1]) });
                     if (a[x - 1].IsContent) contentDistance += WordCost;
                     x--; continue;
                 }
-                edits.Add(new VaultEdit { Op = VaultEditOp.Insert, A = Math.Max(0, x - 1), B = y - 1, Cost = GapCost(b[y - 1]) });
+                // A memory token the document lacks (Insert): A is the document position it goes before, likewise.
+                edits.Add(new VaultEdit { Op = VaultEditOp.Insert, A = x, B = y - 1, Cost = GapCost(b[y - 1]) });
                 if (b[y - 1].IsContent) contentDistance += WordCost;
                 y--;
             }

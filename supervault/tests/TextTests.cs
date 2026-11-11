@@ -142,6 +142,35 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.True(r.Edits.Any(e => e.Op == VaultEditOp.Insert), "memory word the document lacks");
         }
 
+        // Studio's convention (11 Nov 2026): a document word the memory lacks (Delete) carries the memory position it
+        // goes BEFORE, and a memory word the document lacks (Insert) the document position it goes before. One less
+        // made Studio draw every inserted word a token too early.
+        public static void ExtraOrMissingWordCarriesThePositionItGoesBefore()
+        {
+            // "the pump starts quickly now" against "the pump starts now": the space (5) and "quickly" (6) go before the stored
+            // space (5), as Studio's own TM gives them (D5>5 D6>5; the old positions were D5>4 D6>4).
+            var r = VaultDiff.Compare(Tok("the pump starts quickly now"), Tok("the pump starts now"), false);
+            A.Eq("D5>5 D6>5", string.Join(" ", r.Edits.Where(e => e.Op == VaultEditOp.Delete).Select(e => "D" + e.A + ">" + e.B)), "deletes");
+            r = VaultDiff.Compare(Tok("the pump starts now"), Tok("the pump starts quickly now"), false);
+            A.Eq("I5>5 I5>6", string.Join(" ", r.Edits.Where(e => e.Op == VaultEditOp.Insert).Select(e => "I" + e.A + ">" + e.B)), "inserts");
+            // At the very start and the very end.
+            r = VaultDiff.Compare(Tok("Moreover the pump starts"), Tok("the pump starts"), false);
+            A.True(r.Edits.Where(e => e.Op == VaultEditOp.Delete).All(e => e.B == 0), "extra words at the start go before memory token 0");
+            r = VaultDiff.Compare(Tok("the pump starts fully"), Tok("the pump starts"), false);
+            A.True(r.Edits.Where(e => e.Op == VaultEditOp.Delete).All(e => e.B == 5), "extra words at the end go after the last memory token");
+        }
+
+        public static void WordsPairWithWordsThatLookAlikeWithoutChangingTheScore()
+        {
+            // Two alignments cost the same here; the one drawn pairs "determine" with "determining", not with a comma.
+            var doc = Tok("further comprising determining, by the processors, the first threshold");
+            var mem = Tok("determine the first threshold");
+            var r = VaultDiff.Compare(doc, mem, false);
+            var ch = r.Edits.Where(e => e.Op == VaultEditOp.Change).Select(e => mem[e.B].Text + ">" + doc[e.A].Text).ToList();
+            A.Eq("determine>determining", string.Join(" ", ch), "changes");
+            A.Eq(8.0, r.Distance, "distance: 7 extra words and commas, 1 changed word");
+        }
+
         public static void WordsKeepApostrophesAndHyphens()
         {
             A.Eq("don't|e-mail|it|s", string.Join("|", VaultDiff.Words("Don't e-mail it's".Replace("it's", "it' s"))), "words");
