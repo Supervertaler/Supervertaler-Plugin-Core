@@ -12,8 +12,11 @@
 
   Lucene.Net 4.8.0-beta00017 is Apache-2.0, as is its one non-Microsoft
   dependency J2N; the Microsoft.Extensions.* packages it pulls in are MIT.
-  Only Lucene.Net itself is used (no Analysis.Common, no Suggest), so the plugin
-  ships Lucene.Net.dll, J2N.dll and two small Microsoft.Extensions DLLs.
+  Lucene.Net itself, and Lucene.Net.Analysis.Common for the Snowball stemmers and
+  stopword lists the fuzzy score uses (VaultLanguage; Apache-2.0, the stopword
+  lists BSD; no further dependency beyond System.Memory, which the plugins already
+  ship). No Suggest. So the plugin ships Lucene.Net.dll,
+  Lucene.Net.Analysis.Common.dll, J2N.dll and two small Microsoft.Extensions DLLs.
 -->
 <Project>
   <ItemGroup>
@@ -21,5 +24,6 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Lucene.Net" Version="4.8.0-beta00017" />
+    <PackageReference Include="Lucene.Net.Analysis.Common" Version="4.8.0-beta00017" />
   </ItemGroup>
 </Project>

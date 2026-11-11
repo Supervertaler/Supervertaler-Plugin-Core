@@ -29,8 +29,10 @@ namespace Supervertaler.Core.SuperVault
     /// A SuperVault lookup: candidates from the index, scored with <see cref="VaultDiff"/>, tags placed with
     /// <see cref="VaultTagMap"/>, duplicates (the same target twice) removed. CAT-tool neutral.
     ///
-    /// Cost per lookup, at any index size: one exact query, one query on the 8 rarest words (200 candidates), a cheap
-    /// word-overlap score for all 200, and the full alignment for the best <see cref="Aligned"/> only.
+    /// Cost per lookup, at any index size: one exact query, one query on the 8 rarest words (200 candidates, of which
+    /// those whose length can reach the minimum are read), an upper-bound estimate of the score for each
+    /// (<see cref="VaultDiff.Estimate"/>), and the full alignment for the best <see cref="Aligned"/> at most, best
+    /// estimate first, stopping as soon as none left can reach the rows found.
     /// </summary>
     public static class VaultLookup
     {
@@ -49,11 +51,13 @@ namespace Supervertaler.Core.SuperVault
             if (docPlain.Length == 0) return matches;
 
             var docTokens = VaultDiff.Tokenize(document);
-            var docContent = ContentCounts(docTokens, out int docContentCount);
+            var rules = VaultLanguage.Rules(sourceLang);   // stems and stopwords: this lookup's own
 
-            // Cheap first pass: word overlap with the document. Exact matches always go through.
-            var ranked = new List<(VaultCandidate c, List<VaultPiece> src, List<VaultPiece> trg, string srcPlain, int quick)>();
-            var found = index == null ? new List<VaultCandidate>() : index.Candidates(docPlain, sourceLang, targetLang, maxResults * 2, minScore, targetCulture);
+            // Cheap first pass: an upper bound of each candidate's score, on the tokens it will be scored on (its tags
+            // placed first), so a candidate that could reach the minimum is never dropped unaligned. Exact matches always
+            // go through.
+            var ranked = new List<(VaultMatch m, int quick)>();
+            var found = index == null ? new List<VaultCandidate>() : index.Candidates(docPlain, sourceLang, targetLang, maxResults * 2, minScore, targetCulture, new VaultLengthBound(docTokens));
             var newest = extras.LastOrDefault(c => c.Exact);   // the last one handed over: a correction comes after what it corrects
             // ... unless the index already has a newer translation (this one was confirmed earlier, elsewhere, and arrived late).
             var indexed = found.FirstOrDefault(c => c.Exact);
@@ -78,31 +82,46 @@ namespace Supervertaler.Core.SuperVault
                 var trg = VaultMarkup.Parse(c.TargetRaw);
                 var srcPlain = PlainOf(src);
                 if (c.Exact && srcPlain != docPlain) c.Exact = false;   // a hash collision, however unlikely
-                int quick = c.Exact ? 100 : Overlap(docContent, docContentCount, VaultDiff.Tokenize(src));
-                if (quick + 10 < minScore) continue;   // overlap is an optimistic estimate; 10 points of slack
-                ranked.Add((c, src, trg, srcPlain, quick));
+                var map = VaultTagMap.Build(document, src, trg);
+                var m = new VaultMatch { Candidate = c, Tags = map.Outcome, TagReason = map.Reason, DocumentTokens = docTokens };
+                Place(document, src, map.Source, out m.Source, out m.SourceDocTag);
+                Place(document, trg, map.Target, out m.Target, out m.TargetDocTag);
+                m.SourceTokens = VaultDiff.Tokenize(m.Source);
+                int quick = VaultDiff.Estimate(docTokens, m.SourceTokens, c.Exact);
+                if (quick < minScore) continue;   // an upper bound: this one can't reach the minimum
+                ranked.Add((m, quick));
             }
 
-            foreach (var r in ranked.OrderByDescending(x => x.quick).Take(Aligned + maxResults))
+            // Aligned best estimate first. The estimate is an upper bound, so once the rows found so far (one per
+            // translation) beat the next candidate's estimate, no candidate left can change the result: stop there.
+            // Usually far fewer than Aligned are aligned.
+            var order = ranked.OrderByDescending(x => x.quick).Take(Aligned + maxResults).ToList();
+            var best = new Dictionary<string, int>(StringComparer.Ordinal);   // translation -> its best score so far
+            foreach (var r in order)
             {
-                var map = VaultTagMap.Build(document, r.src, r.trg);
-                var m = new VaultMatch { Candidate = r.c, Tags = map.Outcome, TagReason = map.Reason, DocumentTokens = docTokens };
-                Place(document, r.src, map.Source, out m.Source, out m.SourceDocTag);
-                Place(document, r.trg, map.Target, out m.Target, out m.TargetDocTag);
-                m.SourceTokens = VaultDiff.Tokenize(m.Source);
-                m.Diff = VaultDiff.Compare(docTokens, m.SourceTokens, r.c.Exact);
+                if (best.Count >= maxResults && best.Values.OrderByDescending(v => v).ElementAt(maxResults - 1) > r.quick) break;
+                var m = r.m;
+                m.Diff = VaultDiff.Compare(docTokens, m.SourceTokens, m.Candidate.Exact, rules);
                 m.Score = m.Diff.Score;
-                if (m.Score >= minScore) matches.Add(m);
+                if (m.Score < minScore) continue;
+                matches.Add(m);
+                var key = PlainOf(m.Target);
+                if (!best.TryGetValue(key, out int had) || had < m.Score) best[key] = m.Score;
             }
 
             // The same translation twice is noise: keep its best version (higher score, then tags placed).
-            return matches
+            var shown = matches
                 .OrderByDescending(m => m.Score)
                 .ThenBy(m => m.Tags == VaultTagOutcome.Unmapped ? 1 : 0)
                 .GroupBy(m => PlainOf(m.Target), StringComparer.Ordinal)
                 .Select(g => g.First())
                 .Take(maxResults)
                 .ToList();
+            // The differences as they are drawn: the display alignment, for these rows only (VaultDisplay). The score
+            // stays the Studio-like one computed above.
+            foreach (var m in shown)
+                if (m.Diff?.Edits != null) m.Diff.Edits = VaultDisplay.Edits(docTokens, m.SourceTokens);
+            return shown;
         }
 
         /// <summary>
@@ -173,35 +192,6 @@ namespace Supervertaler.Core.SuperVault
             var text = new StringBuilder();
             foreach (var p in pieces) if (!p.IsTag) text.Append(p.Text);
             return new List<VaultPiece> { new VaultPiece { Text = text.ToString() } };
-        }
-
-        static Dictionary<string, int> ContentCounts(List<VaultToken> tokens, out int count)
-        {
-            var d = new Dictionary<string, int>(StringComparer.Ordinal);
-            count = 0;
-            foreach (var t in tokens)
-            {
-                if (!t.IsContent) continue;
-                count++;
-                d.TryGetValue(t.Text, out int c);
-                d[t.Text] = c + 1;
-            }
-            return d;
-        }
-
-        /// <summary>Word-overlap estimate (Dice), an upper-ish bound on the aligned score, used to pick what to align.</summary>
-        static int Overlap(Dictionary<string, int> doc, int docCount, List<VaultToken> other)
-        {
-            var left = new Dictionary<string, int>(doc, StringComparer.Ordinal);
-            int common = 0, count = 0;
-            foreach (var t in other)
-            {
-                if (!t.IsContent) continue;
-                count++;
-                if (left.TryGetValue(t.Text, out int c) && c > 0) { common++; left[t.Text] = c - 1; }
-            }
-            if (docCount + count == 0) return 0;
-            return (int)Math.Floor(100.0 * 2 * common / (docCount + count));
         }
     }
 }

@@ -157,7 +157,7 @@ namespace Supervertaler.Core.SuperVault
         /// hash), then fuzzy candidates found by the segment's rarest words. Scoring is the caller's (<see cref="VaultLookup"/>).
         /// </summary>
         /// <param name="targetCulture">The project's target language with its variant ("en-GB"): units in that exact variant win first. Null or a bare language: no preference.</param>
-        public List<VaultCandidate> Candidates(string plain, string sourceLang, string targetLang, int maxExact, int minScore = 0, string targetCulture = null)
+        public List<VaultCandidate> Candidates(string plain, string sourceLang, string targetLang, int maxExact, int minScore = 0, string targetCulture = null, VaultLengthBound lengths = null)
         {
             var result = new List<VaultCandidate>();
             if (string.IsNullOrEmpty(plain) || !TryAcquire()) return result;
@@ -203,21 +203,18 @@ namespace Supervertaler.Core.SuperVault
                 var any = new BooleanQuery();
                 foreach (var w in chosen) any.Add(new TermQuery(new Term("w_" + sourceLang, w)), Occur.SHOULD);
                 var q = new BooleanQuery { { any, Occur.MUST }, { new TermQuery(new Term("lp", pair)), Occur.MUST } };
-                // A unit of m words can't score more than min(n,m)/max(n,m) against a segment of n words: skip those that
-                // can't reach the minimum without reading them. The word counts are doc values, read without decompression.
-                var lengths = WordCounts("n_" + sourceLang);
-                int n = Math.Max(1, VaultDiff.Words(plain).Count);
+                // A unit of m words can only reach so much against the document (VaultLengthBound, an upper bound of
+                // the score): skip those that can't reach the minimum without reading them. The word counts are doc
+                // values, read without decompression.
+                var counts = WordCounts("n_" + sourceLang);
+                if (lengths == null) lengths = new VaultLengthBound(VaultDiff.Tokenize(new[] { new VaultPiece { Text = plain } }));
                 int loaded = 0;
                 var fuzzy = new List<VaultCandidate>();
                 foreach (var sd in _searcher.Search(q, CandidateCount).ScoreDocs)
                 {
                     if (loaded >= LoadCount) break;
                     if (seen.Contains(sd.Doc)) continue;
-                    if (lengths != null && minScore > 0)
-                    {
-                        long m = Math.Max(1, lengths.Get(sd.Doc));
-                        if (100.0 * Math.Min(n, m) / Math.Max(n, m) + 10 < minScore) continue;   // 10 points of slack: n counts distinct words
-                    }
+                    if (counts != null && minScore > 0 && lengths.MaxScore(counts.Get(sd.Doc)) < minScore) continue;
                     seen.Add(sd.Doc);
                     fuzzy.Add(Load(sd.Doc, sourceLang, targetLang, false, dv?.Read(sd.Doc).c));
                     loaded++;

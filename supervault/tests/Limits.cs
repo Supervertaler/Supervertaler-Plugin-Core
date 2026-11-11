@@ -16,6 +16,8 @@ namespace Supervertaler.Core.SuperVault.Tests
     ///     SuperVault.Tests.exe limits lookup &lt;folder&gt;               200 exact + 200 fuzzy lookups on the built index
     ///     SuperVault.Tests.exe limits sync   &lt;folder&gt; &lt;units&gt;       import that many new units, index updated a piece at a time
     ///     SuperVault.Tests.exe limits export &lt;folder&gt; &lt;file.tmx&gt;    export everything to TMX
+    ///     SuperVault.Tests.exe limits pad    &lt;folder&gt; &lt;total&gt;       add padded copies of its units to the store until it
+    ///                                                          holds that many (no index update: run build after)
     ///
     /// Prints the time and the peaks: private bytes (memory the process really owns), virtual size (address space
     /// in use, what runs out first in a 32-bit process) and the .NET heap.
@@ -51,6 +53,19 @@ namespace Supervertaler.Core.SuperVault.Tests
                         int n = int.Parse(args[2]);
                         var r = lib.Import((store, p, c) => AddPadded(store, n), progress, CancellationToken.None);
                         Console.WriteLine($"\nimported {r}");
+                        break;
+                    }
+                    case "pad":
+                    {
+                        long total = long.Parse(args[2]);
+                        long have = VaultStore.Count(lib.StorePath);
+                        while (have < total)
+                        {
+                            int n = (int)Math.Min(total - have, Math.Min(have, 1000000));
+                            var r = AddPadded(lib.StorePath, n);
+                            have = VaultStore.Count(lib.StorePath);
+                            Console.WriteLine($"  +{n:N0}: {r}; store {have:N0} units  [{s.Now()}]");
+                        }
                         break;
                     }
                     case "export":

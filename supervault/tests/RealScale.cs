@@ -68,6 +68,20 @@ namespace Supervertaler.Core.SuperVault.Tests
             swc.Restart();
             foreach (var c in allC) { VaultDiff.Tokenize(VaultMarkup.Parse(c.SourceRaw)); VaultMarkup.Parse(c.TargetRaw); }
             Console.WriteLine($"breakdown: parse+tokenize {swc.Elapsed.TotalMilliseconds / sample.Count:F1} ms/lookup");
+            // The scoring phases, per lookup: word rules, the estimate of every candidate, and aligning them all.
+            swc.Restart();
+            for (int i = 0; i < sample.Count; i++) VaultLanguage.Rules("nl");
+            Console.WriteLine($"breakdown: word rules {swc.Elapsed.TotalMilliseconds / sample.Count:F2} ms/lookup");
+            var prepared = sample.Select(x => (doc: VaultDiff.Tokenize(doc(VaultMarkup.Plain(x.Item1))), cands: idx.Candidates(VaultMarkup.Plain(x.Item1), "nl", "en", 10, 70).Select(c => VaultDiff.Tokenize(VaultMarkup.Parse(c.SourceRaw))).ToList())).ToList();
+            swc.Restart();
+            foreach (var (d, cs) in prepared) foreach (var c in cs) VaultDiff.Estimate(d, c, false);
+            Console.WriteLine($"breakdown: estimates {swc.Elapsed.TotalMilliseconds / sample.Count:F1} ms/lookup");
+            swc.Restart();
+            foreach (var (d, cs) in prepared) { var rules = VaultLanguage.Rules("nl"); foreach (var c in cs) VaultDiff.Compare(d, c, false, rules); }
+            Console.WriteLine($"breakdown: aligning and scoring every candidate {swc.Elapsed.TotalMilliseconds / sample.Count:F1} ms/lookup");
+            swc.Restart();
+            foreach (var (d, cs) in prepared) foreach (var c in cs.Take(5)) VaultDisplay.Edits(d, c);
+            Console.WriteLine($"breakdown: display alignment of 5 rows {swc.Elapsed.TotalMilliseconds / sample.Count:F1} ms/lookup");
             Console.WriteLine($"process: {(Environment.Is64BitProcess ? "64" : "32")}-bit, working set {Process.GetCurrentProcess().WorkingSet64 / 1048576} MB");
             return 0;
         }

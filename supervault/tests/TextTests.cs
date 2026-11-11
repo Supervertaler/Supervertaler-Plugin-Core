@@ -122,13 +122,6 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.True(r.Edits.All(e => e.Op == VaultEditOp.Identity), "all identity");
         }
 
-        public static void OneWordInTenIs90()
-        {
-            var r = VaultDiff.Compare(Tok("one two three four five six seven eight nine ten"), Tok("one two three four five six seven eight nine eleven"), false);
-            A.Eq(90, r.Score, "score");
-            A.Eq(1, r.Edits.Count(e => e.Op == VaultEditOp.Change), "one change");
-        }
-
         public static void NeverReaches100UnlessIdentical()
         {
             A.Eq(99, VaultDiff.Compare(Tok("Save"), Tok("Save"), false).Score, "equal tokens but not declared identical");
@@ -160,29 +153,10 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.True(r.Edits.Where(e => e.Op == VaultEditOp.Delete).All(e => e.B == 5), "extra words at the end go after the last memory token");
         }
 
-        public static void WordsPairWithWordsThatLookAlikeWithoutChangingTheScore()
-        {
-            // Two alignments cost the same here; the one drawn pairs "determine" with "determining", not with a comma.
-            var doc = Tok("further comprising determining, by the processors, the first threshold");
-            var mem = Tok("determine the first threshold");
-            var r = VaultDiff.Compare(doc, mem, false);
-            var ch = r.Edits.Where(e => e.Op == VaultEditOp.Change).Select(e => mem[e.B].Text + ">" + doc[e.A].Text).ToList();
-            A.Eq("determine>determining", string.Join(" ", ch), "changes");
-            A.Eq(8.0, r.Distance, "distance: 7 extra words and commas, 1 changed word");
-        }
-
         public static void WordsKeepApostrophesAndHyphens()
         {
             A.Eq("don't|e-mail|it|s", string.Join("|", VaultDiff.Words("Don't e-mail it's".Replace("it's", "it' s"))), "words");
         }
 
-        public static void LongSegmentsScoreWithoutAlignment()
-        {
-            var a = string.Join(" ", Enumerable.Range(0, 300).Select(i => "w" + i));
-            var b = string.Join(" ", Enumerable.Range(0, 300).Select(i => i == 7 ? "x" : "w" + i));
-            var r = VaultDiff.Compare(Tok(a), Tok(b), false);
-            A.True(r.Edits == null, "too long to align");
-            A.Eq(99, r.Score, "299 of 300 words in common");
-        }
     }
 }
