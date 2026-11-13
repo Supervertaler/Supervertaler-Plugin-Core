@@ -30,6 +30,11 @@ namespace Supervertaler.Core
         /// <summary>Set when the call failed; the figure is reported, not
         /// silently dropped.</summary>
         public string Error { get; set; }
+
+        /// <summary>What was done to the file before it was shown, when the
+        /// reader should know: "first page of 3 only", "scaled down before
+        /// sending". Null when it was sent as it is.</summary>
+        public string Note { get; set; }
     }
 
     /// <summary>
@@ -97,20 +102,18 @@ namespace Supervertaler.Core
 
             try
             {
-                byte[] bytes;
-                try { bytes = File.ReadAllBytes(imagePath); }
-                catch (Exception ex) { result.Error = "could not read the file: " + ex.Message; return result; }
-
-                var mime = MimeFor(imagePath);
-                if (mime == null)
+                // Checked, converted and brought under the size a provider takes
+                // BEFORE anything is sent: a file that cannot be used costs a row
+                // saying why, not a paid request that is refused.
+                string prepareError;
+                var image = ImageConversion.PrepareForVision(imagePath, out prepareError);
+                if (image == null)
                 {
-                    // EMF and WMF are common in patents and no vision API takes
-                    // them. Say so rather than sending bytes that will be refused.
-                    result.Error = "not a format a vision model can read ("
-                                 + Path.GetExtension(imagePath) + "), and it could not be "
-                                 + "converted to one. Open it, save it as PNG, and run this again.";
+                    result.Error = prepareError;
                     return result;
                 }
+                result.Note = image.Note;
+                cancellationToken.ThrowIfCancellationRequested();
 
                 var said = (descriptions ?? Enumerable.Empty<string>())
                     .Where(d => !string.IsNullOrWhiteSpace(d)).ToList();
@@ -136,8 +139,8 @@ namespace Supervertaler.Core
                     {
                         new ImageAttachment
                         {
-                            Data = bytes,
-                            MimeType = mime,
+                            Data = image.Data,
+                            MimeType = image.MimeType,
                             FileName = result.FileName,
                         }
                     }
@@ -160,7 +163,9 @@ namespace Supervertaler.Core
                 if (string.IsNullOrWhiteSpace(result.Caption) && result.SignsInDrawing.Count == 0)
                     result.Error = "could not read the model's answer: " + Trim(reply, 200);
             }
-            catch (OperationCanceledException) { throw; }
+            // Only a real Stop. A request that timed out also arrives as a
+            // cancellation, and that is a failed figure, not a stopped run.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 result.Error = ex.Message;
@@ -222,24 +227,6 @@ namespace Supervertaler.Core
             if (string.IsNullOrEmpty(s)) return "";
             s = Regex.Replace(s.Trim(), @"\s+", " ");
             return s.Length <= max ? s : s.Substring(0, max - 1) + "…";
-        }
-
-        /// <summary>
-        /// The MIME type, or null when no vision API will take it. EMF and WMF
-        /// are deliberately null: patent drawings are often vector, and a clear
-        /// "convert this first" beats an opaque provider error.
-        /// </summary>
-        private static string MimeFor(string path)
-        {
-            switch ((Path.GetExtension(path) ?? "").ToLowerInvariant())
-            {
-                case ".png": return "image/png";
-                case ".jpg":
-                case ".jpeg": return "image/jpeg";
-                case ".gif": return "image/gif";
-                case ".webp": return "image/webp";
-                default: return null;
-            }
         }
     }
 }
