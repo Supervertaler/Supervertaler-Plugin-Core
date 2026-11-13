@@ -127,15 +127,18 @@ namespace Supervertaler.Core
 
             // Anthropic native + OpenRouter→Anthropic. A cache read is 0.1x the input
             // rate, except on the newest top models: 0.05x on Claude Opus 5.5 and
-            // 0.025x on Claude Fable 5.1 and Mythos 5.1 (Anthropic's pricing page,
-            // checked 2026-09-28). At 0.1x their cache reads were costed at two and
+            // 0.025x on Claude Fable 5.1 and 5.2 and Mythos 5.1 and 5.2 (Anthropic's
+            // pricing page, checked 2026-09-28; 5.2's $0.20 against $8 checked
+            // 2026-11-10). At 0.1x their cache reads were costed at two and
             // four times what they are billed. Writes are 1.25x on all of them.
             if (lc.Contains("claude") || lc.StartsWith("anthropic/"))
             {
                 if (lc.Contains("opus-5-5") || lc.Contains("opus-5.5"))
                     return (0.05m, 1.25m);
                 if (lc.Contains("fable-5-1") || lc.Contains("fable-5.1")
-                    || lc.Contains("mythos-5-1") || lc.Contains("mythos-5.1"))
+                    || lc.Contains("fable-5-2") || lc.Contains("fable-5.2")
+                    || lc.Contains("mythos-5-1") || lc.Contains("mythos-5.1")
+                    || lc.Contains("mythos-5-2") || lc.Contains("mythos-5.2"))
                     return (0.025m, 1.25m);
                 return (0.1m, 1.25m);
             }

@@ -180,6 +180,7 @@ namespace Supervertaler.Core
                 { "gpt-5.6-luna", (0.20m, 1.20m) },
                 { "gpt-5.5", (5.00m, 30.00m) },
                 { "gpt-5.4-mini", (0.75m, 4.50m) },
+                { "claude-fable-5-2", (8.00m, 40.00m) },
                 { "claude-fable-5-1", (10.00m, 50.00m) },
                 { "claude-fable-5", (10.00m, 50.00m) },
                 { "claude-opus-5-5", (4.00m, 20.00m) },
