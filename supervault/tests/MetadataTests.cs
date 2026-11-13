@@ -285,6 +285,51 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.Eq("Acme Ltd", F(Top(lib, "De lamp is uit."), VaultFields.Client), "the project's own client wins over the name");
         }
 
+        /// <summary>Michael, 11 Nov: every field on by default, a switch per field. A switched-off field is not stored at all.</summary>
+        public static void SwitchedOffFieldsAreNotStored()
+        {
+            var lib = Lib();
+            var u = U("De pomp loopt warm.", "The pump runs hot.", null, "ACME_Globex (PROJ-001)", null, "translator", "manual.docx");
+            u.Omit = VaultLearnUnit.OmitOf(new[] { VaultFields.Project, VaultLearnUnit.UserField, VaultFields.Document });
+            lib.Learn(new[] { u });
+            var now = Top(lib, "De pomp loopt warm.");
+            A.Eq("", F(now, VaultFields.Project), "not even in the unit just handed over");
+            LearnTests.Settle(lib);
+            var m = Top(lib, "De pomp loopt warm.");
+            A.Eq("", F(m, VaultFields.Project), "no Project");
+            A.Eq("", F(m, VaultFields.Document), "no Document");
+            A.True(m.Candidate.CreatedBy == null && m.Candidate.ChangedBy == null, "no user");
+            A.Eq("ACME", F(m, VaultFields.Client), "Client still (it was left on)");
+            A.Eq("Globex", F(m, VaultFields.EndClient), "End client still");
+            A.Eq("Studio", F(m, VaultFields.Source), "Source without the project's name");
+            A.True(m.Candidate.Changed != null, "the confirm time is always kept");
+            A.Eq(0L, N(lib, "SELECT count(*) FROM vals WHERE value LIKE '%PROJ-001%' OR value = 'translator' OR value = 'manual.docx'"), "the switched-off values are nowhere in the store");
+
+            var all = U("De pomp loopt koel.", "The pump runs cool.", null, "PROJ-002", "Acme", "translator", "manual.docx");
+            all.Omit = VaultLearnUnit.OmitOf(new string[0]);
+            A.True(all.Omit == null, "nothing switched off: no list");
+            lib.Learn(new[] { all });
+            LearnTests.Settle(lib);
+            var n = Top(lib, "De pomp loopt koel.");
+            A.True(F(n, VaultFields.Project) == "PROJ-002" && F(n, VaultFields.Document) == "manual.docx" && n.Candidate.CreatedBy == "translator", "all on: all stored, as before");
+        }
+
+        /// <summary>The choice travels with the unit through the inbox (another Studio may store it, later).</summary>
+        public static void TheChoiceTravelsThroughTheInbox()
+        {
+            var lib = Lib();
+            var u = U("Het filter is vuil.", "The filter is dirty.", null, "PROJ-003", "Acme", "translator");
+            u.Omit = VaultLearnUnit.OmitOf(new[] { VaultFields.Client });
+            var inbox = Path.Combine(lib.Root, "inbox.db");
+            Directory.CreateDirectory(lib.Root);
+            typeof(VaultLibrary).Assembly.GetType("Supervertaler.Core.SuperVault.VaultInbox")
+                .GetMethod("Append").Invoke(null, new object[] { inbox, new List<VaultLearnUnit> { u }, 10 });
+            LearnTests.Settle(lib);
+            var m = Top(lib, "Het filter is vuil.");
+            A.Eq("PROJ-003", F(m, VaultFields.Project), "Project kept");
+            A.Eq("", F(m, VaultFields.Client), "Client switched off, after the inbox");
+        }
+
         public static void AnInboxFromAnOlderVersionIsUpgraded()
         {
             var lib = Lib();

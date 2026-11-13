@@ -38,27 +38,56 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>The document's path, for <see cref="VaultLibrary.ProjectOf"/> to find its project's name and client on
         /// the learning thread (not on the CAT tool's UI thread). Not stored.</summary>
         public string DocumentPath;
+        /// <summary>
+        /// The fields the user switched off (Michael, 11 Nov: every field on by default, a switch per field): any of
+        /// <see cref="VaultFields.Project"/>, Client, End client, Subject, Document, and <see cref="VaultLearnUnit.UserField"/>,
+        /// separated by <see cref="OmitSeparator"/>. Null or empty: all of them stored. The confirm time is not a choice:
+        /// newest-wins needs it. Stored in the inbox with the unit, so a unit stored later, by another Studio, keeps the
+        /// choice made when it was confirmed.
+        /// </summary>
+        public string Omit;
+
+        /// <summary>The user who confirmed it, as a field name for <see cref="Omit"/>.</summary>
+        public const string UserField = "User";
+        public const char OmitSeparator = '|';
+
+        /// <summary>The fields a user can switch off, in the order a settings window shows them.</summary>
+        public static readonly string[] Switchable = { VaultFields.Project, VaultFields.Client, VaultFields.EndClient, VaultFields.Subject, VaultFields.Document, UserField };
+
+        /// <summary><see cref="Omit"/> for these switched-off fields; null when none is.</summary>
+        public static string OmitOf(IEnumerable<string> off)
+        {
+            var list = off?.Where(f => Switchable.Contains(f)).Distinct().ToList();
+            return list == null || list.Count == 0 ? null : string.Join(OmitSeparator.ToString(), list);
+        }
+
+        bool Omitted(string field) =>
+            !string.IsNullOrEmpty(Omit) && Omit.Split(OmitSeparator).Contains(field);
 
         /// <summary>
         /// The metadata stored with it: confirmed at = created and changed, by <see cref="User"/>; Project, Client (and
         /// End client, when the project's name is CLIENT_Endclient; its first part is the Client when none is set),
-        /// Subject, Document, and Source "Studio: &lt;project&gt;".
+        /// Subject, Document, and Source "Studio: &lt;project&gt;". Fields in <see cref="Omit"/> are left out; with
+        /// Project left out, Source says only "Studio", so the project's name is not stored at all.
         /// </summary>
         public VaultUnitInfo Info(DateTime now)
         {
             var info = new VaultUnitInfo { Created = ConfirmedAt ?? now, Changed = ConfirmedAt ?? now };
-            info.CreatedBy = info.ChangedBy = string.IsNullOrWhiteSpace(User) ? null : VaultFields.Clean(User);
-            info.Add(VaultFields.Project, Project);
+            if (!Omitted(UserField))
+                info.CreatedBy = info.ChangedBy = string.IsNullOrWhiteSpace(User) ? null : VaultFields.Clean(User);
+            if (!Omitted(VaultFields.Project)) info.Add(VaultFields.Project, Project);
             var client = Client;
             if (VaultFields.SplitClientName(Project, out var c, out var end))
             {
                 if (string.IsNullOrWhiteSpace(client)) client = c;
-                info.Add(VaultFields.EndClient, end);
+                if (!Omitted(VaultFields.EndClient)) info.Add(VaultFields.EndClient, end);
             }
-            info.Add(VaultFields.Client, client);
-            info.Add(VaultFields.Subject, Subject);
-            info.Add(VaultFields.Document, Document);
-            if (!string.IsNullOrWhiteSpace(Project)) info.Add(VaultFields.Source, (Origin == "studio" ? "Studio" : Origin ?? "") + ": " + Project.Trim());
+            if (!Omitted(VaultFields.Client)) info.Add(VaultFields.Client, client);
+            if (!Omitted(VaultFields.Subject)) info.Add(VaultFields.Subject, Subject);
+            if (!Omitted(VaultFields.Document)) info.Add(VaultFields.Document, Document);
+            var tool = Origin == "studio" ? "Studio" : Origin ?? "";
+            if (!string.IsNullOrWhiteSpace(Project))
+                info.Add(VaultFields.Source, Omitted(VaultFields.Project) ? tool : tool + ": " + Project.Trim());
             return info;
         }
     }
