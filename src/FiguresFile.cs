@@ -72,6 +72,13 @@ namespace Supervertaler.Core
             public DocxImageSet Set;
             public List<ExtractedImage> Images = new List<ExtractedImage>();
             public List<FigureVision> Visions = new List<FigureVision>();
+            /// <summary>Figures the text describes for which there was no image to
+            /// look at: label and what the text says. Listed after the rows that
+            /// were looked at, so a missing drawing is visible, not absent.</summary>
+            public List<KeyValuePair<string, string>> WithoutImage = new List<KeyValuePair<string, string>>();
+            /// <summary>A line above the table saying where the images came from
+            /// and how they were given their figure numbers; may be null.</summary>
+            public string Intro;
         }
 
         /// <summary>
@@ -102,7 +109,8 @@ namespace Supervertaler.Core
             IList<string> signsNotInText, string regenerateHint)
         {
             var docs = (documents ?? new List<FigureDocument>()).Where(d => d != null).ToList();
-            var anyLabelled = docs.Any(d => d.Set != null && d.Set.Images.Any(i => !string.IsNullOrEmpty(i.Label)));
+            var anyLabelled = docs.Any(d => (d.Set != null && d.Set.Images.Any(i => !string.IsNullOrEmpty(i.Label)))
+                                          || d.Images.Any(i => i != null && !string.IsNullOrEmpty(i.Label)));
             var sb = new StringBuilder();
             sb.AppendLine("# " + VisualNoun(anyLabelled, true, true));
             sb.AppendLine();
@@ -151,6 +159,11 @@ namespace Supervertaler.Core
                     sb.AppendLine("Image *N* carries figure *N*, checked for all " + d.Set.Images.Count + ".");
                     sb.AppendLine();
                 }
+                if (!string.IsNullOrWhiteSpace(d.Intro))
+                {
+                    sb.AppendLine(d.Intro.Trim());
+                    sb.AppendLine();
+                }
                 sb.AppendLine("| " + VisualNoun(anyLabelled, false, true) + " | File | What the document says | What the " + noun + " shows | Signs on the " + noun + " |");
                 sb.AppendLine("|---|---|---|---|---|");
                 for (int i = 0; i < d.Visions.Count; i++)
@@ -162,9 +175,12 @@ namespace Supervertaler.Core
                     if (said.Length == 0) said = "–";
                     var saw = !string.IsNullOrEmpty(v.Error) ? "*not analysed: " + v.Error + "*"
                             : (string.IsNullOrWhiteSpace(v.Caption) ? "–" : v.Caption);
+                    if (string.IsNullOrEmpty(v.Error) && !string.IsNullOrWhiteSpace(v.Note)) saw += " *(" + v.Note + ")*";
                     var signs = v.SignsInDrawing != null && v.SignsInDrawing.Count > 0 ? string.Join(", ", v.SignsInDrawing) : "–";
                     sb.AppendLine("| " + Cell(v.Label) + " | " + Cell(v.FileName) + " | " + Cell(said) + " | " + Cell(saw) + " | " + Cell(signs) + " |");
                 }
+                foreach (var w in d.WithoutImage)
+                    sb.AppendLine("| " + Cell(w.Key) + " | – | " + Cell(w.Value) + " | *no image file for this figure* | – |");
                 sb.AppendLine();
             }
 
@@ -240,6 +256,51 @@ namespace Supervertaler.Core
             }
             if (wrote == 0) return null;
 
+            sb.AppendLine(TextOnlyMarker);
+            sb.AppendLine();
+            sb.AppendLine("What each image **actually shows** – the parts visible in it, and any reference sign "
+                        + "printed in it but absent from the text – is not in this file. That needs the AI to look "
+                        + "at the images. Everything above comes from the documents' own text.");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// figures.md from the documents' own text when the documents hold no
+        /// images at all: one row per figure the text describes, with the image
+        /// file whose name gives that figure, where there is one. Needs no image
+        /// files; <paramref name="files"/> may be null or empty. Null when the
+        /// text describes no figure - there is then nothing true to write.
+        /// </summary>
+        public static string RenderFromTextFigures(IDictionary<int, List<string>> textFigures, IList<ReferenceImage> files,
+            string regenerateHint, out int wrote)
+        {
+            wrote = 0;
+            if (textFigures == null || textFigures.Count == 0) return null;
+            var rows = new StringBuilder();
+            foreach (var number in textFigures.Keys.OrderBy(k => k))
+            {
+                var said = textFigures[number];
+                if (said == null || said.Count == 0) continue;
+                var names = (files ?? new List<ReferenceImage>())
+                    .Where(f => f != null && f.Figures != null && f.Figures.Any(x => x.Number == number))
+                    .Select(f => f.DisplayName).ToList();
+                rows.AppendLine("| FIG. " + number + " | " + (names.Count > 0 ? Cell(string.Join(", ", names)) : "–") + " | " + Cell(string.Join(" ", said)) + " |");
+                wrote++;
+            }
+            if (wrote == 0) return null;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# Figures");
+            sb.AppendLine();
+            sb.AppendLine("*Written by Supervertaler on " + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + " from the documents' own text, without looking at the images."
+                + (string.IsNullOrEmpty(regenerateHint) ? "" : " Regenerate from " + regenerateHint + ".") + "*");
+            sb.AppendLine();
+            sb.AppendLine("The documents hold no images themselves. Each row is a figure the text describes; the file is the image file whose name gives that figure number, where there is one.");
+            sb.AppendLine();
+            sb.AppendLine("| Figure | File | What the document says it shows |");
+            sb.AppendLine("|---|---|---|");
+            sb.Append(rows);
+            sb.AppendLine();
             sb.AppendLine(TextOnlyMarker);
             sb.AppendLine();
             sb.AppendLine("What each image **actually shows** – the parts visible in it, and any reference sign "

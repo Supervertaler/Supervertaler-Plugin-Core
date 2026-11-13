@@ -119,6 +119,13 @@ namespace Supervertaler.Core
         /// <summary>File names written when extraction was asked to save, in
         /// document order. Empty otherwise.</summary>
         public List<string> SavedFiles { get; set; } = new List<string>();
+
+        /// <summary>What the document's text says each figure shows: figure
+        /// number to every sentence that opens by naming it ("Figuur 3 toont
+        /// ...", "FIG. 3 is ..."). Filled whether or not the document holds any
+        /// image, because the drawings of a patent usually arrive as separate
+        /// files and the text is then all the document knows about them.</summary>
+        public Dictionary<int, List<string>> FigureDescriptions { get; set; } = new Dictionary<int, List<string>>();
     }
 
     /// <summary>
@@ -308,6 +315,7 @@ namespace Supervertaler.Core
                 }
 
                 var descriptions = CollectDescriptions(texts);
+                set.FigureDescriptions = descriptions;
 
                 int ordinal = 0;
                 for (int i = 0; i < n; i++)

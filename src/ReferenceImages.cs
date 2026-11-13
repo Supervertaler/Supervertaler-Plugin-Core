@@ -149,29 +149,136 @@ namespace Supervertaler.Core
                 foreach (var path in Directory.EnumerateFiles(folder))
                 {
                     if (!ImageExtensions.Contains(Path.GetExtension(path))) continue;
-                    result.Add(new ReferenceImage
-                    {
-                        Path = path,
-                        FileName = Path.GetFileName(path),
-                        FigureLabel = ParseFigureLabel(Path.GetFileNameWithoutExtension(path)),
-                        FigureNumber = ParseFigureNumber(Path.GetFileNameWithoutExtension(path))
-                    });
+                    result.Add(Describe(path, null));
                 }
             }
             catch { return result; }
 
-            // Numbered figures first in numeric order, then anything unnumbered
-            // alphabetically, so an odd file never displaces the sequence.
-            result.Sort((a, b) =>
-            {
-                if (a.FigureNumber.HasValue && b.FigureNumber.HasValue)
-                    return a.FigureNumber.Value.CompareTo(b.FigureNumber.Value);
-                if (a.FigureNumber.HasValue) return -1;
-                if (b.FigureNumber.HasValue) return 1;
-                return StringComparer.OrdinalIgnoreCase.Compare(a.FileName, b.FileName);
-            });
-
+            result.Sort(CompareInFolder);
             return result;
+        }
+
+        private static ReferenceImage Describe(string path, string subFolder)
+        {
+            var stem = Path.GetFileNameWithoutExtension(path);
+            var figures = ParseFigures(stem);
+            return new ReferenceImage
+            {
+                Path = path,
+                FileName = Path.GetFileName(path),
+                SubFolder = subFolder,
+                Figures = figures,
+                FigureLabel = figures.Count > 0 ? string.Join(", ", figures.Select(f => f.Label)) : stem.Trim(),
+                FigureNumber = figures.Count > 0 ? figures[0].Number : (int?)null,
+            };
+        }
+
+        // Numbered figures first in numeric order, then anything unnumbered
+        // alphabetically, so an odd file never displaces the sequence.
+        private static int CompareInFolder(ReferenceImage a, ReferenceImage b)
+        {
+            if (a.FigureNumber.HasValue && b.FigureNumber.HasValue)
+            {
+                var c = a.FigureNumber.Value.CompareTo(b.FigureNumber.Value);
+                return c != 0 ? c : StringComparer.OrdinalIgnoreCase.Compare(a.FileName, b.FileName);
+            }
+            if (a.FigureNumber.HasValue) return -1;
+            if (b.FigureNumber.HasValue) return 1;
+            return StringComparer.OrdinalIgnoreCase.Compare(a.FileName, b.FileName);
+        }
+
+        /// <summary>The most image files one description run takes. Above it the
+        /// folder is refused: two hundred paid requests is a wrongly chosen folder
+        /// far more often than a document with two hundred drawings.</summary>
+        public const int MaxImages = 200;
+
+        /// <summary>The most directory entries <see cref="Scan"/> looks at before it
+        /// gives up. It runs on the UI thread every time the FigureLens window
+        /// refreshes, and someone will point it at a drive root.</summary>
+        public const int MaxEntries = 5000;
+
+        // Files Windows and macOS drop into every folder; not "other files" a user put there.
+        private static readonly HashSet<string> Litter =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "thumbs.db", "desktop.ini", ".ds_store" };
+
+        /// <summary>
+        /// What a chosen folder holds, for a run that describes its files: the
+        /// image files in it and in its sub-folders one level down (as deep as
+        /// extraction writes, and as deep as <see cref="CountImages"/> counts, so
+        /// the number shown is the number described), in figure order per folder.
+        /// Never throws.
+        ///
+        /// <para>Scale: stops at <see cref="MaxImages"/> + 1 image files or
+        /// <see cref="MaxEntries"/> entries, whichever comes first, and says so
+        /// in <see cref="FolderScan.TooMany"/>. Designed for a folder of up to
+        /// 200 drawings and for a wrongly chosen one of 100,000 files; the latter
+        /// costs one partial directory listing, not a sort of everything.</para>
+        /// </summary>
+        public static FolderScan Scan(string folder)
+        {
+            var scan = new FolderScan();
+            if (string.IsNullOrWhiteSpace(folder)) return scan;
+            var groups = new List<List<ReferenceImage>>();
+            try
+            {
+                if (!Directory.Exists(folder)) return scan;
+                scan.Exists = true;
+
+                var entries = 0;
+                var images = 0;
+                if (ScanOne(folder, null, scan, groups, ref entries, ref images))
+                {
+                    var subs = new List<string>();
+                    try
+                    {
+                        foreach (var d in Directory.EnumerateDirectories(folder))
+                        {
+                            if (++entries > MaxEntries) { scan.TooMany = true; break; }
+                            subs.Add(d);
+                        }
+                    }
+                    catch { /* no sub-folders we may list */ }
+                    subs.Sort(StringComparer.OrdinalIgnoreCase);
+
+                    if (!scan.TooMany)
+                        foreach (var sub in subs)
+                            if (!ScanOne(sub, Path.GetFileName(sub), scan, groups, ref entries, ref images)) break;
+                }
+            }
+            catch { /* whatever was found so far stands */ }
+
+            foreach (var g in groups)
+            {
+                g.Sort(CompareInFolder);
+                scan.Images.AddRange(g);
+            }
+            return scan;
+        }
+
+        /// <summary>False when a limit was reached and the scan must stop.</summary>
+        private static bool ScanOne(string dir, string subFolder, FolderScan scan, List<List<ReferenceImage>> groups,
+            ref int entries, ref int images)
+        {
+            var here = new List<ReferenceImage>();
+            groups.Add(here);
+            try
+            {
+                foreach (var path in Directory.EnumerateFiles(dir))
+                {
+                    if (++entries > MaxEntries) { scan.TooMany = true; return false; }
+                    if (ImageExtensions.Contains(Path.GetExtension(path)))
+                    {
+                        here.Add(Describe(path, subFolder));
+                        if (++images > MaxImages) { scan.TooMany = true; return false; }
+                    }
+                    else if (!Litter.Contains(Path.GetFileName(path)))
+                    {
+                        scan.OtherFiles++;
+                    }
+                }
+            }
+            catch { /* a sub-folder we may not read holds nothing we can use */ }
+            return true;
         }
 
         /// <summary>
@@ -205,32 +312,153 @@ namespace Supervertaler.Core
             return count;
         }
 
-        // "FIG. 1", "Fig 1", "Figure 1", "FIG-1", "1" — the label as the text
-        // would cite it, so the vision pass can label its output without guessing.
-        private static readonly Regex FigureRe = new Regex(
-            @"^\s*(?:fig(?:ure)?\.?\s*[-_]?\s*)?(\d{1,3})\s*([a-z])?\s*$",
+        // The word for a figure, then its number, anywhere in the name:
+        // "Figure 3", "fig3", "FIG-1", "Figuur 2", "PROJ-001 Fig. 3A (amended)".
+        // Not inside another word ("config3"), and the number must end there
+        // ("fig3abc" and "Figure 2026" are not figures 3 and 202).
+        private static readonly Regex KeywordRe = new Regex(
+            @"(?<![A-Za-z])(figuren|figures|figuur|figure|figs|fig)\.?[\s_\-]*(\d{1,3})([A-Za-z])?(?![A-Za-z0-9])",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // What may follow: "-2", " to 4", " and 4", ", 5", "_en_6", "-5C".
+        private static readonly Regex MoreRe = new Regex(
+            @"\G[\s_]*(-|–|—|to|tot|and|en|&|,|\+)[\s_]*(?:fig(?:uur|ure)?\.?\s*)?(\d{1,3})([A-Za-z])?(?![A-Za-z0-9])",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // A name that is nothing but a number: "3", "03", "12b".
+        private static readonly Regex BareNumberRe = new Regex(
+            @"^[\s_]*(\d{1,3})([A-Za-z])?[\s_]*$", RegexOptions.Compiled);
+
+        /// <summary>
+        /// The figures a file name says the file holds; empty when it names none.
+        ///
+        /// <para>Deliberately cautious, because a wrong figure number is the worst
+        /// thing this feature can produce: it reads fine and is wrong everywhere
+        /// downstream. A second number counts only where the name leaves no
+        /// doubt - the word is plural ("Figs 3 and 4 amended") or the numbers end
+        /// the name ("Fig 1-2"). "Figure 1 - 13 Nov" is figure 1; "Figure 3 (2)"
+        /// and "Figure 3-2" are figure 3. A file that names no figure is still
+        /// described; it is just not given a number nobody wrote.</para>
+        /// </summary>
+        public static List<FigureRef> ParseFigures(string fileNameWithoutExtension)
+        {
+            var found = new List<FigureRef>();
+            var name = fileNameWithoutExtension ?? "";
+            if (name.Trim().Length == 0) return found;
+
+            foreach (Match m in KeywordRe.Matches(name))
+            {
+                var first = new FigureRef(int.Parse(m.Groups[2].Value), m.Groups[3].Value);
+                Add(found, first);
+
+                // Whatever follows the first number, read as a chain.
+                var more = new List<KeyValuePair<string, FigureRef>>();
+                var at = m.Index + m.Length;
+                while (true)
+                {
+                    var n = MoreRe.Match(name, at);
+                    if (!n.Success) break;
+                    more.Add(new KeyValuePair<string, FigureRef>(n.Groups[1].Value.ToLowerInvariant(),
+                        new FigureRef(int.Parse(n.Groups[2].Value), n.Groups[3].Value)));
+                    at = n.Index + n.Length;
+                }
+                if (more.Count == 0) continue;
+
+                var word = m.Groups[1].Value;
+                var plural = word.EndsWith("s", StringComparison.OrdinalIgnoreCase)
+                          || word.EndsWith("en", StringComparison.OrdinalIgnoreCase);
+                var endsName = name.Substring(at).Trim(' ', '_', ')', '.').Length == 0;
+                if (!plural && !endsName) continue;
+
+                var previous = first;
+                foreach (var step in more)
+                {
+                    var isRange = step.Key == "-" || step.Key == "–" || step.Key == "—"
+                               || step.Key == "to" || step.Key == "tot";
+                    if (isRange) AddRange(found, previous, step.Value);
+                    else Add(found, step.Value);
+                    previous = step.Value;
+                }
+            }
+
+            if (found.Count == 0)
+            {
+                var bare = BareNumberRe.Match(name);
+                if (bare.Success) Add(found, new FigureRef(int.Parse(bare.Groups[1].Value), bare.Groups[2].Value));
+            }
+            return found;
+        }
+
+        private static void Add(List<FigureRef> list, FigureRef f)
+        {
+            if (!list.Any(x => x.Number == f.Number && x.Letter == f.Letter)) list.Add(f);
+        }
+
+        /// <summary>"1-4" is 1, 2, 3, 4; "5A-5C" is 5A, 5B, 5C. Anything else that
+        /// looks like a range (3-2, 3A-4B, 1-80) is not expanded: only what was
+        /// written is taken, and a backwards one not even that.</summary>
+        private static void AddRange(List<FigureRef> list, FigureRef from, FigureRef to)
+        {
+            if (from.Letter.Length == 0 && to.Letter.Length == 0)
+            {
+                if (to.Number <= from.Number) return;
+                if (to.Number - from.Number > 30) { Add(list, to); return; }
+                for (int n = from.Number + 1; n <= to.Number; n++) Add(list, new FigureRef(n, ""));
+                return;
+            }
+            if (from.Number == to.Number && from.Letter.Length == 1 && to.Letter.Length == 1 && to.Letter[0] > from.Letter[0])
+            {
+                for (char c = (char)(from.Letter[0] + 1); c <= to.Letter[0]; c++) Add(list, new FigureRef(from.Number, c.ToString()));
+                return;
+            }
+            if (to.Number > from.Number) Add(list, to);
+        }
 
         /// <summary>The figure label, normalised to "FIG. n" (or "FIG. nA"), or
         /// the bare filename when it does not look like a figure at all.</summary>
         public static string ParseFigureLabel(string fileNameWithoutExtension)
         {
             if (string.IsNullOrWhiteSpace(fileNameWithoutExtension)) return "";
-            var m = FigureRe.Match(fileNameWithoutExtension);
-            if (!m.Success) return fileNameWithoutExtension.Trim();
-
-            var suffix = m.Groups[2].Success ? m.Groups[2].Value.ToUpperInvariant() : "";
-            return "FIG. " + m.Groups[1].Value + suffix;
+            var figures = ParseFigures(fileNameWithoutExtension);
+            return figures.Count > 0 ? figures[0].Label : fileNameWithoutExtension.Trim();
         }
 
         /// <summary>The figure's number, or null when the name is not a figure.</summary>
         public static int? ParseFigureNumber(string fileNameWithoutExtension)
         {
-            if (string.IsNullOrWhiteSpace(fileNameWithoutExtension)) return null;
-            var m = FigureRe.Match(fileNameWithoutExtension);
-            if (!m.Success) return null;
-            return int.TryParse(m.Groups[1].Value, out var n) ? n : (int?)null;
+            var figures = ParseFigures(fileNameWithoutExtension);
+            return figures.Count > 0 ? figures[0].Number : (int?)null;
         }
+    }
+
+    /// <summary>One figure as a file name gives it: a number and, sometimes, a letter.</summary>
+    public sealed class FigureRef
+    {
+        public FigureRef(int number, string letter)
+        {
+            Number = number;
+            Letter = (letter ?? "").ToUpperInvariant();
+        }
+
+        public int Number { get; }
+        /// <summary>"A" in "3A"; empty when there is none.</summary>
+        public string Letter { get; }
+        public string Label => "FIG. " + Number + Letter;
+        public override string ToString() => Label;
+    }
+
+    /// <summary>What <see cref="ReferenceImages.Scan"/> found in a folder.</summary>
+    public sealed class FolderScan
+    {
+        /// <summary>False when the folder is not there (any more).</summary>
+        public bool Exists { get; set; }
+        /// <summary>The image files, top folder first, then each sub-folder; figure order within each.
+        /// Incomplete when <see cref="TooMany"/>.</summary>
+        public List<ReferenceImage> Images { get; } = new List<ReferenceImage>();
+        /// <summary>Files that are not images (PDF, Word, ...) and so are not used.</summary>
+        public int OtherFiles { get; set; }
+        /// <summary>True when the folder holds more than a run takes, or more than the scan looks through.</summary>
+        public bool TooMany { get; set; }
     }
 
     /// <summary>One drawing on disk.</summary>
@@ -243,8 +471,18 @@ namespace Supervertaler.Core
         /// when the name does not follow the convention.</summary>
         public string FigureLabel { get; set; }
 
-        /// <summary>Figure number when the filename yields one; null otherwise.</summary>
+        /// <summary>Figure number when the filename yields one; null otherwise.
+        /// The first, when the name gives several.</summary>
         public int? FigureNumber { get; set; }
+
+        /// <summary>Every figure the file name gives; empty when it gives none.</summary>
+        public List<FigureRef> Figures { get; set; } = new List<FigureRef>();
+
+        /// <summary>The sub-folder the file is in, one level below the chosen folder; null in the folder itself.</summary>
+        public string SubFolder { get; set; }
+
+        /// <summary>The name as shown to the user: with its sub-folder when it is in one.</summary>
+        public string DisplayName => string.IsNullOrEmpty(SubFolder) ? FileName : SubFolder + "\\" + FileName;
 
         public override string ToString() => FigureLabel + " (" + FileName + ")";
     }
