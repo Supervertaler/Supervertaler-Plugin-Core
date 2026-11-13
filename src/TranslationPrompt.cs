@@ -315,14 +315,24 @@ namespace Supervertaler.Core
             sb.AppendLine();
             // The 100% sentence is emitted only where percentages are actually
             // given. memoQ never has them, and words describing a case that cannot
-            // arise are dead weight in a per-batch prompt.
-            var havePercentages = withMemory.Any(s => s.FuzzyMatchPercent > 0);
+            // arise are dead weight in a per-batch prompt. A match named
+            // "different numbers" is given none.
+            var havePercentages = withMemory.Any(s => s.FuzzyMatchPercent > 0 && !IsNumbersOnly(s));
 
             // #116: where the memory's own source travels with the match, say so
             // and tell the model to compare it. That source is the whole reason a
             // sub-100% match can be shown at all. Where there is none the match is
             // exact by construction (see BatchTranslator.ToPromptInput).
             var haveSources = withMemory.Any(s => !string.IsNullOrWhiteSpace(s.FuzzySourceText));
+
+            // A memory scores a sentence that differs only in its numbers as 100% (or
+            // 99%), because it replaces the numbers itself. Sent as "100% match" with
+            // the stored texts, that told the model the source was the same while
+            // showing it another claim number, and nothing to compare with (13 Nov
+            // 2026). Such a match is named for what it is and never given a percentage.
+            var haveNumbers = withMemory.Any(IsNumbersOnly);
+            var haveReplaced = withMemory.Any(s => IsNumbersOnly(s)
+                && s.FuzzyNumbers == FuzzyNumberDifference.Replaced);
 
             sb.AppendLine("These are earlier translations of similar sentences, found in the project's "
                 + "translation memory. A memory can hold translations made for other documents, "
@@ -340,6 +350,12 @@ namespace Supervertaler.Core
                       + " segment's own text is shown above the memory's: compare them word by word, "
                       + "because a small difference can change the meaning. "
                     : "")
+                + (haveNumbers
+                    ? "A match marked \"" + NumbersOnlyLabel + "\" differs from the segment only in "
+                      + "its numbers. The translation in memory still has the memory's numbers"
+                      + (haveReplaced ? ", unless a note under it says they were already replaced" : "")
+                      + ": use the segment's own numbers, each in its own place. "
+                    : "")
                 + "Do NOT skip these segments – return a translation for every segment in the "
                 + "list below, these included.");
             sb.AppendLine();
@@ -354,23 +370,37 @@ namespace Supervertaler.Core
             // percentage (memoQ) closeness is unknown, so it is shown.
             foreach (var seg in withMemory)
             {
+                bool numbersOnly = IsNumbersOnly(seg);
                 sb.AppendLine("Segment " + seg.Number
-                    + (seg.FuzzyMatchPercent > 0 ? " – " + seg.FuzzyMatchPercent + "% match" : ""));
+                    + (numbersOnly ? " – " + NumbersOnlyLabel
+                       : seg.FuzzyMatchPercent > 0 ? " – " + seg.FuzzyMatchPercent + "% match" : ""));
 
                 if (!string.IsNullOrWhiteSpace(seg.FuzzySourceText))
                 {
-                    if (seg.FuzzyMatchPercent < 100 && !string.IsNullOrWhiteSpace(seg.SourceText))
+                    if ((numbersOnly || seg.FuzzyMatchPercent < 100) && !string.IsNullOrWhiteSpace(seg.SourceText))
                         sb.AppendLine("  this segment:          " + seg.SourceText);
 
                     sb.AppendLine("  source in memory:      " + seg.FuzzySourceText);
                 }
 
                 sb.AppendLine("  translation in memory: " + seg.FuzzyTargetText);
+                if (numbersOnly && seg.FuzzyNumbers == FuzzyNumberDifference.Replaced)
+                    sb.AppendLine("  note:                  the numbers in this translation were already "
+                        + "replaced with this segment's");
                 sb.AppendLine();
             }
 
             return sb.ToString();
         }
+
+        private const string NumbersOnlyLabel = "same sentence, different numbers";
+
+        /// <summary>
+        /// Only with the memory's source: the label promises a difference the model
+        /// can see, and without that source there is nothing to see it in.
+        /// </summary>
+        private static bool IsNumbersOnly(BatchSegmentInput seg) =>
+            seg.FuzzyNumbers != FuzzyNumberDifference.None && !string.IsNullOrWhiteSpace(seg.FuzzySourceText);
 
         /// <summary>
         /// Parses a batch response with numbered translations.
@@ -546,6 +576,76 @@ namespace Supervertaler.Core
         /// Trados knows the percentage Studio recorded on the segment.
         /// </summary>
         public int FuzzyMatchPercent { get; set; }
+
+        /// <summary>
+        /// Set when the memory's source is this segment's sentence with other
+        /// numbers (see <see cref="TmSourceCompare"/>). The prompt then names the
+        /// match as that instead of giving a percentage. Never set at a guess: the
+        /// two sources must have been compared.
+        /// </summary>
+        public FuzzyNumberDifference FuzzyNumbers { get; set; }
+    }
+
+    /// <summary>What is known about a match whose source differs from the segment only in its numbers.</summary>
+    public enum FuzzyNumberDifference
+    {
+        /// <summary>Not such a match, or not compared.</summary>
+        None = 0,
+        /// <summary>Only the numbers differ; the translation is as the memory holds it, with the memory's numbers.</summary>
+        Stored,
+        /// <summary>Only the numbers differ; the memory has already put the segment's numbers into the translation.</summary>
+        Replaced
+    }
+
+    /// <summary>How a memory's source sentence relates to the segment it was found for.</summary>
+    public enum TmSourceDifference { Same, NumbersOnly, Other }
+
+    /// <summary>
+    /// Compares a memory's source with the segment's own, as plain text. A memory's
+    /// score cannot answer this: Studio gives 100% to a sentence with other numbers.
+    /// Runs of white space count as one space. One pass over each text, so the cost
+    /// is the length of the two sentences.
+    /// </summary>
+    public static class TmSourceCompare
+    {
+        public static TmSourceDifference Compare(string segmentSource, string memorySource)
+        {
+            if (string.Equals(segmentSource, memorySource, StringComparison.Ordinal)) return TmSourceDifference.Same;
+
+            var a = Plain(segmentSource, false);
+            var b = Plain(memorySource, false);
+            if (string.Equals(a, b, StringComparison.Ordinal)) return TmSourceDifference.Same;
+
+            // Every run of digits becomes one mark: what is left is the sentence
+            // without its numbers. "1,5" against "2,75" is the same sentence; "3"
+            // against "3 en 4" is not.
+            return string.Equals(Plain(a, true), Plain(b, true), StringComparison.Ordinal)
+                ? TmSourceDifference.NumbersOnly
+                : TmSourceDifference.Other;
+        }
+
+        /// <summary>The text with each run of white space as one space and none at either end; with
+        /// <paramref name="maskDigits"/>, each run of digits as one mark that no text contains.</summary>
+        private static string Plain(string text, bool maskDigits)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            var sb = new StringBuilder(text.Length);
+            bool space = false, digit = false;
+            foreach (char c in text)
+            {
+                if (char.IsWhiteSpace(c)) { space = sb.Length > 0; digit = false; continue; }
+                if (space) { sb.Append(' '); space = false; }
+                if (maskDigits && char.IsDigit(c))
+                {
+                    if (!digit) sb.Append('');
+                    digit = true;
+                    continue;
+                }
+                digit = false;
+                sb.Append(c);
+            }
+            return sb.ToString();
+        }
     }
 
     /// <summary>
