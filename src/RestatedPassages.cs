@@ -930,7 +930,17 @@ namespace Supervertaler.Core
                 throw new ArgumentException("One target is needed for each source: "
                     + sources.Count + " sources, " + targets.Count + " targets.");
 
-            var found = Find(sources);
+            return ReportOn(Find(sources), targets);
+        }
+
+        /// <summary>
+        /// The same for pairs already found (<see cref="Find"/>), so a run that
+        /// needed them earlier does not find them twice.
+        /// </summary>
+        public static RestatedReport ReportOn(RestatedPairs found, IList<RestatedTarget> targets)
+        {
+            var report = new RestatedReport();
+            if (found == null || targets == null) return report;
             report.Limited = found.Limited;
 
             foreach (var pair in found.Pairs)

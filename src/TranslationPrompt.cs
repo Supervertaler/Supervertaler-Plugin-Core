@@ -258,6 +258,7 @@ namespace Supervertaler.Core
             var sb = new StringBuilder(segments.Count * 200);
 
             sb.Append(BuildMemoryBlock(segments));
+            sb.Append(BuildReferenceBlock(segments));
 
             sb.AppendLine("**SEGMENTS TO TRANSLATE (" + segments.Count + " segments):**");
             sb.AppendLine();
@@ -394,6 +395,93 @@ namespace Supervertaler.Core
         }
 
         private const string NumbersOnlyLabel = "same sentence, different numbers";
+
+        /// <summary>
+        /// Earlier translations, from the same document, of passages the
+        /// segments of this request repeat, under the instruction that says what
+        /// to do with them; "" when no segment has one, so a request without any
+        /// is byte for byte what it was before this block existed
+        /// (docs/design/in-run-references.md, step 2 of cross-batch consistency).
+        ///
+        /// <para>It goes in the user prompt, with the memory matches, on purpose:
+        /// the system prompt is the same for every request of a run, which is what
+        /// prompt caching pays for, and this block differs from request to
+        /// request.</para>
+        ///
+        /// <para>The stance is "keep the wording unless it is wrong here". The
+        /// earlier translation is the AI's own and nobody has reviewed it, and the
+        /// block says so: a mistake shown as a model is repeated. One mistake made
+        /// the same way everywhere is one find-and-replace; made five ways it is a
+        /// full read.</para>
+        ///
+        /// <para>Fixed maximum size: at most <see cref="EarlierTranslations.MaxPerRequest"/>
+        /// earlier translations in one request, each from a segment no longer
+        /// than <see cref="EarlierTranslations.MaxTokens"/> tokens.</para>
+        /// </summary>
+        public static string BuildReferenceBlock(List<BatchSegmentInput> segments)
+        {
+            if (segments == null) return "";
+
+            int total = 0;
+            bool notes = false;
+            foreach (var seg in segments)
+            {
+                if (seg?.References == null) continue;
+                foreach (var r in seg.References)
+                {
+                    if (r == null || string.IsNullOrWhiteSpace(r.Target)) continue;
+                    total++;
+                    if (r.Target.IndexOf("[[TC:", StringComparison.Ordinal) >= 0) notes = true;
+                }
+            }
+            if (total == 0) return "";
+
+            var sb = new StringBuilder(total * 400 + 1024);
+            sb.AppendLine("**EARLIER TRANSLATIONS FROM THIS DOCUMENT – KEEP THE SAME WORDING**");
+            sb.AppendLine();
+            sb.AppendLine("Some of the segments below repeat a passage that stands elsewhere in this document "
+                + "and has already been translated. That other segment and its translation are shown here. "
+                + "Where your segment has the same source wording, translate that passage with the same "
+                + "wording as the earlier translation, so that the document reads consistently - unless "
+                + "that wording is wrong for this segment, in which case translate from the source. The "
+                + "earlier translations have not been reviewed and can contain mistakes. Translate the "
+                + "rest of each segment as usual, and translate only the segments in the list below: the "
+                + "earlier segments are shown for reference and must not be returned. Inline tags are left "
+                + "out of the earlier texts; take the tags from your own segment."
+                + (notes
+                    ? " A note in [[TC: ...]] at the end of an earlier translation is a remark about a "
+                      + "problem in that segment's source. If your segment has the same problem, flag it "
+                      + "in the same way; otherwise leave the note out."
+                    : ""));
+            sb.AppendLine();
+
+            int shown = 0;
+            foreach (var seg in segments)
+            {
+                if (seg?.References == null) continue;
+                foreach (var r in seg.References)
+                {
+                    if (r == null || string.IsNullOrWhiteSpace(r.Target)) continue;
+                    if (shown == EarlierTranslations.MaxPerRequest) break;
+                    shown++;
+
+                    sb.AppendLine("Segment " + seg.Number
+                        + (string.IsNullOrWhiteSpace(r.Passage) ? ""
+                           : " – repeats “" + r.Passage + "”"
+                             + (r.PassageWords > 0 ? " (" + r.PassageWords + " words)" : "")));
+                    sb.AppendLine("  earlier source:      " + OneLine(r.Source));
+                    sb.AppendLine("  earlier translation: " + OneLine(r.Target));
+                    sb.AppendLine();
+                }
+                if (shown == EarlierTranslations.MaxPerRequest) break;
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>A text on one line: a line break inside a reference would read as the start of something else.</summary>
+        private static string OneLine(string text) =>
+            (text ?? "").Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Trim();
 
         /// <summary>
         /// Only with the memory's source: the label promises a difference the model
@@ -584,6 +672,14 @@ namespace Supervertaler.Core
         /// two sources must have been compared.
         /// </summary>
         public FuzzyNumberDifference FuzzyNumbers { get; set; }
+
+        /// <summary>
+        /// Earlier translations, from the same document, of a passage this segment
+        /// repeats (<see cref="EarlierTranslations"/>), or null. Set by Batch
+        /// Translate in Trados only; null everywhere else, and the prompt is then
+        /// exactly what it was.
+        /// </summary>
+        public List<EarlierTranslation> References { get; set; }
     }
 
     /// <summary>What is known about a match whose source differs from the segment only in its numbers.</summary>

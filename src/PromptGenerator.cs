@@ -488,8 +488,10 @@ namespace Supervertaler.Core
             sb.AppendLine("   within the delivered batch (e.g. resolving an antecedent that appears a few segments earlier),");
             sb.AppendLine("   but batch boundaries are arbitrary: never assume the batch is the whole document, and leave");
             sb.AppendLine("   document-wide checks (e.g. reference-numeral consistency across the full text) to a separate");
-            sb.AppendLine("   QA pass. There is no memory between requests, so terminology must come from the glossary and");
-            sb.AppendLine("   reference translations below - never from choices made in an earlier batch. If a segment");
+            sb.AppendLine("   QA pass. Each request stands alone: of earlier requests you see only what a request itself");
+            sb.AppendLine("   shows you (translation-memory matches, and earlier translations from this document of a");
+            sb.AppendLine("   passage a segment repeats). Terminology must come from the glossary and from what is shown,");
+            sb.AppendLine("   never from an assumption about what an earlier batch chose. If a segment");
             sb.AppendLine("   appears incomplete, translate exactly what is provided without comment.\"");
             sb.AppendLine();
             sb.AppendLine("4. TERMINOLOGY CONSISTENCY HIERARCHY:");
