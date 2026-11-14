@@ -305,5 +305,158 @@ namespace Supervertaler.Core.Tests
             Assert.True(built < 5000, "found and indexed once: " + built + " ms (limit 5,000)");
             Assert.True(looked < 2000, "10,000 lookups: " + looked + " ms (limit 2,000)");
         }
+        // ---- near-twins: the same sentence but for a few words or numbers -------------------
+        // What a translation memory calls a high fuzzy match. Shown whole at any
+        // length, with the differences named; the passage rule's size limit does
+        // not apply.
+
+        /// <summary>A long cascade of preferred values: 'X, preferably Y, more preferably Z, ...'.</summary>
+        private static string Cascade(string opening, string qualifier, double first, double step, int count, string unit)
+        {
+            var parts = new List<string>();
+            for (int i = 0; i < count; i++)
+                parts.Add((i == 0 ? opening + " " : i == 1 ? "bij voorkeur " : "met meer voorkeur ") + qualifier + " "
+                    + (first + step * i).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture).Replace('.', ',') + " " + unit);
+            return string.Join(", ", parts) + ".";
+        }
+
+        private static int Tokens(string text) =>
+            Supervertaler.Core.SuperVault.VaultDiff.Tokenize(new[] { new Supervertaler.Core.SuperVault.VaultPiece { Text = text } }).Count;
+
+        public static void ANearTwinOverTheTokenLimit_IsShownWhole_WithItsDifferenceNamed()
+        {
+            var first = Cascade("De breedte van de klembeugel bedraagt", "minimaal", 10.0, 0.5, 34, "mm");
+            var second = Cascade("De breedte van de lampvoet bedraagt", "minimaal", 10.0, 0.5, 34, "mm");
+            var translation = Cascade("The width of the clamping bracket is", "at least", 10.0, 0.5, 34, "mm").Replace(',', '.');
+            Assert.True(Tokens(first) > EarlierTranslations.MaxTokens && Tokens(translation) > EarlierTranslations.MaxTokens,
+                "both are over the passage limit (" + Tokens(first) + " and " + Tokens(translation) + " tokens)");
+
+            var sources = new[] { first, "Het huis is van staal.", second };
+            var found = For(sources).For(2, Known(0, translation));
+
+            Assert.Equal(1, found.Count, "the twin is shown although it is over the limit");
+            Assert.True(found[0].Twin, "as a twin");
+            Assert.Equal(first, found[0].Source, "its source whole");
+            Assert.Equal(translation, found[0].Target, "its translation whole");
+            Assert.Equal(1, found[0].DifferenceCount, "the two differ in one place");
+            Assert.Equal("yours “lampvoet” / earlier “klembeugel”", found[0].Differences[0], "which is named");
+        }
+
+        public static void TwinsThatDifferInANumber_TheBlockNamesIt_AndForbidsCopyingNumbers()
+        {
+            var sources = new[]
+            {
+                "Een boete van 500 euro per dag is verschuldigd wanneer de leverancier de producten later dan de leverdatum aflevert.",
+                "De bijlagen maken deel uit van deze overeenkomst.",
+                "Een boete van 250 euro per dag is verschuldigd wanneer de leverancier de producten later dan de leverdatum aflevert.",
+            };
+            const string english = "A penalty of EUR 500 per day is payable if the supplier delivers the products later than the delivery date.";
+            var found = For(sources).For(2, Known(0, english));
+            Assert.Equal(1, found.Count, "the twin");
+            Assert.Equal("yours “250” / earlier “500”", found[0].Differences[0], "the number that differs, and whose is whose");
+
+            var segments = new List<BatchSegmentInput> { new BatchSegmentInput { Number = 31, SourceText = sources[2], References = found } };
+            var block = TranslationPrompt.BuildReferenceBlock(segments);
+            Assert.True(block.Contains("Segment 31 – the same sentence as an earlier segment but for a few words or numbers\r\n"
+                + "  differs in:          yours “250” / earlier “500”\r\n"
+                + "  earlier source:      " + sources[0] + "\r\n"
+                + "  earlier translation: " + english + "\r\n"),
+                "the entry says what kind of reference it is and where the sources differ");
+            Assert.True(block.Contains("NEVER copy a number, unit, reference numeral or name from the earlier translation"),
+                "and the block forbids copying numbers");
+            Assert.True(block.Contains("like a fuzzy match from a translation memory"), "and says what a twin is");
+
+            var passageOnly = new List<BatchSegmentInput> { new BatchSegmentInput { Number = 2, SourceText = "x",
+                References = new List<EarlierTranslation> { new EarlierTranslation { Source = "a", Target = "b", Passage = "p", PassageWords = 9 } } } };
+            Assert.True(!TranslationPrompt.BuildReferenceBlock(passageOnly).Contains("NEVER copy"),
+                "a request with passages only says nothing about twins");
+        }
+
+        public static void ASegmentWithATwinAndAPassage_GetsTheTwinFirst_AndEachOtherSegmentOnce()
+        {
+            // Segment 2 is the twin of segment 0; segment 1 only shares a passage with both.
+            const string passage = "de pomp moet met schoon water worden gevuld voordat zij voor het eerst wordt gestart";
+            var sources = new[]
+            {
+                "Let erop dat " + passage + " in de werkplaats van Acme.",
+                "Na elke reparatie van de afdichting door een monteur geldt opnieuw dat " + passage + ".",
+                "Let erop dat " + passage + " in de fabriek van Acme.",
+            };
+            var found = For(sources).For(2, Known(0, "Eerste.", 1, "Tweede."));
+            Assert.Equal(2, found.Count, "both other segments, each once");
+            Assert.True(found[0].Twin && found[0].Target == "Eerste.", "the twin first");
+            Assert.True(!found[1].Twin && found[1].Target == "Tweede.", "then the passage");
+        }
+
+        public static void ATwinWithManyDifferences_NamesTwelve_AndCountsTheRest()
+        {
+            // 100 words, 15 of them changed, well apart: still the same sentence.
+            var a = Enumerable.Range(0, 100).Select(i => "w" + i).ToList();
+            var b = new List<string>(a);
+            for (int i = 0; i < 15; i++) b[3 + i * 6] = "z" + i;
+            var sources = new[] { string.Join(" ", a) + ".", "Iets anders.", string.Join(" ", b) + "." };
+
+            var found = For(sources).For(2, Known(0, "Translation."));
+            Assert.Equal(1, found.Count, "a twin");
+            Assert.Equal(15, found[0].DifferenceCount, "fifteen differences counted");
+            Assert.Equal(EarlierTranslations.MaxDifferencesListed, found[0].Differences.Count, "twelve named");
+
+            var block = TranslationPrompt.BuildReferenceBlock(new List<BatchSegmentInput> {
+                new BatchSegmentInput { Number = 3, SourceText = sources[2], References = found } });
+            Assert.True(block.Contains("yours “z11” / earlier “w69”; and 3 more\r\n"), "and the block says how many more");
+        }
+
+        public static void WordDifferences_OfTheSameWords_AreNone()
+        {
+            int total;
+            Assert.Equal(0, RestatedPassages.WordDifferences("De pomp, 12 mm.", "de POMP 12 mm", 12, out total).Count, "case and punctuation are not differences");
+            Assert.Equal(0, total, "none counted");
+            Assert.Equal(0, RestatedPassages.WordDifferences("", "iets", 12, out total).Count, "nothing to compare");
+            var one = RestatedPassages.WordDifferences("De rode pomp.", "De pomp.", 12, out total);
+            Assert.Equal("yours “rode” / earlier “”", one[0], "a word only one of them has");
+        }
+
+        public static void TheBlockKeepsToItsCharacterBudget_AndNeverCutsAnEarlierTextShort()
+        {
+            // Twelve long twins of 3,000 characters each (source and translation), then a short one.
+            var segments = new List<BatchSegmentInput>();
+            for (int n = 1; n <= 12; n++)
+                segments.Add(new BatchSegmentInput
+                {
+                    Number = n,
+                    SourceText = "Source " + n,
+                    References = new List<EarlierTranslation> {
+                        new EarlierTranslation { Twin = true, Source = "S" + n + " " + new string('s', 1495), Target = "T" + n + " " + new string('t', 1495) } }
+                });
+            segments.Add(new BatchSegmentInput { Number = 13, SourceText = "Source 13",
+                References = new List<EarlierTranslation> { new EarlierTranslation { Source = "short source", Target = "short translation" } } });
+
+            var block = TranslationPrompt.BuildReferenceBlock(segments);
+            int whole = 0;
+            for (int n = 1; n <= 12; n++)
+                if (block.Contains("  earlier translation: T" + n + " " + new string('t', 1495) + "\r\n")) whole++;
+            Assert.Equal(8, whole, "eight long twins fit in 24,000 characters, each whole");
+            Assert.True(!block.Contains("T9 ") && !block.Contains("S9 "), "the ninth is left out altogether, not cut short");
+            Assert.True(block.Contains("  earlier translation: short translation\r\n"), "a short one after them that still fits is shown");
+        }
+
+        public static void ManyLongTwins_AreLookedUpQuickly()
+        {
+            // 300 pairs of twins of about 220 words: naming the differences aligns
+            // each pair word by word, once per lookup.
+            var doc = new List<string>();
+            for (int p = 0; p < 300; p++) doc.Add(Cascade("Onderdeel a" + p + " heeft een breedte van", "minimaal", 10.0 + p, 0.5, 34, "mm"));
+            for (int p = 0; p < 300; p++) doc.Add(Cascade("Onderdeel b" + p + " heeft een breedte van", "minimaal", 10.0 + p, 0.5, 34, "mm"));
+            var known = For(doc);
+
+            var clock = Stopwatch.StartNew();
+            int shown = 0;
+            for (int s = 300; s < 600; s++)
+                if (known.For(s, other => other < 300 ? "Part a has a width of at least 10.0 mm." : null).Count > 0) shown++;
+            clock.Stop();
+
+            Assert.Equal(300, shown, "every later twin is shown its earlier one");
+            Assert.True(clock.ElapsedMilliseconds < 5000, "300 lookups of long twins: " + clock.ElapsedMilliseconds + " ms (limit 5,000)");
+        }
     }
 }

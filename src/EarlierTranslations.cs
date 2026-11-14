@@ -6,9 +6,9 @@ using Supervertaler.Core.SuperVault;
 namespace Supervertaler.Core
 {
     /// <summary>
-    /// An earlier segment of the same document that shares a passage with the one
-    /// being translated, and the translation it has - shown to the AI so it keeps
-    /// the wording (<see cref="TranslationPrompt.BuildReferenceBlock"/>).
+    /// An earlier segment of the same document that the one being translated
+    /// repeats, and the translation it has - shown to the AI so it keeps the
+    /// wording (<see cref="TranslationPrompt.BuildReferenceBlock"/>).
     /// </summary>
     public sealed class EarlierTranslation
     {
@@ -25,14 +25,40 @@ namespace Supervertaler.Core
         /// <summary>The first words of the passage the two share, and how many words it has.</summary>
         public string Passage;
         public int PassageWords;
+
+        /// <summary>
+        /// The other segment is the same sentence but for a few words or numbers
+        /// (<see cref="RestatedPair.NearTwin"/>): what a translation memory calls
+        /// a high fuzzy match. Shown whatever its length, with
+        /// <see cref="Differences"/>.
+        /// </summary>
+        public bool Twin;
+
+        /// <summary>
+        /// For a twin: where the two sources differ, each as "yours X / earlier
+        /// Y", at most <see cref="EarlierTranslations.MaxDifferencesListed"/>.
+        /// The numbers are the point: a model that copies a twin's translation
+        /// copies its numbers with it.
+        /// </summary>
+        public List<string> Differences;
+
+        /// <summary>How many places differ in all, when more than are listed.</summary>
+        public int DifferenceCount;
     }
 
     /// <summary>
-    /// Which segments of a document can be shown to the AI as earlier
-    /// translations of a passage a segment repeats: step 2 of the cross-batch
-    /// consistency design (docs/design/in-run-references.md). Built once per run
-    /// from the pairs <see cref="RestatedPassages.Find"/> returns, so "repeats a
-    /// passage" means here exactly what it means in the end-of-run report.
+    /// The run's short-term memory: which segments of a document can be shown to
+    /// the AI as earlier translations of what a segment repeats. Step 2 of the
+    /// cross-batch consistency design (docs/design/in-run-references.md). Built
+    /// once per run from the pairs <see cref="RestatedPassages.Find"/> returns,
+    /// so "repeats" means here exactly what it means in the end-of-run report.
+    ///
+    /// <para>Two kinds, as in a translation memory. A <b>twin</b> is the same
+    /// sentence but for a few words or numbers - a high fuzzy match - and is
+    /// shown whole whatever its length, with the differences named. A
+    /// <b>passage</b> is a run of words inside two otherwise different
+    /// sentences - a fragment match - and is shown only when the earlier segment
+    /// is short enough to be read as an example.</para>
     ///
     /// <para>The document is the memory. This holds no translation: the caller
     /// says, each time it asks, which translation a segment has now - one that
@@ -40,23 +66,39 @@ namespace Supervertaler.Core
     /// run wrote and the CAT tool accepted. Nothing is kept between runs.</para>
     ///
     /// <para>Scale: tested at 10,000 segments, designed for 10,000. Building is
-    /// one pass over the pairs; a lookup reads one segment's few partners.</para>
+    /// one pass over the pairs; a lookup reads one segment's few partners.
+    /// Whether two segments are twins was decided by the finder, from the runs
+    /// they share; nothing here compares a segment with every other. Naming a
+    /// twin's differences aligns two segments word by word (words × words, at
+    /// most 1,000 × 1,000, the finder's own limit), for a twin that is shown
+    /// and no other.</para>
     /// </summary>
     public sealed class EarlierTranslations
     {
         /// <summary>The most earlier translations shown for one segment.</summary>
         public const int MaxPerSegment = 2;
 
-        /// <summary>The most shown in one request, over all its segments: the block has a fixed maximum size.</summary>
+        /// <summary>The most shown in one request, over all its segments.</summary>
         public const int MaxPerRequest = 20;
 
         /// <summary>
-        /// An earlier segment whose source or translation is longer than this in
-        /// tokens (<see cref="VaultDiff.Tokenize"/>: words, punctuation and
-        /// spaces) is not shown at all. Never cut short: half a sentence as a
-        /// model is worse than none.
+        /// The most characters of earlier sources and translations in one
+        /// request (about 6,000 tokens). One that does not fit is left out whole;
+        /// a long twin and its translation are about 3,000 characters, so eight
+        /// of them fit.
+        /// </summary>
+        public const int MaxRequestCharacters = 24000;
+
+        /// <summary>
+        /// A passage - not a twin - from an earlier segment whose source or
+        /// translation is longer than this in tokens (<see cref="VaultDiff.Tokenize"/>:
+        /// words, punctuation and spaces) is not shown: a few shared words inside
+        /// 400 words of something else is no example. Never cut short.
         /// </summary>
         public const int MaxTokens = VaultDiff.MaxAlignTokens;
+
+        /// <summary>The most differences named for a twin; the rest are counted.</summary>
+        public const int MaxDifferencesListed = 12;
 
         private readonly IList<string> _sources;
         private readonly Dictionary<int, List<RestatedPair>> _partners = new Dictionary<int, List<RestatedPair>>();
@@ -74,12 +116,12 @@ namespace Supervertaler.Core
                 Add(pair.B, pair);
             }
 
-            // Most shared words first; of equals, the one that comes first in the
-            // document. Decided once, so a segment's references do not depend on
-            // the order requests happen to come back in.
+            // A twin first, then most shared words; of equals, the one that comes
+            // first in the document. Decided once, so a segment's references do
+            // not depend on the order requests happen to come back in.
             foreach (var list in _partners.Values)
-                list.Sort((x, y) => x.SharedWords != y.SharedWords
-                    ? y.SharedWords.CompareTo(x.SharedWords)
+                list.Sort((x, y) => x.NearTwin != y.NearTwin ? (x.NearTwin ? -1 : 1)
+                    : x.SharedWords != y.SharedWords ? y.SharedWords.CompareTo(x.SharedWords)
                     : x.A != y.A ? x.A.CompareTo(y.A) : x.B.CompareTo(y.B));
         }
 
@@ -92,7 +134,8 @@ namespace Supervertaler.Core
         /// <summary>
         /// The earlier translations to show for a segment, best first, at most
         /// <see cref="MaxPerSegment"/>; empty when it repeats nothing, or nothing
-        /// it repeats has a translation yet.
+        /// it repeats has a translation yet. Each other segment appears once,
+        /// as a twin if it is one.
         /// </summary>
         /// <param name="segment">The segment's position in the sources given.</param>
         /// <param name="targetOf">
@@ -113,7 +156,10 @@ namespace Supervertaler.Core
 
                 var source = other >= 0 && other < _sources.Count ? _sources[other] : null;
                 if (string.IsNullOrWhiteSpace(source)) continue;
-                if (TooLong(source) || TooLong(target)) continue;
+
+                // A passage inside a very long segment is no example. A twin is
+                // the whole sentence, and is shown at any length.
+                if (!pair.NearTwin && (TooLong(source) || TooLong(target))) continue;
 
                 // A language written without spaces: the finder cannot say whether
                 // such a translation agrees with another, so none is offered either.
@@ -125,13 +171,21 @@ namespace Supervertaler.Core
                     if (string.Equals(r.Target, target, StringComparison.Ordinal)) { seen = true; break; }
                 if (seen) continue;
 
-                result.Add(new EarlierTranslation
+                var earlier = new EarlierTranslation
                 {
                     Source = source.Trim(),
                     Target = target.Trim(),
                     Passage = pair.Passage,
-                    PassageWords = pair.PassageWords
-                });
+                    PassageWords = pair.PassageWords,
+                    Twin = pair.NearTwin
+                };
+                if (pair.NearTwin)
+                {
+                    var own = segment >= 0 && segment < _sources.Count ? _sources[segment] : "";
+                    earlier.Differences = RestatedPassages.WordDifferences(own, source, MaxDifferencesListed, out earlier.DifferenceCount);
+                }
+
+                result.Add(earlier);
                 if (result.Count == MaxPerSegment) break;
             }
 

@@ -896,6 +896,57 @@ namespace Supervertaler.Core
             return places;
         }
 
+        /// <summary>
+        /// The places where two texts differ, each as "yours X / earlier Y" with
+        /// the words as written, in order; at most <paramref name="max"/>, with
+        /// <paramref name="total"/> saying how many there are in all. For showing
+        /// a near-twin to the AI (<see cref="EarlierTranslations"/>): the words
+        /// and numbers it must take from its own segment. O(words x words) in
+        /// time and memory, so for a pair already known to be twins and no other.
+        /// </summary>
+        internal static List<string> WordDifferences(string own, string earlier, int max, out int total)
+        {
+            var result = new List<string>();
+            total = 0;
+            var a = WordsOf(own);
+            var b = WordsOf(earlier);
+            if (a.Count == 0 || b.Count == 0 || a.Count > MaxWords || b.Count > MaxWords) return result;
+
+            int n = a.Count, m = b.Count;
+            var length = new int[n + 1, m + 1];
+            for (int i = n - 1; i >= 0; i--)
+                for (int j = m - 1; j >= 0; j--)
+                    length[i, j] = string.Equals(a[i], b[j], StringComparison.OrdinalIgnoreCase)
+                        ? length[i + 1, j + 1] + 1
+                        : Math.Max(length[i + 1, j], length[i, j + 1]);
+
+            var mine = new List<string>();
+            var theirs = new List<string>();
+            int x = 0, y = 0;
+            while (x < n || y < m)
+            {
+                if (x < n && y < m && string.Equals(a[x], b[y], StringComparison.OrdinalIgnoreCase))
+                {
+                    Close(result, mine, theirs, max, ref total);
+                    x++; y++;
+                }
+                else if (y >= m || (x < n && length[x + 1, y] >= length[x, y + 1])) mine.Add(a[x++]);
+                else theirs.Add(b[y++]);
+            }
+            Close(result, mine, theirs, max, ref total);
+            return result;
+        }
+
+        private static void Close(List<string> result, List<string> mine, List<string> theirs, int max, ref int total)
+        {
+            if (mine.Count == 0 && theirs.Count == 0) return;
+            total++;
+            if (result.Count < max)
+                result.Add("yours \u201C" + string.Join(" ", mine) + "\u201D / earlier \u201C" + string.Join(" ", theirs) + "\u201D");
+            mine.Clear();
+            theirs.Clear();
+        }
+
         private static bool SameWords(int[] a, int[] b)
         {
             if (a.Length != b.Length) return false;

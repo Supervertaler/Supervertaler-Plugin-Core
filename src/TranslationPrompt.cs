@@ -414,30 +414,46 @@ namespace Supervertaler.Core
         /// the same way everywhere is one find-and-replace; made five ways it is a
         /// full read.</para>
         ///
+        /// <para>Two kinds of entry, as a translation memory has: a passage inside
+        /// another sentence, and a near-twin - the same sentence but for a few
+        /// words or numbers, shown whole at any length with the differences
+        /// named. A twin is where a model copies a number that is not its own, so
+        /// the block says in so many words to take every number from the
+        /// segment's own source.</para>
+        ///
         /// <para>Fixed maximum size: at most <see cref="EarlierTranslations.MaxPerRequest"/>
-        /// earlier translations in one request, each from a segment no longer
-        /// than <see cref="EarlierTranslations.MaxTokens"/> tokens.</para>
+        /// earlier translations and <see cref="EarlierTranslations.MaxRequestCharacters"/>
+        /// characters of them in one request. One that does not fit is left out
+        /// whole; none is ever cut short.</para>
         /// </summary>
         public static string BuildReferenceBlock(List<BatchSegmentInput> segments)
         {
             if (segments == null) return "";
 
-            int total = 0;
-            bool notes = false;
+            // What is shown, in the order of the segments, within the request's
+            // limits. One that does not fit is left out whole, never cut short.
+            var shown = new List<KeyValuePair<BatchSegmentInput, EarlierTranslation>>();
+            int characters = 0;
+            bool notes = false, twins = false;
             foreach (var seg in segments)
             {
                 if (seg?.References == null) continue;
                 foreach (var r in seg.References)
                 {
                     if (r == null || string.IsNullOrWhiteSpace(r.Target)) continue;
-                    total++;
+                    if (shown.Count == EarlierTranslations.MaxPerRequest) break;
+                    int size = (r.Source ?? "").Length + r.Target.Length;
+                    if (characters + size > EarlierTranslations.MaxRequestCharacters) continue;
+                    characters += size;
+                    shown.Add(new KeyValuePair<BatchSegmentInput, EarlierTranslation>(seg, r));
                     if (r.Target.IndexOf("[[TC:", StringComparison.Ordinal) >= 0) notes = true;
+                    if (r.Twin) twins = true;
                 }
             }
-            if (total == 0) return "";
+            if (shown.Count == 0) return "";
 
-            var sb = new StringBuilder(total * 400 + 1024);
-            sb.AppendLine("**EARLIER TRANSLATIONS FROM THIS DOCUMENT – KEEP THE SAME WORDING**");
+            var sb = new StringBuilder(characters + shown.Count * 200 + 2048);
+            sb.AppendLine("**EARLIER TRANSLATIONS FROM THIS DOCUMENT \u2013 KEEP THE SAME WORDING**");
             sb.AppendLine();
             sb.AppendLine("Some of the segments below repeat a passage that stands elsewhere in this document "
                 + "and has already been translated. That other segment and its translation are shown here. "
@@ -448,6 +464,14 @@ namespace Supervertaler.Core
                 + "rest of each segment as usual, and translate only the segments in the list below: the "
                 + "earlier segments are shown for reference and must not be returned. Inline tags are left "
                 + "out of the earlier texts; take the tags from your own segment."
+                + (twins
+                    ? " Where an earlier segment is marked as the same sentence but for a few words or "
+                      + "numbers, it is like a fuzzy match from a translation memory: keep the wording and "
+                      + "the sentence structure of its translation, and change only what your source "
+                      + "changes. NEVER copy a number, unit, reference numeral or name from the earlier "
+                      + "translation: take every one of them from your own segment's source, in its own "
+                      + "place. The line \"differs in\" names the places where the two sources differ."
+                    : "")
                 + (notes
                     ? " A note in [[TC: ...]] at the end of an earlier translation is a remark about a "
                       + "problem in that segment's source. If your segment has the same problem, flag it "
@@ -455,25 +479,29 @@ namespace Supervertaler.Core
                     : ""));
             sb.AppendLine();
 
-            int shown = 0;
-            foreach (var seg in segments)
+            foreach (var entry in shown)
             {
-                if (seg?.References == null) continue;
-                foreach (var r in seg.References)
+                var seg = entry.Key;
+                var r = entry.Value;
+                if (r.Twin)
                 {
-                    if (r == null || string.IsNullOrWhiteSpace(r.Target)) continue;
-                    if (shown == EarlierTranslations.MaxPerRequest) break;
-                    shown++;
-
+                    sb.AppendLine("Segment " + seg.Number + " \u2013 the same sentence as an earlier segment but for a few words or numbers");
+                    if (r.Differences != null && r.Differences.Count > 0)
+                        sb.AppendLine("  differs in:          " + string.Join("; ", r.Differences)
+                            + (r.DifferenceCount > r.Differences.Count
+                                ? "; and " + (r.DifferenceCount - r.Differences.Count) + " more"
+                                : ""));
+                }
+                else
+                {
                     sb.AppendLine("Segment " + seg.Number
                         + (string.IsNullOrWhiteSpace(r.Passage) ? ""
-                           : " – repeats “" + r.Passage + "”"
+                           : " \u2013 repeats \u201C" + r.Passage + "\u201D"
                              + (r.PassageWords > 0 ? " (" + r.PassageWords + " words)" : "")));
-                    sb.AppendLine("  earlier source:      " + OneLine(r.Source));
-                    sb.AppendLine("  earlier translation: " + OneLine(r.Target));
-                    sb.AppendLine();
                 }
-                if (shown == EarlierTranslations.MaxPerRequest) break;
+                sb.AppendLine("  earlier source:      " + OneLine(r.Source));
+                sb.AppendLine("  earlier translation: " + OneLine(r.Target));
+                sb.AppendLine();
             }
 
             return sb.ToString();
