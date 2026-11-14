@@ -52,6 +52,12 @@ namespace Supervertaler.Core
         public bool NearTwin;
 
         /// <summary>
+        /// For near-twins: in how many places the two sources differ, counted over
+        /// the whole of both (<see cref="RestatedPassages.Differences"/>).
+        /// </summary>
+        public int TwinDifferences;
+
+        /// <summary>
         /// Places where the two sources differ inside a passage, with more than
         /// <see cref="RestatedPassages.EdgeWords"/> shared words on both sides.
         /// </summary>
@@ -95,7 +101,7 @@ namespace Supervertaler.Core
 
     public enum RestatedVerdict
     {
-        /// <summary>Not compared: a translation is missing, or too long.</summary>
+        /// <summary>Not compared: a translation is missing, too long, or in a language written without spaces.</summary>
         Skipped,
         Same,
         Different,
@@ -183,10 +189,15 @@ namespace Supervertaler.Core
 
     /// <summary>
     /// Finds restated passages - segments whose sources share a long run of
-    /// identical words, such as a patent's description repeating a claim inside a
-    /// longer sentence - and says where their translations differ. No AI: a pure
+    /// identical words - and says where their translations differ. No AI: a pure
     /// function of the text, so it costs nothing, changes nothing that is sent and
     /// keeps no state (docs/design/restated-passages.md).
+    ///
+    /// <para>It knows nothing about what kind of document it reads: any two
+    /// segments that share a run of words are a pair. A contract restating a
+    /// definition in a later clause, a manual repeating a warning in every
+    /// chapter, an error message that differs from another in one word, a
+    /// patent's description repeating a claim inside a longer sentence.</para>
     ///
     /// <para>Why: Batch Translate sends a document a few segments at a time and
     /// each request starts from scratch, so a passage restated 300 segments later
@@ -199,12 +210,19 @@ namespace Supervertaler.Core
     /// the text on either side of it is joined, as <see cref="RepetitionKey"/>
     /// joins it). Words are <see cref="VaultDiff.Tokenize"/>'s.</para>
     ///
+    /// <para>Languages: any language written with spaces between words, in any
+    /// script. A language written without them (Chinese, Japanese, Thai, Lao,
+    /// Khmer, Burmese) is not supported yet: there a whole clause is one "word",
+    /// so such a source pairs nothing, and a pair with such a translation is
+    /// skipped rather than judged (<see cref="WrittenWithoutSpaces"/>). Either
+    /// way no lines are written.</para>
+    ///
     /// <para>Scale: tested at 10,000 segments, designed for 10,000. The index is
     /// one entry per run of <see cref="MinRunWords"/> words (about 300,000 at
     /// 10,000 segments of 30 words); only pairs that share such a run are
     /// compared word by word, and a phrase found in more than
-    /// <see cref="MaxSegmentsPerPhrase"/> segments pairs nothing, so boilerplate
-    /// cannot pair every claim with every other. Comparing one pair is
+    /// <see cref="MaxSegmentsPerPhrase"/> segments pairs nothing, so a formula
+    /// that opens every clause cannot pair each with every other. Comparing one pair is
     /// O(words × words), so segments over <see cref="MaxWords"/> words are left
     /// out, and no more than <see cref="MaxPairs"/> pairs are compared.</para>
     /// </summary>
@@ -218,9 +236,8 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// Of a pair's long run, the fewest words that must lie outside
-        /// boilerplate. Without it, two dependent claims that open with the same
-        /// formula and happen to go on with the same word ("... met het kenmerk,
-        /// dat de") are a pair.
+        /// boilerplate. Without it, two segments that open with the same formula
+        /// and happen to go on with the same word are a pair.
         /// </summary>
         public const int MinOwnWords = 4;
 
@@ -313,6 +330,32 @@ namespace Supervertaler.Core
                 result[i] = id;
             }
             return result;
+        }
+
+        /// <summary>
+        /// Whether a text is in a script written without spaces between words:
+        /// more than a tenth of its letters are Chinese characters, Japanese kana,
+        /// Thai, Lao, Khmer or Burmese. (Korean is written with spaces.) A name
+        /// quoted in such a script inside a sentence in another does not count.
+        /// </summary>
+        internal static bool WrittenWithoutSpaces(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            int letters = 0, unspaced = 0;
+            foreach (char c in text)
+            {
+                if (!char.IsLetter(c)) continue;
+                letters++;
+                if ((c >= '\u0E00' && c <= '\u0EFF')        // Thai, Lao
+                    || (c >= '\u1000' && c <= '\u109F')     // Burmese
+                    || (c >= '\u1780' && c <= '\u17FF')     // Khmer
+                    || (c >= '\u3040' && c <= '\u30FF')     // Japanese kana
+                    || (c >= '\u3400' && c <= '\u4DBF')     // Chinese characters
+                    || (c >= '\u4E00' && c <= '\u9FFF')
+                    || (c >= '\uF900' && c <= '\uFAFF'))
+                    unspaced++;
+            }
+            return unspaced * 10 > letters;
         }
 
         // ---- the finder ------------------------------------------------------
@@ -470,6 +513,7 @@ namespace Supervertaler.Core
             pair.Runs.Sort((x, y) => x.StartA != y.StartA ? x.StartA.CompareTo(y.StartA) : x.StartB.CompareTo(y.StartB));
             foreach (var run in pair.Runs) pair.SharedWords += run.Length;
             pair.NearTwin = pair.SharedWords >= TwinShare * Math.Max(pair.WordsA, pair.WordsB);
+            if (pair.NearTwin) pair.TwinDifferences = Differences(wordsA, wordsB, out _);
             CountBreaks(chains, out pair.InteriorBreaks, out pair.EdgeBreaks);
             return pair;
         }
@@ -641,13 +685,20 @@ namespace Supervertaler.Core
         /// <para>1. Two sources that are word for word the same must have
         /// translations that are word for word the same.</para>
         ///
-        /// <para>2. Otherwise the translations' own shared runs are grouped into
+        /// <para>2. Near-twins - the same sentence but for a few words - are
+        /// compared whole: the translations may differ in as many places as the
+        /// sources do, wherever those places are. One source word changed is one
+        /// place, even where the other language puts it somewhere else in the
+        /// sentence ("The file could not be saved" / "No se pudo guardar el
+        /// archivo").</para>
+        ///
+        /// <para>3. Otherwise the translations' own shared runs are grouped into
         /// passages, as many as the sources have. If those share less than
         /// <see cref="MinTargetShare"/> of the words the source passage's length
         /// leads one to expect (its words × the shorter segment's
         /// translation-to-source length), it was translated differently.</para>
         ///
-        /// <para>3. Otherwise, if the translations' passages are broken in more
+        /// <para>4. Otherwise, if the translations' passages are broken in more
         /// places than the sources' are - shared wording, a few different words,
         /// shared wording again - it was translated differently: a break the
         /// source does not have is the translator's, or the AI's. Breaks inside a
@@ -663,15 +714,26 @@ namespace Supervertaler.Core
         {
             if (pair == null) return RestatedVerdict.Skipped;
 
+            var textA = WithoutNote(targetA, out _);
+            var textB = WithoutNote(targetB, out _);
+            if (WrittenWithoutSpaces(textA) || WrittenWithoutSpaces(textB)) return RestatedVerdict.Skipped;
+
             var ids = new Dictionary<string, int>(StringComparer.Ordinal);
-            var a = Ids(WithoutNote(targetA, out _), ids);
-            var b = Ids(WithoutNote(targetB, out _), ids);
+            var a = Ids(textA, ids);
+            var b = Ids(textB, ids);
             if (a.Length == 0 || b.Length == 0) return RestatedVerdict.Skipped;
             if (a.Length > MaxWords || b.Length > MaxWords) return RestatedVerdict.Skipped;
             if (pair.WordsA == 0 || pair.WordsB == 0) return RestatedVerdict.Skipped;
 
             if (pair.SharedWords == pair.WordsA && pair.SharedWords == pair.WordsB && pair.Runs.Count == 1)
                 return SameWords(a, b) ? RestatedVerdict.Same : RestatedVerdict.Different;
+
+            if (pair.NearTwin)
+            {
+                int places = Differences(a, b, out var common);
+                if (common < MinTargetShare * Math.Min(a.Length, b.Length)) return RestatedVerdict.Different;
+                return places > pair.TwinDifferences ? RestatedVerdict.Different : RestatedVerdict.Same;
+            }
 
             var chains = Chains(CommonRuns(a, b, MinPieceWords), MinPieceWords, pair.Passages);
             int shared = 0;
@@ -685,6 +747,36 @@ namespace Supervertaler.Core
             return interior > pair.InteriorBreaks || interior + edge > pair.Breaks
                 ? RestatedVerdict.Different
                 : RestatedVerdict.Same;
+        }
+
+        /// <summary>
+        /// In how many places two word sequences differ: the stretches, in either,
+        /// that are left over when the longest sequence of words they have in
+        /// common, in order, is taken out. <paramref name="common"/> is how many
+        /// words that is. O(a × b) in time and memory: for near-twins only, which
+        /// are under <see cref="MaxWords"/> words.
+        /// </summary>
+        internal static int Differences(int[] a, int[] b, out int common)
+        {
+            int n = a.Length, m = b.Length;
+            var length = new int[n + 1, m + 1];
+            for (int i = n - 1; i >= 0; i--)
+                for (int j = m - 1; j >= 0; j--)
+                    length[i, j] = a[i] == b[j]
+                        ? length[i + 1, j + 1] + 1
+                        : Math.Max(length[i + 1, j], length[i, j + 1]);
+            common = length[0, 0];
+
+            int places = 0, x = 0, y = 0;
+            bool inGap = false;
+            while (x < n && y < m)
+            {
+                if (a[x] == b[y]) { x++; y++; inGap = false; continue; }
+                if (!inGap) { places++; inGap = true; }
+                if (length[x + 1, y] >= length[x, y + 1]) x++; else y++;
+            }
+            if ((x < n || y < m) && !inGap) places++;
+            return places;
         }
 
         private static bool SameWords(int[] a, int[] b)
