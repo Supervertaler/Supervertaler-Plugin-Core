@@ -321,25 +321,25 @@ namespace Supervertaler.Core.Tests
 
         private static readonly string[] Measuring =
         {
-            "De hoogte wordt gemeten in een loodrechte richting op de grondplaat tussen het vrije uiteinde van de beugel en de klem.",
+            "De klem zit aan de linker bovenzijde van de grondplaat tussen het vrije uiteinde van de beugel en de aanslag.",
             "Het huis is van staal.",
-            "Het is vereist dat de afstand volgens een loodrechte richting op de grondplaat tussen het vrije uiteinde van de beugel en de klem maandelijks wordt gecontroleerd.",
+            "Het is vereist dat de sensor bij de linker bovenzijde van de grondplaat tussen het vrije uiteinde van de beugel en de aanslag maandelijks wordt gecontroleerd.",
         };
 
         public static void TheSameWordsInAnotherOrderAtTheStartOfAPassage_IsADifference()
         {
-            // "in a perpendicular direction [to the base plate ...]" against "in a
-            // direction perpendicular [to the base plate ...]": the shared wording
-            // starts after it, so nothing inside the passage is broken. A known
-            // case on the first real document was missed this way.
+            // "on the upper left [side of the base plate ...]" against "at the left
+            // upper [side of the base plate ...]": the shared wording starts after
+            // it, so nothing inside the passage is broken. A known case on the
+            // first real document was missed this way.
             var reordered = Targets(
-                "The height is measured in a perpendicular direction to the base plate between the free end of the bracket and the clamp.",
+                "The clamp sits on the upper left side of the base plate between the free end of the bracket and the stop.",
                 "The housing is made of steel.",
-                "It is required that the distance in a direction perpendicular to the base plate between the free end of the bracket and the clamp is checked monthly.");
-            Assert.Equal(1, RestatedPassages.Report(Measuring, reordered).Different.Count, "perpendicular direction / direction perpendicular");
+                "It is required that the sensor at the left upper side of the base plate between the free end of the bracket and the stop is checked monthly.");
+            Assert.Equal(1, RestatedPassages.Report(Measuring, reordered).Different.Count, "upper left / left upper");
 
             var same = Targets(reordered[0].Text, reordered[1].Text,
-                "It is required that the distance in a perpendicular direction to the base plate between the free end of the bracket and the clamp is checked monthly.");
+                "It is required that the sensor at the upper left side of the base plate between the free end of the bracket and the stop is checked monthly.");
             Assert.True(RestatedPassages.Report(Measuring, same).Summary() == null, "worded the same: nothing to say");
         }
 
@@ -348,9 +348,9 @@ namespace Supervertaler.Core.Tests
             // What comes before the passage is another sentence in each segment,
             // and is translated as such.
             var targets = Targets(
-                "The height is measured in a perpendicular direction to the base plate between the free end of the bracket and the clamp.",
+                "The clamp sits on the upper left side of the base plate between the free end of the bracket and the stop.",
                 "The housing is made of steel.",
-                "The distance along a perpendicular direction to the base plate between the free end of the bracket and the clamp must be checked monthly.");
+                "A second sensor near the upper left side of the base plate between the free end of the bracket and the stop must be checked monthly.");
             Assert.True(RestatedPassages.Report(Measuring, targets).Summary() == null, "nothing to say");
         }
     }

@@ -290,9 +290,9 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// How many words just outside a passage's start and end are looked at
-        /// for the same words in another order: "in a perpendicular direction
-        /// [to the bottom ...]" against "in a direction perpendicular [to the
-        /// bottom ...]". Three of the four must be the same words. Without this a
+        /// for the same words in another order: "on the upper left [side of the
+        /// base plate ...]" against "at the left upper [side of the base plate
+        /// ...]". Three of the four must be the same words. Without this a
         /// difference in a passage's first or last words went unseen: on the
         /// first real document measured, a known case was missed that way.
         /// </summary>
