@@ -265,5 +265,93 @@ namespace Supervertaler.Core.Tests
             var different = RestatedPassages.Report(sources, Targets("供应商应在三十天内将货物交付至买方仓库。", "双方确认，卖方须于付款后三十日内把商品送到买方的库房。"));
             Assert.True(different.Summary() == null, "no lines for a difference either: not supported yet");
         }
+        // ---- rules that came from the first real measurement (14 Nov 2026) ---------------
+        // Invented text in the shape of what was found; the job's own text is nowhere.
+
+        private static string ValueList(string opening, double from, int steps) =>
+            opening + " " + string.Join(", preferably at least ",
+                Enumerable.Range(0, steps).Select(i => (from + i * 0.1).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " mm")) + ".";
+
+        public static void TwoDifferentListsOfValues_AreNotAPair_ThoughTheyShareLongRuns()
+        {
+            // "... at least 0.7 mm, preferably at least 0.8 mm, preferably at least
+            // 0.9 mm ..." stands in both, forty words in a row. It is the formula
+            // of a list, not a restated passage, and the two translations cannot be
+            // lined up. Half the lines on the first real document were of this kind.
+            var lists = new[]
+            {
+                ValueList("The wall of the housing has a thickness of at least", 0.5, 12),
+                "The housing is made of steel.",
+                ValueList("The lid supplied by Acme has a thickness of at least", 0.7, 14),
+            };
+            Assert.Equal(0, RestatedPassages.Find(lists).Pairs.Count, "two different lists of values");
+        }
+
+        public static void TheSameListOfValuesTwice_IsStillANearTwin_AndIsCompared()
+        {
+            var lists = new[]
+            {
+                ValueList("The wall of the housing has a thickness of at least", 0.5, 12),
+                "The housing is made of steel.",
+                ValueList("The wall of the cover has a thickness of at least", 0.5, 12),
+            };
+            var found = RestatedPassages.Find(lists);
+            Assert.Equal(1, found.Pairs.Count, "the same list for another part");
+            Assert.True(found.Pairs[0].NearTwin, "a near-twin");
+
+            var german = ValueList("Die Wand des Gehäuses hat eine Dicke von mindestens", 0.5, 12).Replace("preferably at least", "vorzugsweise mindestens");
+            var same = Targets(german, "Das Gehäuse besteht aus Stahl.", german.Replace("des Gehäuses", "des Deckels"));
+            Assert.True(RestatedPassages.Report(lists, same).Summary() == null, "Gehäuses / Deckels is the sources' difference");
+
+            var different = Targets(german, "Das Gehäuse besteht aus Stahl.",
+                german.Replace("des Gehäuses", "des Deckels").Replace("hat eine Dicke von", "weist eine Stärke von"));
+            Assert.Equal(1, RestatedPassages.Report(lists, different).Different.Count, "Dicke / Stärke is not");
+        }
+
+        public static void ARunOfNumbersAndAUnit_IsNotAPassage()
+        {
+            // Eight words in a row, one of them a word: "10 mm 12 mm 14 mm 16 mm".
+            var found = RestatedPassages.Find(new[]
+            {
+                "The bracket is supplied in the sizes 10 mm 12 mm 14 mm 16 mm and can be ordered from Acme in steel or brass at any time.",
+                "Please note that our price list no longer shows 10 mm 12 mm 14 mm 16 mm separately because all four cost the same.",
+            });
+            Assert.Equal(0, found.Pairs.Count, "numbers and a unit are not a restated passage");
+        }
+
+        private static readonly string[] Measuring =
+        {
+            "De hoogte wordt gemeten in een loodrechte richting op de grondplaat tussen het vrije uiteinde van de beugel en de klem.",
+            "Het huis is van staal.",
+            "Het is vereist dat de afstand volgens een loodrechte richting op de grondplaat tussen het vrije uiteinde van de beugel en de klem maandelijks wordt gecontroleerd.",
+        };
+
+        public static void TheSameWordsInAnotherOrderAtTheStartOfAPassage_IsADifference()
+        {
+            // "in a perpendicular direction [to the base plate ...]" against "in a
+            // direction perpendicular [to the base plate ...]": the shared wording
+            // starts after it, so nothing inside the passage is broken. A known
+            // case on the first real document was missed this way.
+            var reordered = Targets(
+                "The height is measured in a perpendicular direction to the base plate between the free end of the bracket and the clamp.",
+                "The housing is made of steel.",
+                "It is required that the distance in a direction perpendicular to the base plate between the free end of the bracket and the clamp is checked monthly.");
+            Assert.Equal(1, RestatedPassages.Report(Measuring, reordered).Different.Count, "perpendicular direction / direction perpendicular");
+
+            var same = Targets(reordered[0].Text, reordered[1].Text,
+                "It is required that the distance in a perpendicular direction to the base plate between the free end of the bracket and the clamp is checked monthly.");
+            Assert.True(RestatedPassages.Report(Measuring, same).Summary() == null, "worded the same: nothing to say");
+        }
+
+        public static void DifferentWordsBeforeAPassage_AreNotADifference()
+        {
+            // What comes before the passage is another sentence in each segment,
+            // and is translated as such.
+            var targets = Targets(
+                "The height is measured in a perpendicular direction to the base plate between the free end of the bracket and the clamp.",
+                "The housing is made of steel.",
+                "The distance along a perpendicular direction to the base plate between the free end of the bracket and the clamp must be checked monthly.");
+            Assert.True(RestatedPassages.Report(Measuring, targets).Summary() == null, "nothing to say");
+        }
     }
 }

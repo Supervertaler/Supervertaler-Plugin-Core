@@ -66,6 +66,12 @@ namespace Supervertaler.Core
         /// <summary>Places where they differ within <see cref="RestatedPassages.EdgeWords"/> shared words of a passage's start or end.</summary>
         public int EdgeBreaks;
 
+        /// <summary>
+        /// Passage ends where the words just outside it are mostly the same words
+        /// in both sources, in another order (<see cref="RestatedPassages.EdgeWindow"/>).
+        /// </summary>
+        public int ReorderedEdges;
+
         /// <summary>Places inside the passages where the two sources differ.</summary>
         public int Breaks => InteriorBreaks + EdgeBreaks;
     }
@@ -242,6 +248,27 @@ namespace Supervertaler.Core
         public const int MinOwnWords = 4;
 
         /// <summary>
+        /// Of a pair's long run, the fewest different words, numbers not counted.
+        /// A list of values ("more preferably at least 5.1 mm, more preferably at
+        /// least 5.2 mm, ...") is many words and few different ones, and two such
+        /// lists share long runs by the accident of their numbers. On the first
+        /// real document measured, half the lines reported came from such lists.
+        /// </summary>
+        public const int MinDifferentWords = 6;
+
+        /// <summary>
+        /// A segment in which fewer than this share of the three-word sequences
+        /// are different from one another (every number counting as the same
+        /// word) mostly repeats itself: a list of values, a table row. Such a
+        /// segment is compared with its near-twins only. Against any other
+        /// segment the shared run is an accident of the list's formula, and the
+        /// two translations cannot be lined up: on the first real document
+        /// measured, 14 of 33 lines came from pairs of that kind and none of the
+        /// 14 was worth reading.
+        /// </summary>
+        public const double MinVariety = 0.7;
+
+        /// <summary>
         /// The fewest words in a row that count as a translated passage carrying
         /// on after a difference. Two words ("of the") coincide too often.
         /// </summary>
@@ -260,6 +287,16 @@ namespace Supervertaler.Core
         /// the passage's start or end is at the edge; otherwise it is inside.
         /// </summary>
         public const int EdgeWords = 5;
+
+        /// <summary>
+        /// How many words just outside a passage's start and end are looked at
+        /// for the same words in another order: "in a perpendicular direction
+        /// [to the bottom ...]" against "in a direction perpendicular [to the
+        /// bottom ...]". Three of the four must be the same words. Without this a
+        /// difference in a passage's first or last words went unseen: on the
+        /// first real document measured, a known case was missed that way.
+        /// </summary>
+        public const int EdgeWindow = 4;
 
         /// <summary>The most shared runs of one pair that are grouped into passages; the longest are kept.</summary>
         private const int MaxRuns = 2000;
@@ -387,6 +424,19 @@ namespace Supervertaler.Core
                 }
             }
 
+            // The words that are numbers: they do not count as different words.
+            var numbers = new HashSet<int>();
+            foreach (var entry in ids)
+            {
+                bool digits = entry.Key.Length > 0;
+                foreach (char c in entry.Key)
+                    if (!char.IsDigit(c)) { digits = false; break; }
+                if (digits) numbers.Add(entry.Value);
+            }
+
+            var repeatsItself = new bool[count];
+            for (int s = 0; s < count; s++) repeatsItself[s] = RepeatsItself(words[s], numbers);
+
             // First pass: in how many segments each phrase occurs.
             var seen = new Dictionary<ulong, PhraseCount>();
             for (int s = 0; s < count; s++)
@@ -443,13 +493,15 @@ namespace Supervertaler.Core
                 int a = (int)(key >> 32), b = (int)(key & 0xFFFFFFFF);
                 var pair = PairOf(a, b, words[a], words[b]);
                 if (pair == null) continue;   // two different phrases with one hash: nothing shared after all
+                if (!pair.NearTwin && (repeatsItself[a] || repeatsItself[b])) continue;
 
                 // The run the pair is known by: the longest with enough words of
                 // its own. A pair with none shares boilerplate and little else.
                 var longest = default(SharedRun);
                 foreach (var run in pair.Runs)
                     if (run.Length >= MinRunWords && run.Length > longest.Length
-                        && OwnWords(words[a], run.StartA, run.Length, seen) >= MinOwnWords) longest = run;
+                        && OwnWords(words[a], run.StartA, run.Length, seen) >= MinOwnWords
+                        && DifferentWords(words[a], run.StartA, run.Length, numbers) >= MinDifferentWords) longest = run;
                 if (longest.Length == 0) continue;
                 pair.PassageWords = longest.Length;
                 pair.Passage = Quote(sources[a], longest.StartA, longest.Length);
@@ -481,6 +533,32 @@ namespace Supervertaler.Core
                 }
             }
             return hash;
+        }
+
+        /// <summary>Whether a segment mostly repeats itself (<see cref="MinVariety"/>).</summary>
+        private static bool RepeatsItself(int[] words, HashSet<int> numbers)
+        {
+            int total = words.Length - 2;
+            if (total < MinRunWords) return false;
+
+            var different = new HashSet<long>();
+            for (int i = 0; i < total; i++)
+            {
+                long key = 0;
+                for (int k = 0; k < 3; k++)
+                    key = key * 2097152 + (numbers.Contains(words[i + k]) ? 0 : words[i + k] + 1);
+                different.Add(key);
+            }
+            return different.Count < MinVariety * total;
+        }
+
+        /// <summary>How many different words a run has, numbers not counted.</summary>
+        private static int DifferentWords(int[] words, int start, int length, HashSet<int> numbers)
+        {
+            var different = new HashSet<int>();
+            for (int i = start; i < start + length; i++)
+                if (!numbers.Contains(words[i])) different.Add(words[i]);
+            return different.Count;
         }
 
         /// <summary>
@@ -515,6 +593,7 @@ namespace Supervertaler.Core
             pair.NearTwin = pair.SharedWords >= TwinShare * Math.Max(pair.WordsA, pair.WordsB);
             if (pair.NearTwin) pair.TwinDifferences = Differences(wordsA, wordsB, out _);
             CountBreaks(chains, out pair.InteriorBreaks, out pair.EdgeBreaks);
+            pair.ReorderedEdges = ReorderedEdges(chains, wordsA, wordsB);
             return pair;
         }
 
@@ -663,6 +742,40 @@ namespace Supervertaler.Core
             }
         }
 
+        /// <summary>
+        /// At how many passage ends the <see cref="EdgeWindow"/> words just
+        /// outside the passage are, in both segments, mostly the same words (all
+        /// but one) - which, since the passage stopped there, means in another
+        /// order or with one changed.
+        /// </summary>
+        private static int ReorderedEdges(List<List<SharedRun>> chains, int[] a, int[] b)
+        {
+            int edges = 0;
+            foreach (var chain in chains)
+            {
+                if (chain.Count == 0) continue;
+                chain.Sort((x, y) => x.StartA.CompareTo(y.StartA));
+                var first = chain[0];
+                var last = chain[chain.Count - 1];
+                if (SameWordsNearby(a, first.StartA - EdgeWindow, b, first.StartB - EdgeWindow)) edges++;
+                if (SameWordsNearby(a, last.StartA + last.Length, b, last.StartB + last.Length)) edges++;
+            }
+            return edges;
+        }
+
+        /// <summary>Whether the <see cref="EdgeWindow"/> words from each start have all but one word in common.</summary>
+        private static bool SameWordsNearby(int[] a, int startA, int[] b, int startB)
+        {
+            if (startA < 0 || startB < 0 || startA + EdgeWindow > a.Length || startB + EdgeWindow > b.Length) return false;
+
+            int common = 0;
+            var used = new bool[EdgeWindow];
+            for (int i = 0; i < EdgeWindow; i++)
+                for (int j = 0; j < EdgeWindow; j++)
+                    if (!used[j] && a[startA + i] == b[startB + j]) { used[j] = true; common++; break; }
+            return common >= EdgeWindow - 1;
+        }
+
         /// <summary>Whether a run uses words, in either segment, that a run already taken uses.</summary>
         private static bool Overlaps(SharedRun run, List<SharedRun> taken)
         {
@@ -744,7 +857,11 @@ namespace Supervertaler.Core
             if (shared < MinTargetShare * pair.SharedWords * ratio) return RestatedVerdict.Different;
 
             CountBreaks(chains, out var interior, out var edge);
-            return interior > pair.InteriorBreaks || interior + edge > pair.Breaks
+            if (interior > pair.InteriorBreaks || interior + edge > pair.Breaks) return RestatedVerdict.Different;
+
+            // The passage's first and last words: the same words in another order
+            // just outside the shared wording, where the sources have no such thing.
+            return ReorderedEdges(chains, a, b) > pair.ReorderedEdges
                 ? RestatedVerdict.Different
                 : RestatedVerdict.Same;
         }
