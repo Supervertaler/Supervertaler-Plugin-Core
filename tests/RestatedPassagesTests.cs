@@ -60,8 +60,8 @@ namespace Supervertaler.Core.Tests
             return doc;
         }
 
-        private static RestatedTarget Target(int i, string text, bool? note = false) =>
-            new RestatedTarget { Label = "segment " + (i + 1), Text = text, HasNote = note };
+        private static RestatedTarget Target(int i, string text) =>
+            new RestatedTarget { Label = "segment " + (i + 1), Text = text };
 
         /// <summary>Targets for <see cref="Document"/>: the filler translated, the claim and the other as given.</summary>
         private static List<RestatedTarget> Targets(string claim, string other)
@@ -386,10 +386,11 @@ namespace Supervertaler.Core.Tests
             Assert.Equal(1, RestatedPassages.Report(sources, differs).Different.Count, "one word differs in a repeated segment");
         }
 
-        public static void ATwinWithANoteOnOnlyOne_GivesOneLine()
+        public static void ATwinWithANoteOnOnlyOne_GivesNoLine()
         {
             // The same sentence but for a reference numeral; the AI flagged the
-            // source in the first and said nothing about the second.
+            // source in the first and said nothing about the second. That is not
+            // reported: the note line was built and dropped (15 Nov 2026).
             var sources = new[]
             {
                 "De borgpen 12 wordt in de uitsparing 14 van de flens 16 geplaatst en daarna vastgezet met de moer.",
@@ -405,32 +406,18 @@ namespace Supervertaler.Core.Tests
 
             var report = RestatedPassages.Report(sources, targets);
 
-            Assert.Equal(0, report.Different.Count, "the translations differ only where the sources do (de borgpen 12 / 22)");
-            Assert.Equal(1, report.OneNote.Count, "one twin pair with a note on one only");
-            var lines = Lines(report.Summary());
-            Assert.Equal(2, lines.Length, "the count and the case");
-            Assert.Equal("1 near-identical pair with a note on only one (listed).", lines[0], "the count");
-            Assert.Equal("Note on one only: segment 1 has a note, the near-identical segment 3 has none", lines[1], "the case");
-
-            // The note as a Trados comment: off the text, known to the host.
-            targets[0] = Target(0, "The locking pin 12 is placed in the recess 14 of the flange 16 and then secured with the nut.", note: true);
-            Assert.Equal(1, RestatedPassages.Report(sources, targets).OneNote.Count, "the same when the note is a comment");
-
-            // Both flagged, or neither: nothing to say.
-            targets[2] = Target(2, targets[2].Text, note: true);
-            Assert.True(RestatedPassages.Report(sources, targets).Summary() == null, "a note on both");
-
-            // A segment the run did not write: its comments were not read.
-            targets[2] = Target(2, targets[2].Text, note: null);
-            Assert.Equal(0, RestatedPassages.Report(sources, targets).OneNote.Count, "not known is not 'none'");
+            Assert.Equal(1, report.Compared, "the twins are compared");
+            Assert.Equal(0, report.Different.Count, "the translations differ only where the sources do (de borgpen 12 / 22); the note is not compared");
+            Assert.True(report.Summary() == null, "a note on only one of the two is nothing to say");
         }
 
-        public static void AClauseInALongerSentence_IsNotCheckedForNotes()
+        public static void ANoteOnAClauseInALongerSentence_IsNotPartOfTheTranslationCompared()
         {
             var targets = Targets(ClaimEn + " [[TC: 'huis' may be a typo]]", DescriptionEn);
             var report = RestatedPassages.Report(Document(Description), targets);
-            Assert.Equal(0, report.OneNote.Count, "the claim and the description are not near-twins");
-            Assert.Equal(0, report.Different.Count, "and the note is not part of the translation compared");
+            Assert.Equal(1, report.Compared, "compared");
+            Assert.Equal(0, report.Different.Count, "the note is not part of the translation compared");
+            Assert.True(report.Summary() == null, "nothing to say");
         }
 
         public static void AnEmptyOrFailedTarget_IsSkipped_NeverADifference()

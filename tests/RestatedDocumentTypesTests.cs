@@ -17,7 +17,7 @@ namespace Supervertaler.Core.Tests
     internal static class RestatedDocumentTypesTests
     {
         private static List<RestatedTarget> Targets(params string[] texts) =>
-            texts.Select((t, i) => new RestatedTarget { Label = "segment " + (i + 1), Text = t, HasNote = false }).ToList();
+            texts.Select((t, i) => new RestatedTarget { Label = "segment " + (i + 1), Text = t }).ToList();
 
         private static string[] Lines(string summary) =>
             summary == null ? new string[0] : summary.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
@@ -132,7 +132,7 @@ namespace Supervertaler.Core.Tests
             Assert.Equal(0, found.Pairs.Count, "no pair among short strings");
             Assert.True(clock.ElapsedMilliseconds < 1000, "and no time spent: " + clock.ElapsedMilliseconds + " ms");
 
-            var targets = strings.Select((s, i) => new RestatedTarget { Label = "segment " + (i + 1), Text = "[" + s + "]", HasNote = false }).ToList();
+            var targets = strings.Select((s, i) => new RestatedTarget { Label = "segment " + (i + 1), Text = "[" + s + "]" }).ToList();
             Assert.True(RestatedPassages.Report(strings, targets).Summary() == null, "so no lines");
         }
 
@@ -169,22 +169,6 @@ namespace Supervertaler.Core.Tests
                 "No se ha podido guardar el proyecto porque el disco está lleno o protegido contra escritura.");
             var report = RestatedPassages.Report(Messages, targets);
             Assert.Equal(1, report.Different.Count, "pudo / ha podido is not the sources' difference");
-        }
-
-        public static void ADocumentWithNoNotesAtAll_GetsNoNoteLines()
-        {
-            // The [[TC: ...]] marker is a convention of some prompts. Without it
-            // near-twins are still compared, and nothing is said about notes.
-            var targets = Targets(
-                "No se pudo guardar el archivo porque el disco está lleno o protegido contra escritura.",
-                "Configuración",
-                "No se pudo guardar el proyecto porque el disco está lleno o protegido contra escritura.");
-            var report = RestatedPassages.Report(Messages, targets);
-            Assert.Equal(1, report.Compared, "compared");
-            Assert.Equal(0, report.OneNote.Count, "no notes anywhere: no note lines");
-
-            foreach (var t in targets) t.HasNote = null;   // a host that does not read notes at all
-            Assert.Equal(0, RestatedPassages.Report(Messages, targets).OneNote.Count, "nor when the host cannot tell");
         }
 
         // ---- other languages ------------------------------------------------------------

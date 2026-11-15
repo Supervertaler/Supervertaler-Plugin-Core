@@ -103,13 +103,6 @@ namespace Supervertaler.Core
 
         /// <summary>The translation as plain text, the host's own tag notation taken out; null or blank when there is none.</summary>
         public string Text;
-
-        /// <summary>
-        /// Whether the translation carries a note for the translator. Null when the
-        /// host does not know (it did not read the segment's comments); a
-        /// <c>[[TC: ...]]</c> marker at the end of <see cref="Text"/> is seen either way.
-        /// </summary>
-        public bool? HasNote;
     }
 
     public enum RestatedVerdict
@@ -125,9 +118,6 @@ namespace Supervertaler.Core
     {
         public RestatedPair Pair;
         public string LabelA, LabelB;
-
-        /// <summary>For a note on one of two near-twins: it is on A.</summary>
-        public bool NoteOnA;
     }
 
     /// <summary>
@@ -139,9 +129,6 @@ namespace Supervertaler.Core
         /// <summary>The same source wording, translated differently.</summary>
         public List<RestatedFinding> Different = new List<RestatedFinding>();
 
-        /// <summary>Near-twin segments where only one translation has a note.</summary>
-        public List<RestatedFinding> OneNote = new List<RestatedFinding>();
-
         /// <summary>Pairs whose two translations were compared, and pairs left alone because one was missing.</summary>
         public int Compared, Skipped;
 
@@ -150,21 +137,15 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// The lines for the end of a run, or null when there is nothing to say:
-        /// one line of counts, then one line per case, at most
-        /// <see cref="RestatedPassages.MaxListed"/> of each kind.
+        /// one line with the count, then one line per case, at most
+        /// <see cref="RestatedPassages.MaxListed"/>.
         /// </summary>
         public string Summary()
         {
-            if (Different.Count == 0 && OneNote.Count == 0) return null;
+            if (Different.Count == 0) return null;
 
             var text = new StringBuilder();
-            var parts = new List<string>();
-            if (Different.Count > 0)
-                parts.Add(Number(Different.Count) + " translated differently");
-            if (OneNote.Count > 0)
-                parts.Add(Number(OneNote.Count) + (OneNote.Count == 1 ? " near-identical pair" : " near-identical pairs")
-                    + " with a note on only one");
-            text.Append(string.Join(" – ", parts)).Append(" (listed).");
+            text.Append(Number(Different.Count)).Append(" translated differently (listed).");
             if (Limited)
                 text.Append(" Only the first ").Append(Number(RestatedPassages.MaxPairs)).Append(" candidate pairs were checked.");
 
@@ -176,25 +157,14 @@ namespace Supervertaler.Core
                     .Append(" – source “").Append(f.Pair.Passage).Append("” (")
                     .Append(Number(f.Pair.PassageWords)).Append(" words the same)");
             }
-            More(text, Different.Count, "translated differently");
-
-            for (int i = 0; i < OneNote.Count && i < RestatedPassages.MaxListed; i++)
+            if (Different.Count > RestatedPassages.MaxListed)
             {
-                var f = OneNote[i];
                 text.AppendLine();
-                text.Append("Note on one only: ").Append(f.NoteOnA ? f.LabelA : f.LabelB)
-                    .Append(" has a note, the near-identical ").Append(f.NoteOnA ? f.LabelB : f.LabelA).Append(" has none");
+                text.Append("… and ").Append(Number(Different.Count - RestatedPassages.MaxListed))
+                    .Append(" more translated differently, not listed.");
             }
-            More(text, OneNote.Count, "with a note on only one");
 
             return text.ToString();
-        }
-
-        private static void More(StringBuilder text, int count, string what)
-        {
-            if (count <= RestatedPassages.MaxListed) return;
-            text.AppendLine();
-            text.Append("… and ").Append(Number(count - RestatedPassages.MaxListed)).Append(" more ").Append(what).Append(", not listed.");
         }
 
         private static string Number(int n) => n.ToString("N0", CultureInfo.InvariantCulture);
@@ -327,7 +297,7 @@ namespace Supervertaler.Core
         /// <summary>The most candidate pairs compared in one document.</summary>
         public const int MaxPairs = 50000;
 
-        /// <summary>The most cases of each kind the summary lists.</summary>
+        /// <summary>The most cases the summary lists.</summary>
         public const int MaxListed = 20;
 
         /// <summary>How many words of a passage the summary quotes.</summary>
@@ -842,8 +812,8 @@ namespace Supervertaler.Core
         {
             if (pair == null) return RestatedVerdict.Skipped;
 
-            var textA = WithoutNote(targetA, out _);
-            var textB = WithoutNote(targetB, out _);
+            var textA = WithoutNote(targetA);
+            var textB = WithoutNote(targetB);
             if (WrittenWithoutSpaces(textA) || WrittenWithoutSpaces(textB)) return RestatedVerdict.Skipped;
 
             var ids = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -973,23 +943,18 @@ namespace Supervertaler.Core
             return true;
         }
 
-        /// <summary>A translation without the <c>[[TC: ...]]</c> note at its end, and whether it had one.</summary>
-        private static string WithoutNote(string target, out bool hadNote)
+        /// <summary>A translation without the <c>[[TC: ...]]</c> note at its end.</summary>
+        private static string WithoutNote(string target)
         {
-            hadNote = false;
             if (string.IsNullOrWhiteSpace(target)) return "";
-            var body = ReplyCheck.WithoutComment(target, out var comment);
-            hadNote = comment != null;
-            return body ?? "";
+            return ReplyCheck.WithoutComment(target, out _) ?? "";
         }
 
         /// <summary>
-        /// Where the translations of restated passages differ, and which
-        /// near-twin segments have a note on only one of the two.
+        /// Where the translations of restated passages differ.
         /// <paramref name="targets"/> has one entry per source, in the same
         /// order. A pair with a translation missing is skipped, never reported
-        /// as a difference; a near-twin pair is checked for notes only when the
-        /// host knows about both (<see cref="RestatedTarget.HasNote"/>).
+        /// as a difference.
         /// </summary>
         public static RestatedReport Report(IList<string> sources, IList<RestatedTarget> targets)
         {
@@ -1026,23 +991,9 @@ namespace Supervertaler.Core
                 report.Compared++;
                 if (verdict == RestatedVerdict.Different)
                     report.Different.Add(new RestatedFinding { Pair = pair, LabelA = a.Label, LabelB = b.Label });
-
-                if (!pair.NearTwin) continue;
-                var noteA = NoteOn(a);
-                var noteB = NoteOn(b);
-                if (noteA == null || noteB == null || noteA == noteB) continue;
-                report.OneNote.Add(new RestatedFinding { Pair = pair, LabelA = a.Label, LabelB = b.Label, NoteOnA = noteA.Value });
             }
 
             return report;
-        }
-
-        /// <summary>Whether a translation has a note: the host's word, or a marker at its end; null when neither says.</summary>
-        private static bool? NoteOn(RestatedTarget target)
-        {
-            WithoutNote(target.Text, out var marker);
-            if (marker) return true;
-            return target.HasNote;
         }
     }
 }
