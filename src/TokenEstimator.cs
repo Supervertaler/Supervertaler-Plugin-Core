@@ -96,7 +96,8 @@ namespace Supervertaler.Core
         /// For estimated counts pass the estimated input as regular input.
         /// </summary>
         public static decimal CostCeiling(string provider, string model,
-            int regularInputTokens, int cacheReadTokens, int cacheWriteTokens, int outputTokens)
+            int regularInputTokens, int cacheReadTokens, int cacheWriteTokens, int outputTokens,
+            int cacheWrite1hTokens = 0)
         {
             if (string.Equals(provider, LlmModels.ProviderOllama, System.StringComparison.OrdinalIgnoreCase))
                 return 0m;
@@ -107,11 +108,34 @@ namespace Supervertaler.Core
                 return 0m;
 
             var (inputPer1M, outputPer1M) = PricingTable.Dearest;
+            return Price(model, inputPer1M, outputPer1M,
+                regularInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, cacheWrite1hTokens);
+        }
+
+        /// <summary>
+        /// Anthropic's one-hour cache write: 2x the input rate on every Claude
+        /// model (the five-minute write is 1.25x). Only Claude is ever asked for
+        /// the hour, so no other model reports such writes.
+        /// </summary>
+        private const decimal OneHourWriteMultiplier = 2m;
+
+        /// <summary>
+        /// Tokens at the given rates. <paramref name="cacheWrite1hTokens"/> is the
+        /// part of <paramref name="cacheWriteTokens"/> written for an hour, priced
+        /// at <see cref="OneHourWriteMultiplier"/>; the rest at the model's own
+        /// write multiplier.
+        /// </summary>
+        private static decimal Price(string model, decimal inputPer1M, decimal outputPer1M,
+            int regularInputTokens, int cacheReadTokens, int cacheWriteTokens, int outputTokens, int cacheWrite1hTokens)
+        {
             var (readMul, writeMul) = GetCacheMultipliers(model);
+            var oneHour = System.Math.Max(0, System.Math.Min(cacheWrite1hTokens, cacheWriteTokens));
+            var shortWrites = cacheWriteTokens - oneHour;
 
             return (regularInputTokens * inputPer1M / 1_000_000m)
                  + (cacheReadTokens * inputPer1M * readMul / 1_000_000m)
-                 + (cacheWriteTokens * inputPer1M * writeMul / 1_000_000m)
+                 + (shortWrites * inputPer1M * writeMul / 1_000_000m)
+                 + (oneHour * inputPer1M * OneHourWriteMultiplier / 1_000_000m)
                  + (outputTokens * outputPer1M / 1_000_000m);
         }
 
@@ -126,14 +150,17 @@ namespace Supervertaler.Core
             var lc = model.ToLowerInvariant();
 
             // Anthropic native + OpenRouter→Anthropic. A cache read is 0.1x the input
-            // rate, except on the newest top models: 0.05x on Claude Opus 5.5 and
-            // 0.025x on Claude Fable 5.1 and 5.2 and Mythos 5.1 and 5.2 (Anthropic's
-            // pricing page, checked 2026-09-28; 5.2's $0.20 against $8 checked
-            // 2026-11-10). At 0.1x their cache reads were costed at two and
-            // four times what they are billed. Writes are 1.25x on all of them.
+            // rate, except on the newest models: 0.05x on Claude Opus 5.5 and Sonnet
+            // 5.5, 0.025x on Claude Fable 5.1 and 5.2 and Mythos 5.1 and 5.2
+            // (Anthropic's pricing page, checked 2026-09-28; 5.2's $0.20 against $8
+            // checked 2026-11-10; Sonnet 5.5's $0.10 against $2 in the prompt
+            // caching documentation, checked 2026-11-15). At 0.1x their cache reads
+            // were costed at two and four times what they are billed. Five-minute
+            // writes are 1.25x on all of them; one-hour writes 2x (see Price).
             if (lc.Contains("claude") || lc.StartsWith("anthropic/"))
             {
-                if (lc.Contains("opus-5-5") || lc.Contains("opus-5.5"))
+                if (lc.Contains("opus-5-5") || lc.Contains("opus-5.5")
+                    || lc.Contains("sonnet-5-5") || lc.Contains("sonnet-5.5"))
                     return (0.05m, 1.25m);
                 if (lc.Contains("fable-5-1") || lc.Contains("fable-5.1")
                     || lc.Contains("fable-5-2") || lc.Contains("fable-5.2")
@@ -150,10 +177,11 @@ namespace Supervertaler.Core
             // reads were costed at five to ten times the bill. Cache writes are
             // 1.25x on every GPT-6 model (OpenAI's pricing page, checked
             // 2026-10-19: $2.50 against $2.00 on 6.1 Sol and GPT-6 Sol, $12.50 on
-            // Astra, $0.125 on Luna). Only the Responses API reports a write count
-            // (input_tokens_details.cache_write_tokens), so in practice this costs
-            // GPT-6.1 Sol's tool chat; Chat Completions reports none. GPT-5.6 is not
-            // on that page any more and keeps 1x.
+            // Astra, $0.125 on Luna). The Responses API reports the write count in
+            // input_tokens_details.cache_write_tokens and Chat Completions in
+            // prompt_tokens_details.cache_write_tokens (OpenRouter uses the same
+            // field); both are read (LlmClient.ExtractResponsesUsage,
+            // ExtractOpenAiUsage). GPT-5.6 is not on that page any more and keeps 1x.
             if (lc.Contains("gpt-6.1-sol"))
                 return (0.05m, 1.25m);
             if (lc.Contains("gpt-6"))
@@ -173,10 +201,22 @@ namespace Supervertaler.Core
             if (lc.StartsWith("gemini-4") || lc.StartsWith("google/gemini-4"))
                 return (0.05m, 1m);
 
-            // Gemini 2.5+ implicit caching: 75% off cache reads
+            // Gemini 2.5 and 3.x: cached input at a tenth of the input price on
+            // every one of them Google prices (Google's pricing page, checked
+            // 2026-11-15: 3.8 Flash $0.075 against $0.75, 3.5 Flash-Lite $0.03
+            // against $0.30, 3.1 Flash-Lite $0.025 against $0.25, 3.1 Pro $0.20
+            // against $2, 2.5 Flash $0.03 against $0.30). At the 0.25x it had,
+            // their cache reads were costed at two and a half times the bill.
             if (lc.StartsWith("gemini-2.5") || lc.StartsWith("gemini-3")
                 || lc.StartsWith("google/gemini-2.5") || lc.StartsWith("google/gemini-3"))
-                return (0.25m, 1m);
+                return (0.1m, 1m);
+
+            // Grok 4.3, the one Grok on the list: cached input $0.20 against $1.25
+            // (xAI's models page, checked 2026-11-15). Other Grok models read at
+            // other rates (0.15x to 0.25x) and keep 1x here, which keeps a
+            // "most it can have cost" figure from understating.
+            if (lc == "grok-4.3")
+                return (0.16m, 1m);
 
             // No documented caching for this provider/model
             return (1m, 1m);
@@ -190,7 +230,8 @@ namespace Supervertaler.Core
         /// Returns 0 for unknown models or Ollama (local).
         /// </summary>
         public static decimal ComputeActualCost(string model,
-            int regularInputTokens, int cacheReadTokens, int cacheWriteTokens, int outputTokens)
+            int regularInputTokens, int cacheReadTokens, int cacheWriteTokens, int outputTokens,
+            int cacheWrite1hTokens = 0)
         {
             if (string.IsNullOrEmpty(model)) return 0m;
 
@@ -198,12 +239,8 @@ namespace Supervertaler.Core
             if (!PricingTable.TryGet(model, out rates))
                 return 0m;
 
-            var (readMul, writeMul) = GetCacheMultipliers(model);
-
-            return (regularInputTokens * rates.inputPer1M / 1_000_000m)
-                 + (cacheReadTokens * rates.inputPer1M * readMul / 1_000_000m)
-                 + (cacheWriteTokens * rates.inputPer1M * writeMul / 1_000_000m)
-                 + (outputTokens * rates.outputPer1M / 1_000_000m);
+            return Price(model, rates.inputPer1M, rates.outputPer1M,
+                regularInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, cacheWrite1hTokens);
         }
     }
 }

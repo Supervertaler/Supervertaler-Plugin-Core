@@ -38,7 +38,15 @@ namespace Supervertaler.Core.Tests
         {
             // Google: $0.10 against $2 now, $0.20 against $4 from 1 Dec - 0.05x either way.
             Costs("gemini-4-argon", 0, 1_000_000, 0, 0, 0.20m, "cache read $0.20/MTok (0.05x)");
-            Costs("gemini-3.8-flash", 0, 1_000_000, 0, 0, 0.1875m, "3.8 Flash keeps the 0.25x it had");
+        }
+
+        public static void Gemini3CacheReads_AreCostedAtATenth()
+        {
+            // Google's pricing page, checked 2026-11-15: context caching at a tenth of input.
+            Costs("gemini-3.8-flash", 0, 1_000_000, 0, 0, 0.075m, "3.8 Flash cache read $0.075/MTok (0.1x)");
+            Costs("gemini-3.5-flash-lite", 0, 1_000_000, 0, 0, 0.03m, "3.5 Flash-Lite cache read $0.03/MTok (0.1x)");
+            Costs("gemini-3.1-flash-lite", 0, 1_000_000, 0, 0, 0.025m, "3.1 Flash-Lite cache read $0.025/MTok (0.1x)");
+            Costs("gemini-3.1-pro-preview", 0, 1_000_000, 0, 0, 0.20m, "3.1 Pro cache read $0.20/MTok (0.1x)");
         }
     }
 }

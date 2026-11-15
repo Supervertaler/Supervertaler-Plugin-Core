@@ -60,6 +60,8 @@ namespace Supervertaler.Core.Models
         public int? ActualRegularInputTokens { get; set; }
         public int? ActualCacheReadTokens { get; set; }
         public int? ActualCacheWriteTokens { get; set; }
+        /// <summary>Of <see cref="ActualCacheWriteTokens"/>, those written for an hour (2x the input rate, not 1.25x).</summary>
+        public int? ActualCacheWrite1hTokens { get; set; }
         public int? ActualOutputTokens { get; set; }
         public decimal? ActualCost { get; set; }
 
@@ -174,7 +176,8 @@ namespace Supervertaler.Core.Models
         /// </summary>
         private string CeilingText(int regularIn, int cacheRead, int cacheWrite, int output, string approx)
         {
-            var ceiling = TokenEstimator.CostCeiling(Provider, Model, regularIn, cacheRead, cacheWrite, output);
+            var ceiling = TokenEstimator.CostCeiling(Provider, Model, regularIn, cacheRead, cacheWrite, output,
+                ActualCacheWrite1hTokens ?? 0);
             if (ceiling <= 0) return "free";
             return ceiling >= 0.01m ? $"up to {approx}${ceiling:F2}" : $"up to {approx}${ceiling:F4}";
         }
@@ -182,7 +185,8 @@ namespace Supervertaler.Core.Models
         /// <summary><see cref="CeilingText"/> with the reason, for the full-text view.</summary>
         private string CeilingNote(int regularIn, int cacheRead, int cacheWrite, int output)
         {
-            var ceiling = TokenEstimator.CostCeiling(Provider, Model, regularIn, cacheRead, cacheWrite, output);
+            var ceiling = TokenEstimator.CostCeiling(Provider, Model, regularIn, cacheRead, cacheWrite, output,
+                ActualCacheWrite1hTokens ?? 0);
             if (ceiling <= 0) return "free";
             return $"up to ${ceiling:F4} (model not in the price list; counted at the dearest listed rates)";
         }
@@ -212,7 +216,9 @@ namespace Supervertaler.Core.Models
                 var cacheWrite = ActualCacheWriteTokens ?? 0;
                 var totalIn = regularIn + cacheRead + cacheWrite;
                 var output = ActualOutputTokens ?? 0;
-                sb.AppendLine($"Tokens (actual): {totalIn:N0} in ({regularIn:N0} regular, {cacheRead:N0} cache hit, {cacheWrite:N0} cache write) / {output:N0} out");
+                var oneHour = ActualCacheWrite1hTokens ?? 0;
+                var writeNote = oneHour > 0 ? $" ({oneHour:N0} of them kept for an hour)" : "";
+                sb.AppendLine($"Tokens (actual): {totalIn:N0} in ({regularIn:N0} regular, {cacheRead:N0} cache hit, {cacheWrite:N0} cache write{writeNote}) / {output:N0} out");
                 var cost = ActualCost ?? 0m;
                 string costLabel;
                 if (cost > 0) costLabel = $"${cost:F4}";

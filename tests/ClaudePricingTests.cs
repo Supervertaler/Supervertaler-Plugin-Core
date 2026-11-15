@@ -43,8 +43,7 @@ namespace Supervertaler.Core.Tests
 
         public static void CacheReads_AreCostedAtEachModelsOwnRate()
         {
-            Costs("claude-sonnet-5-5", 0, 1_000_000, 0, 0, 0.20m, "cache read $0.20/MTok (0.1x)");
-            Costs("claude-sonnet-5", 0, 1_000_000, 0, 0, 0.20m, "cache read $0.20/MTok (0.1x)");
+            Costs("claude-sonnet-5-5", 0, 1_000_000, 0, 0, 0.10m, "cache read $0.10/MTok (0.05x)");            Costs("claude-sonnet-5", 0, 1_000_000, 0, 0, 0.20m, "cache read $0.20/MTok (0.1x)");
             Costs("claude-opus-5", 0, 1_000_000, 0, 0, 0.50m, "cache read $0.50/MTok (0.1x)");
             Costs("claude-opus-5-5", 0, 1_000_000, 0, 0, 0.20m, "cache read $0.20/MTok (0.05x)");
             Costs("claude-fable-5-1", 0, 1_000_000, 0, 0, 0.25m, "cache read $0.25/MTok (0.025x)");
