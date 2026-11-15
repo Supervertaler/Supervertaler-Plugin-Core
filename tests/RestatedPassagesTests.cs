@@ -336,6 +336,29 @@ namespace Supervertaler.Core.Tests
             Assert.True(report.Summary() == null, "nothing to say");
         }
 
+        public static void TwoChangedWordsWithAnArticleBetweenThemInTheTranslation_AreOnePlace()
+        {
+            // "zonder lamp" / "met schuif" is one place in the sources. English puts
+            // "the" between the two changed words, which must not make it two: a pair
+            // translated exactly alike was reported as different (15 Nov 2026).
+            var sources = new List<string>
+            {
+                "Het gewicht van de houder zonder lamp bedraagt maximaal 120 gram en de breedte van de houder is kleiner dan de lengte van de stang.",
+                "Het gewicht van de houder met schuif bedraagt maximaal 125 gram en de breedte van de houder is kleiner dan de lengte van de stang.",
+            };
+            const string first = "The weight of the holder without the lamp is at most 120 grams and the width of the holder is smaller than the length of the rod.";
+            const string second = "The weight of the holder with the slide is at most 125 grams and the width of the holder is smaller than the length of the rod.";
+
+            var report = RestatedPassages.Report(sources, new List<RestatedTarget> { Target(0, first), Target(1, second) });
+            Assert.Equal(1, report.Compared, "compared");
+            Assert.Equal(0, report.Different.Count, "the translations differ only where the sources do");
+
+            // A difference of the translator's own, further on, is still reported.
+            var reworded = second.Replace("is smaller than", "is less than");
+            report = RestatedPassages.Report(sources, new List<RestatedTarget> { Target(0, first), Target(1, reworded) });
+            Assert.Equal(1, report.Different.Count, "more changed words than the sources have is a difference");
+        }
+
         public static void ADifferenceTheSourcesHaveAtTheEdge_DoesNotExcuseOneInTheMiddle()
         {
             // The sources differ in one word (lengteas / dwarsas, inside); the

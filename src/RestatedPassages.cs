@@ -58,6 +58,13 @@ namespace Supervertaler.Core
         public int TwinDifferences;
 
         /// <summary>
+        /// For near-twins: how many words of the longer source are not in the
+        /// other. With <see cref="TwinDifferences"/> it says how much the two
+        /// translations may differ: see <see cref="RestatedPassages.Compare"/>.
+        /// </summary>
+        public int TwinChangedWords;
+
+        /// <summary>
         /// Places where the two sources differ inside a passage, with more than
         /// <see cref="RestatedPassages.EdgeWords"/> shared words on both sides.
         /// </summary>
@@ -591,7 +598,11 @@ namespace Supervertaler.Core
             pair.Runs.Sort((x, y) => x.StartA != y.StartA ? x.StartA.CompareTo(y.StartA) : x.StartB.CompareTo(y.StartB));
             foreach (var run in pair.Runs) pair.SharedWords += run.Length;
             pair.NearTwin = pair.SharedWords >= TwinShare * Math.Max(pair.WordsA, pair.WordsB);
-            if (pair.NearTwin) pair.TwinDifferences = Differences(wordsA, wordsB, out _);
+            if (pair.NearTwin)
+            {
+                pair.TwinDifferences = Differences(wordsA, wordsB, out var common);
+                pair.TwinChangedWords = Math.Max(wordsA.Length, wordsB.Length) - common;
+            }
             CountBreaks(chains, out pair.InteriorBreaks, out pair.EdgeBreaks);
             pair.ReorderedEdges = ReorderedEdges(chains, wordsA, wordsB);
             return pair;
@@ -803,7 +814,11 @@ namespace Supervertaler.Core
         /// sources do, wherever those places are. One source word changed is one
         /// place, even where the other language puts it somewhere else in the
         /// sentence ("The file could not be saved" / "No se pudo guardar el
-        /// archivo").</para>
+        /// archivo"). More places than the sources have are still no difference
+        /// when no more words changed than in the sources: "zonder lamp" / "met
+        /// schuif" is one place, and its English, "without the lamp" / "with the
+        /// slide", is two only because "the" stands between the changed words
+        /// (seen 15 Nov 2026: a pair translated exactly alike was reported).</para>
         ///
         /// <para>3. Otherwise the translations' own shared runs are grouped into
         /// passages, as many as the sources have. If those share less than
@@ -845,7 +860,10 @@ namespace Supervertaler.Core
             {
                 int places = Differences(a, b, out var common);
                 if (common < MinTargetShare * Math.Min(a.Length, b.Length)) return RestatedVerdict.Different;
-                return places > pair.TwinDifferences ? RestatedVerdict.Different : RestatedVerdict.Same;
+                int changed = Math.Max(a.Length, b.Length) - common;
+                return places > pair.TwinDifferences && changed > pair.TwinChangedWords
+                    ? RestatedVerdict.Different
+                    : RestatedVerdict.Same;
             }
 
             var chains = Chains(CommonRuns(a, b, MinPieceWords), MinPieceWords, pair.Passages);
