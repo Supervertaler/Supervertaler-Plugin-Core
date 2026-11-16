@@ -7,6 +7,8 @@ namespace Supervertaler.Core.Models
     public enum PromptLogFeature
     {
         Chat,
+        /// <summary>Translate active segment (Alt+T in Trados): one segment
+        /// through the Batch Translate pipeline, logged apart from a run.</summary>
         Translate,
         BatchTranslate,
         Proofread,
@@ -103,7 +105,7 @@ namespace Supervertaler.Core.Models
                 switch (Feature)
                 {
                     case PromptLogFeature.Chat: baseLabel = "Chat"; break;
-                    case PromptLogFeature.Translate: baseLabel = "Translate"; break;
+                    case PromptLogFeature.Translate: baseLabel = "Translate active segment"; break;
                     case PromptLogFeature.BatchTranslate: baseLabel = "Batch Translate"; break;
                     case PromptLogFeature.Proofread: baseLabel = "Proofread"; break;
                     case PromptLogFeature.QuickLauncher: baseLabel = "QuickLauncher"; break;
