@@ -71,7 +71,15 @@ namespace Supervertaler.Core
 
         // ─── Constants ──────────────────────────────────────────────
 
-        private const string LicenceServer = "https://api.lemonsqueezy.com/v1/licenses";
+        /// <summary>
+        /// The licence server: an address of our own, so that it never has to
+        /// change in a released product again. Behind it today is a pass-through
+        /// to Lemon Squeezy, whose request and reply shapes it keeps (see
+        /// docs/design/licence-own-address.md). Until this release the products
+        /// called https://api.lemonsqueezy.com/v1/licenses directly, which stops
+        /// taking payments on 31 March 2027.
+        /// </summary>
+        internal const string LicenceServer = "https://licence.supervertaler.com/v1/licenses";
 
         /// <summary>
         /// The Lemon Squeezy store that sells Supervertaler licences. A key is a

@@ -30,6 +30,16 @@ namespace Supervertaler.Core.Tests
 
         // ─── The copy from the Trados location ──────────────────────
 
+        public static void TheLicenceServer_IsOurOwnAddress()
+        {
+            // A released product cannot be given a new address, so the one it
+            // ships with must be ours, whoever sells the subscriptions.
+            var uri = new Uri(SupervertalerLicence.LicenceServer);
+            Assert.Equal("https", uri.Scheme, "scheme");
+            Assert.Equal("licence.supervertaler.com", uri.Host, "host");
+            Assert.Equal("/v1/licenses", uri.AbsolutePath, "path the three calls are appended to");
+        }
+
         public static void TheTradosLicence_IsCopiedByteForByte_AndLeftInPlace()
         {
             using (var s = new Scene())
