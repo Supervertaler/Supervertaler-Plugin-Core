@@ -69,6 +69,12 @@ namespace Supervertaler.Core
         // first, so its first entry is not the one to recommend.
         public const string DefaultOpenAiModelId = "gpt-6.1-sol";
 
+        // The Claude model a new installation starts on. Named for the same
+        // reason: since 18 Nov 2026 the Claude list runs cheapest first, so that
+        // Haiku is there for small mechanical requests (FuzzyFixer and the like),
+        // and its first entry is not the one to translate with.
+        public const string DefaultClaudeModelId = "claude-sonnet-5-5";
+
         // OpenAI's three current tiers, most capable to cheapest - the three it
         // offers as its own main choices (developers.openai.com/api/docs/models,
         // checked 2026-10-07; Michael chose them the same day). All 1.05M context,
@@ -108,8 +114,11 @@ namespace Supervertaler.Core
             }
         };
 
-        // The newest Sonnet, Opus and Fable, in that order (Michael, 2026-09-28).
-        // The first is Trados's default for a new install. Superseded models leave
+        // The newest Haiku, Sonnet, Opus and Fable, cheapest first (Michael,
+        // 2026-11-18; Haiku 5.5 added for the plugins' Light tasks. Until then:
+        // Sonnet, Opus and Fable, 2026-09-28). The default for a new install is
+        // DefaultClaudeModelId, not the first entry. Checked against Anthropic's
+        // own model list and pricing page on 2026-11-18. Superseded models leave
         // this list but not the price list: anyone with one saved keeps it - a
         // model missing from here shows in the custom model ID field and still
         // works - and their runs are still costed. So Sonnet 5 (superseded by
@@ -119,6 +128,12 @@ namespace Supervertaler.Core
         // 2026-11-10, at $8/$40 against 5.1's $10/$50).
         public static readonly LlmModelInfo[] ClaudeModels =
         {
+            new LlmModelInfo
+            {
+                Id = "claude-haiku-5-5", DisplayName = "Claude Haiku 5.5",
+                Description = "Budget – Anthropic's smallest and fastest ($0.10/$0.50; five times that on prompts over 100,000 tokens). For small mechanical requests rather than whole documents",
+                Provider = LlmProvider.Claude
+            },
             new LlmModelInfo
             {
                 Id = "claude-sonnet-5-5", DisplayName = "Claude Sonnet 5.5",
@@ -371,11 +386,13 @@ namespace Supervertaler.Core
         /// <summary>
         /// The model to select for a provider when none is chosen: the first of its
         /// short list, except OpenAI, whose list runs most capable - and dearest -
-        /// first. Null for a provider without a list.
+        /// first, and Claude, whose list runs cheapest first. Null for a provider
+        /// without a list.
         /// </summary>
         public static string DefaultModelId(string providerKey)
         {
             if (providerKey == ProviderOpenAi) return DefaultOpenAiModelId;
+            if (providerKey == ProviderClaude) return DefaultClaudeModelId;
             var models = GetModelsForProvider(providerKey);
             return models.Length > 0 ? models[0].Id : null;
         }

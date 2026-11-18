@@ -189,6 +189,7 @@ namespace Supervertaler.Core
                 { "claude-sonnet-5-5", (2.00m, 10.00m) },
                 { "claude-sonnet-5", (2.00m, 10.00m) },
                 { "claude-sonnet-4-6", (3.00m, 15.00m) },
+                { "claude-haiku-5-5", (0.10m, 0.50m) },
                 { "claude-haiku-4-5-20251001", (1.00m, 5.00m) },
                 { "gemini-3.1-flash-lite", (0.25m, 1.50m) },
                 { "gemini-3.8-flash", (0.75m, 3.75m) },

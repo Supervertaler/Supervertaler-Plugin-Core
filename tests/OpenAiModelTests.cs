@@ -30,14 +30,16 @@ namespace Supervertaler.Core.Tests
             Assert.True(LlmModels.FindModel(LlmModels.DefaultOpenAiModelId) != null, "the default is a listed model");
         }
 
-        public static void DefaultModelId_IsNamedForOpenAi_AndTheFirstEntryElsewhere()
+        public static void DefaultModelId_IsNamedForOpenAiAndClaude_AndTheFirstEntryElsewhere()
         {
             // A provider switch selects this, so for OpenAI it must not be Astra,
             // the first - and dearest - entry.
             Assert.Equal("gpt-6.1-sol", LlmModels.DefaultModelId(LlmModels.ProviderOpenAi), "OpenAI");
+            // Claude's list runs cheapest first since 2026-11-18; its default is named too.
+            Assert.Equal("claude-sonnet-5-5", LlmModels.DefaultModelId(LlmModels.ProviderClaude), "Claude");
             foreach (var key in LlmModels.AllProviderKeys)
             {
-                if (key == LlmModels.ProviderOpenAi) continue;
+                if (key == LlmModels.ProviderOpenAi || key == LlmModels.ProviderClaude) continue;
                 var models = LlmModels.GetModelsForProvider(key);
                 Assert.Equal(models.Length > 0 ? models[0].Id : null, LlmModels.DefaultModelId(key), key);
             }
