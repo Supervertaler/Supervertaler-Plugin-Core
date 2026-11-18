@@ -21,7 +21,13 @@ namespace Supervertaler.Core.Models
         SuperBench,
         /// <summary>Looking at a drawing and reporting what it shows and
         /// which reference signs are printed on it.</summary>
-        FigureAnalysis
+        FigureAnalysis,
+        /// <summary>FuzzyFixer (Trados): the repair of a fuzzy translation memory
+        /// match for one segment. It goes through the Batch Translate pipeline as
+        /// Alt+T does, and until 20.209 was logged as Alt+T was, so its cards and
+        /// its costs could not be told from a translation's. Added last: the
+        /// order of the others is not disturbed.</summary>
+        FuzzyFixer
     }
 
     /// <summary>
@@ -117,6 +123,7 @@ namespace Supervertaler.Core.Models
                     // Without a label the usage ledger records the call
                     // but shows it nameless - the AutoTagger bug in 20.14x.
                     case PromptLogFeature.FigureAnalysis: baseLabel = "Figure analysis"; break;
+                    case PromptLogFeature.FuzzyFixer: baseLabel = "FuzzyFixer"; break;
                     default: baseLabel = "Unknown"; break;
                 }
 

@@ -21,6 +21,7 @@ namespace Supervertaler.Core.Tests
         {
             Assert.Equal("Translate active segment", new PromptLogEntry { Feature = PromptLogFeature.Translate }.FeatureLabel, "Alt+T card header");
             Assert.Equal("Batch Translate", new PromptLogEntry { Feature = PromptLogFeature.BatchTranslate }.FeatureLabel, "run card header");
+            Assert.Equal("FuzzyFixer", new PromptLogEntry { Feature = PromptLogFeature.FuzzyFixer }.FeatureLabel, "FuzzyFixer card header");
         }
 
         public static void TheMemoryBankSelection_IsNamedAsSuperMemory()
