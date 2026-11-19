@@ -14,6 +14,45 @@ namespace Supervertaler.Core
     /// </summary>
     public static class PromptGenerator
     {
+        // ─── Terminology priority ────────────────────────────────────
+
+        /// <summary>
+        /// The order a generated prompt gives its terminology sources, the one
+        /// wording used wherever the generator states it. The termbase and the
+        /// document come before translation memory, as in the TM block sent with
+        /// every request (<see cref="TranslationPrompt.BuildMemoryBlock"/>): a
+        /// memory pools work from other documents and clients and can be wrong at
+        /// 100%. Until 209 this put "previous correct translations from TM" first,
+        /// above the termbase, so a generated prompt contradicted that block.
+        /// </summary>
+        public const string TerminologyPriority =
+            "(1) Project-specific glossary (termbase) terms, (2) the document's own established usage, " +
+            "including the segments the translator has confirmed in it, (3) translation memory matches, " +
+            "(4) domain-specific conventions, (5) general language knowledge";
+
+        /// <summary>What a translation memory match is, as a generated prompt is told to present it.</summary>
+        public const string TmMatchStance =
+            "A translation memory match is an earlier translation of a similar sentence, possibly made " +
+            "for another document or client. It is a likely-good wording to check against the source, " +
+            "not approved wording: reuse it only where it is correct for this segment; " +
+            TranslationPrompt.TermbaseAndDocumentTakePrecedence + ".";
+
+        /// <summary>
+        /// The section that holds the reference pairs: segments the translator has
+        /// confirmed in this document (both Trados and memoQ send those, not memory
+        /// lookups). It was "PREVIOUS CORRECT TRANSLATIONS" until 209, a name that
+        /// called every pair correct, and the pairs were said to come from the TM
+        /// and to outrank the glossary.
+        /// </summary>
+        public const string ReferenceSectionName = "REFERENCE TRANSLATIONS";
+
+        /// <summary>How a generated prompt is told to use its reference pairs.</summary>
+        public const string ReferenceStance =
+            "These are segments the translator has already confirmed in this document. They show the " +
+            "register and terminology in use, but a confirmed segment can still be wrong: check each " +
+            "against its source before reusing its wording. Where one disagrees with the glossary, " +
+            "the glossary wins.";
+
         // ─── Domain templates ────────────────────────────────────────
 
         private static readonly Dictionary<string, DomainTemplate> DomainTemplates =
@@ -49,13 +88,13 @@ namespace Supervertaler.Core
                         "TRANSLATION STYLE (LOCKED) – mandatory term mappings",
                         "CLAIM TRANSLATION STYLE – preserve dependency structure, maintain phrasing, avoid stylistic smoothing",
                         "GERUND STYLE RULE – prefer natural English gerund over \"the [verb]ing of\" construction",
-                        "TERMINOLOGY CONSISTENCY HIERARCHY – (1) Previous correct translations, (2) Project-specific glossary, (3) General mandatory mappings",
+                        "TERMINOLOGY CONSISTENCY HIERARCHY – " + TerminologyPriority,
                         "TECHNICAL AND MECHANICAL FORMATTING RULES – dimensions, figure refs, prior art numbers, standard abbreviations",
                         "PREFLIGHT SELF-CHECK (MANDATORY) – verify every word translated, no compression, all values intact",
                         "POST-TRANSLATION INTEGRITY ASSERTION (MANDATORY)",
                         "PROJECT CONTEXT (for model understanding only – do not output)",
                         "PROJECT-SPECIFIC GLOSSARY (MANDATORY, LOCKED)",
-                        "PREVIOUS CORRECT TRANSLATIONS",
+                        ReferenceSectionName,
                         "OUTPUT FORMAT"
                     },
                     Special = "Patent translation demands ABSOLUTE fidelity. Every word, repetition, structure, " +
@@ -96,7 +135,7 @@ namespace Supervertaler.Core
                         "PREFLIGHT SELF-CHECK (MANDATORY)",
                         "PROJECT CONTEXT – document type, parties, jurisdiction, subject matter",
                         "PROJECT-SPECIFIC GLOSSARY (MANDATORY, LOCKED)",
-                        "PREVIOUS CORRECT TRANSLATIONS",
+                        ReferenceSectionName,
                         "OUTPUT FORMAT"
                     },
                     Special = "Legal translation demands EXACT fidelity. Every clause, proviso, condition, " +
@@ -135,7 +174,7 @@ namespace Supervertaler.Core
                         "PREFLIGHT SELF-CHECK (SAFETY-FOCUSED) – verify all dosages, warnings, and measurements intact",
                         "PROJECT CONTEXT – document type, therapeutic area, patient population",
                         "PROJECT-SPECIFIC GLOSSARY (MANDATORY, LOCKED)",
-                        "PREVIOUS CORRECT TRANSLATIONS",
+                        ReferenceSectionName,
                         "OUTPUT FORMAT"
                     },
                     Special = "Medical translation is SAFETY-CRITICAL. Any error in dosages, warnings, " +
@@ -172,7 +211,7 @@ namespace Supervertaler.Core
                         "PREFLIGHT SELF-CHECK (MANDATORY)",
                         "PROJECT CONTEXT – product/system, technical domain, target audience",
                         "PROJECT-SPECIFIC GLOSSARY (MANDATORY, LOCKED)",
-                        "PREVIOUS CORRECT TRANSLATIONS",
+                        ReferenceSectionName,
                         "OUTPUT FORMAT"
                     },
                     Special = "Technical translation requires absolute precision. Never translate product names, " +
@@ -208,7 +247,7 @@ namespace Supervertaler.Core
                         "PREFLIGHT SELF-CHECK (MANDATORY) – verify all figures, calculations, and disclosures",
                         "PROJECT CONTEXT – document type, financial instrument, jurisdiction",
                         "PROJECT-SPECIFIC GLOSSARY (MANDATORY, LOCKED)",
-                        "PREVIOUS CORRECT TRANSLATIONS",
+                        ReferenceSectionName,
                         "OUTPUT FORMAT"
                     },
                     Special = "Financial data integrity is paramount. Any altered figure could constitute a " +
@@ -243,7 +282,7 @@ namespace Supervertaler.Core
                         "PREFLIGHT SELF-CHECK (MANDATORY)",
                         "PROJECT CONTEXT – brand, campaign, target audience, key messages",
                         "PROJECT-SPECIFIC GLOSSARY (MANDATORY, LOCKED)",
-                        "PREVIOUS CORRECT TRANSLATIONS",
+                        ReferenceSectionName,
                         "OUTPUT FORMAT"
                     },
                     Special = "Marketing translation permits creative freedom – prioritize persuasive effectiveness " +
@@ -277,7 +316,7 @@ namespace Supervertaler.Core
                         "PREFLIGHT SELF-CHECK (MANDATORY)",
                         "PROJECT CONTEXT – document description and subject matter",
                         "PROJECT-SPECIFIC GLOSSARY (MANDATORY, LOCKED)",
-                        "PREVIOUS CORRECT TRANSLATIONS",
+                        ReferenceSectionName,
                         "OUTPUT FORMAT"
                     },
                     Special = "Analyze the document to identify the most appropriate domain and apply " +
@@ -495,8 +534,8 @@ namespace Supervertaler.Core
             sb.AppendLine("   appears incomplete, translate exactly what is provided without comment.\"");
             sb.AppendLine();
             sb.AppendLine("4. TERMINOLOGY CONSISTENCY HIERARCHY:");
-            sb.AppendLine("   \"(1) Previous correct translations from TM (highest priority), (2) Project-specific glossary");
-            sb.AppendLine("   terms (required), (3) Domain-specific conventions, (4) General language knowledge. Never mix");
+            sb.AppendLine("   \"" + TerminologyPriority + ".");
+            sb.AppendLine("   " + TmMatchStance + " Never mix");
             sb.AppendLine("   competing variants once established. Because there is no memory between batches, the prompt");
             sb.AppendLine("   itself must LOCK every recurring term to a single translation - never leave an open choice");
             sb.AppendLine("   (‘X or Y’) for the translator AI to resolve, as consistency cannot carry across batches.\"");
@@ -547,7 +586,7 @@ namespace Supervertaler.Core
             sb.AppendLine();
 
             // TM pairs
-            sb.AppendLine("=== REFERENCE TRANSLATIONS FROM TM ===");
+            sb.AppendLine("=== REFERENCE TRANSLATIONS (CONFIRMED IN THIS DOCUMENT) ===");
             sb.AppendLine(tmInstruction);
             sb.AppendLine();
 
@@ -566,7 +605,7 @@ namespace Supervertaler.Core
             }
 
             // Provenance discipline. Observed after the TM section was locked down: the model
-            // stopped inventing entries in PREVIOUS CORRECT TRANSLATIONS and started writing
+            // stopped inventing entries in the TM section and started writing
             // "Anchored by validated TM segment" in glossary Notes cells for terms the TM
             // never contained. The fabrication did not stop, it moved – from inventing an
             // entry to mislabelling one. A note is a claim, so the rule has to govern claims
@@ -582,15 +621,16 @@ namespace Supervertaler.Core
             sb.AppendLine("and must be true. Cite a source ONLY when that source, exactly as supplied above,");
             sb.AppendLine("actually contains the term or rule.");
             sb.AppendLine();
-            sb.Append("- \"TM\", \"validated\", \"validated segment\", \"per the TM\", \"anchored by the validated ");
-            sb.AppendLine("title\"");
+            sb.AppendLine("- \"TM\", \"per the TM\", \"reference translation\", \"confirmed segment\"");
             sb.AppendLine("  and equivalents: permitted ONLY for a term that literally appears in the pairs under");
             sb.AppendLine(hasTmData
-                ? $"  REFERENCE TRANSLATIONS FROM TM above. Those {ctx.TmPairs.Count} pairs are the entire TM you"
-                : "  REFERENCE TRANSLATIONS FROM TM above. NO TM pairs were supplied for this project, so no");
+                ? $"  REFERENCE TRANSLATIONS above. Those {ctx.TmPairs.Count} pairs are all the reference pairs you"
+                : "  REFERENCE TRANSLATIONS above. NO reference pairs were supplied for this project, so no");
             sb.AppendLine(hasTmData
-                ? "  have been shown; a term absent from them has no TM provenance, however plausible."
+                ? "  have been shown; a term absent from them has no such provenance, however plausible."
                 : "  note of this kind is permitted anywhere in the generated prompt.");
+            sb.AppendLine("  Even then, never call such a rendering \"validated\" or \"approved\": it is a wording");
+            sb.AppendLine("  to check, not an approval.");
             sb.AppendLine();
             sb.Append("- \"house default\", \"approved\", \"established convention\", \"the translator's own\" ");
             sb.AppendLine("and");
@@ -1062,31 +1102,33 @@ namespace Supervertaler.Core
         {
             // Observed on a real run: given 7 pairs, the model emitted 11 and filed its own
             // renderings under "Additional validated project segments" – one of them carrying
-            // a [[TC:]] marker, which no human TM contains. This section outranks the glossary
-            // in the terminology hierarchy, so an invented entry is the most authoritative
-            // thing in the prompt while being the least grounded. Saying "include them" was
-            // never the same as saying "and no others"; both branches now say the latter.
+            // a [[TC:]] marker, which no human TM contains. An invented entry here is presented
+            // as the translator's earlier work while being the least grounded thing in the
+            // prompt. Saying "include them" was never the same as saying "and no others"; both
+            // branches now say the latter. Until 209 this section also "outranked the glossary"
+            // and called its pairs validated; see TerminologyPriority.
             if (tmPairs == null || tmPairs.Count == 0)
-                return "No TM reference translations are available for this project. The generated prompt " +
-                       "must include a PREVIOUS CORRECT TRANSLATIONS section that says so plainly and lists " +
+                return "No reference translations are available for this project. The generated prompt " +
+                       "must include a " + ReferenceSectionName + " section that says so plainly and lists " +
                        "no pairs.\n\n" +
                        "Do NOT invent, reconstruct or supply example pairs to fill it. This section records " +
-                       "human-validated translations only and outranks the glossary, so a fabricated entry " +
-                       "is presented to the translator AI as approved by the translator when nobody has " +
-                       "approved it.";
+                       "the translator's earlier translations only, so a fabricated entry is presented to " +
+                       "the translator AI as the translator's own work when nobody wrote it.";
 
             var sb = new StringBuilder();
-            sb.AppendLine($"The following {tmPairs.Count} validated translation pairs come from the project's");
-            sb.AppendLine("Translation Memory. Include them in the PREVIOUS CORRECT TRANSLATIONS section.");
-            sb.AppendLine("These serve as style anchors – the AI must match their register and terminology choices.");
+            sb.AppendLine($"The following {tmPairs.Count} translation pairs are segments the translator has confirmed");
+            sb.AppendLine("in this document. Include them in the " + ReferenceSectionName + " section, and state there");
+            sb.AppendLine("how the translator AI is to use them, in these words:");
+            sb.AppendLine("  \"" + ReferenceStance + "\"");
+            sb.AppendLine("Where one disagrees with the glossary, do not lock the term to the pair's rendering.");
             sb.AppendLine();
             sb.AppendLine($"Include EXACTLY these {tmPairs.Count} pairs and no others. Never invent, extrapolate");
             sb.AppendLine("or add a pair that is not listed below, and never promote a rendering you chose");
             sb.AppendLine("yourself into this section – not as an \"additional validated segment\", not as an");
-            sb.AppendLine("example, not in any other guise. These are human-validated translations and they");
-            sb.AppendLine("outrank the glossary, so anything you add here is presented to the translator AI as");
-            sb.AppendLine("approved by the translator when nobody has approved it. A rendering you derived");
-            sb.AppendLine("yourself belongs in the glossary or a style section, never in this one.");
+            sb.AppendLine("example, not in any other guise. These are the translator's earlier translations, so");
+            sb.AppendLine("anything you add here is presented to the translator AI as the translator's own work");
+            sb.AppendLine("when nobody wrote it. A rendering you derived yourself belongs in the glossary or a");
+            sb.AppendLine("style section, never in this one.");
             sb.AppendLine();
 
             foreach (var pair in tmPairs)

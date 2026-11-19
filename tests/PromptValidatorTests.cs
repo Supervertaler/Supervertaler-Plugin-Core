@@ -38,7 +38,7 @@ namespace Supervertaler.Core.Tests
                 var name = Requested[i].Split(new[] { " – " }, StringSplitOptions.None)[0];
                 sb.Append(heading(i + 1, name)).Append("\n\n");
 
-                if (name == "PREVIOUS CORRECT TRANSLATIONS")
+                if (name == PromptGenerator.ReferenceSectionName)
                 {
                     for (var p = 1; p <= pairs; p++)
                     {
@@ -80,7 +80,7 @@ namespace Supervertaler.Core.Tests
                 var what = r.Describe();
                 Assert.True(!r.Ok, "a prompt cut off inside its list should be refused");
                 Assert.True(what.Contains("no OUTPUT FORMAT section"), "it should say OUTPUT FORMAT is missing: " + what);
-                Assert.True(what.Contains("section 12, \"PREVIOUS CORRECT TRANSLATIONS"),
+                Assert.True(what.Contains("section 12, \"" + PromptGenerator.ReferenceSectionName),
                     "it should name the last real section, not a list item: " + what);
             }
         }

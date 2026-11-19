@@ -344,7 +344,7 @@ namespace Supervertaler.Core
                     : ". ")
                 + "Check each one against the segment's source and the document before using any "
                 + "of it. Reuse its wording and terminology only where it is correct for this "
-                + "segment in this document; the termbase and the document take precedence. Where a "
+                + "segment in this document; " + TermbaseAndDocumentTakePrecedence + ". Where a "
                 + "match does not fit, or you are in doubt, translate from the source. "
                 + (haveSources
                     ? (havePercentages ? "Below 100% the" : "The")
@@ -395,6 +395,17 @@ namespace Supervertaler.Core
         }
 
         private const string NumbersOnlyLabel = "same sentence, different numbers";
+
+        /// <summary>
+        /// Where translation memory stands against the termbase and the document,
+        /// in the words every prompt uses. This block says it with each request,
+        /// and AutoPrompt's generator writes it into the prompts it makes
+        /// (<see cref="PromptGenerator.TerminologyPriority"/>). Until 209 AutoPrompt
+        /// ranked the memory first, above the termbase, so a generated prompt told
+        /// the model the opposite of this block.
+        /// </summary>
+        public const string TermbaseAndDocumentTakePrecedence =
+            "the termbase and the document take precedence";
 
         /// <summary>
         /// Earlier translations, from the same document, of passages the
