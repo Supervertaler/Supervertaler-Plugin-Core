@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text;
 
@@ -60,12 +60,59 @@ namespace Supervertaler.Core
         /// Prompt library: <c>.md</c> files with YAML frontmatter, one per prompt,
         /// under the shared root - or in the team folder when one is set.
         ///
-        /// Shared deliberately and from the start — Workbench and the Trados
-        /// plugin already read the same folder, and the memoQ plugin now makes
-        /// three. A plain folder of Markdown is also why a prompt picker can be
+        /// Shared by every product until 21 Nov 2026; now each product that has
+        /// called <see cref="SetProduct"/> gets its own folder inside it, filled
+        /// once from the shared one (see <see cref="ProductPromptLibrary"/>).
+        /// A plain folder of Markdown is also why a prompt picker can be
         /// written in something other than C# without agreeing a format first.
         /// </summary>
-        public static string PromptLibraryDir => Path.Combine(ContentRoot, "prompt_library");
+        public static string PromptLibraryDir
+        {
+            get
+            {
+                var shared = SharedPromptLibraryDir;
+                var product = Product;
+                return product == null ? shared : ProductPromptLibrary.Resolve(shared, product);
+            }
+        }
+
+        /// <summary>The shared <c>prompt_library</c> folder itself: what every
+        /// product used until each got its own, and what a product that has not
+        /// called <see cref="SetProduct"/> still uses. The product folders sit
+        /// inside it.</summary>
+        public static string SharedPromptLibraryDir => Path.Combine(ContentRoot, "prompt_library");
+
+        private static string _product;
+
+        /// <summary>The product this process is, as set by <see cref="SetProduct"/>; null when none has been set.</summary>
+        public static string Product
+        {
+            get { lock (_lock) { return _product; } }
+        }
+
+        /// <summary>
+        /// Says which product this process is, so <see cref="PromptLibraryDir"/>
+        /// is that product's own folder (<c>prompt_library\Trados</c>) rather than
+        /// the shared one. Call it once, at startup, before anything reads a
+        /// prompt. The name must be one of <see cref="ProductPromptLibrary.ProductFolders"/>.
+        /// </summary>
+        public static void SetProduct(string product)
+        {
+            string match = null;
+            foreach (var p in ProductPromptLibrary.ProductFolders)
+                if (string.Equals(p, product, StringComparison.OrdinalIgnoreCase)) match = p;
+            if (match == null)
+                throw new ArgumentException("Unknown product \"" + product + "\"; expected one of " +
+                                            string.Join(", ", ProductPromptLibrary.ProductFolders), nameof(product));
+            lock (_lock) { _product = match; }
+        }
+
+        /// <summary>Back to no product (the shared folder). For tests, which must
+        /// leave the process as they found it.</summary>
+        internal static void ClearProduct()
+        {
+            lock (_lock) { _product = null; }
+        }
 
         /// <summary>Memory banks: one folder per bank, plus <c>_shared</c>. In the
         /// team folder when one is set.</summary>
@@ -166,12 +213,14 @@ namespace Supervertaler.Core
         public static void Reset()
         {
             lock (_lock) { _root = null; _contentRoot = null; _teamFolder = null; _teamFolderProblem = null; }
+            ProductPromptLibrary.Forget();
         }
 
         /// <summary>Overrides the root, for a caller that has just chosen or moved it.</summary>
         public static void Set(string path)
         {
             lock (_lock) { _root = path; _contentRoot = null; }
+            ProductPromptLibrary.Forget();
         }
 
         private static string Resolve()

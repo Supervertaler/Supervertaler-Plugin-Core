@@ -11,9 +11,9 @@ namespace Supervertaler.Core
 {
     /// <summary>
     /// Manages the prompt template library: loading, saving, and built-in prompt seeding.
-    /// Prompts are stored as .md files (Markdown with YAML frontmatter) in the shared SupervertalerPaths.PromptLibraryDir,
-    /// which is the same folder Supervertaler Workbench uses – so prompts are automatically
-    /// shared between both products.
+    /// Prompts are stored as .md files (Markdown with YAML frontmatter) in SupervertalerPaths.PromptLibraryDir:
+    /// the product's own folder (prompt_library\Trados) once the host has called SetProduct,
+    /// otherwise the shared prompt_library folder. See ProductPromptLibrary.
     /// </summary>
     public class PromptLibrary
     {
@@ -23,6 +23,20 @@ namespace Supervertaler.Core
         /// Full path to the prompts folder on disk.
         /// </summary>
         public static string PromptsFolderPath => SupervertalerPaths.PromptLibraryDir;
+
+        /// <summary>
+        /// True for a path inside a product's own folder (<c>prompt_library\Trados\...</c>)
+        /// while this process reads the shared folder, i.e. has not called
+        /// <see cref="SupervertalerPaths.SetProduct"/>. Such a process skips them:
+        /// they are another product's prompts, not categories of its own.
+        /// </summary>
+        private static bool InProductFolder(string path, string rootDir)
+        {
+            if (SupervertalerPaths.Product != null || path.Length <= rootDir.Length) return false;
+            var rel = path.Substring(rootDir.Length).TrimStart('\\', '/');
+            var cut = rel.IndexOfAny(new[] { '\\', '/' });
+            return cut > 0 && ProductPromptLibrary.IsProductFolder(rel.Substring(0, cut));
+        }
 
         private List<PromptTemplate> _cache;
 
@@ -994,6 +1008,7 @@ namespace Supervertaler.Core
 
                 foreach (var svpromptFile in Directory.GetFiles(PromptsDir, "*.svprompt", SearchOption.AllDirectories))
                 {
+                    if (InProductFolder(svpromptFile, PromptsDir)) continue;
                     try
                     {
                         var mdFile = Path.ChangeExtension(svpromptFile, ".md");
@@ -1130,6 +1145,7 @@ namespace Supervertaler.Core
                 // Scan .md files first (preferred format)
                 foreach (var file in Directory.GetFiles(dir, "*.md", SearchOption.AllDirectories))
                 {
+                    if (InProductFolder(file, rootDir)) continue;
                     try
                     {
                         var prompt = ParsePromptFile(file, rootDir);
@@ -1149,6 +1165,7 @@ namespace Supervertaler.Core
                 // Also scan .svprompt files (legacy format) – skip if .md version exists
                 foreach (var file in Directory.GetFiles(dir, "*.svprompt", SearchOption.AllDirectories))
                 {
+                    if (InProductFolder(file, rootDir)) continue;
                     try
                     {
                         var prompt = ParsePromptFile(file, rootDir);
@@ -2038,6 +2055,7 @@ replace: "" """
                     var dirName = Path.GetFileName(subDir);
                     if (dirName.StartsWith(".") || dirName == "__pycache__")
                         continue;
+                    if (InProductFolder(Path.Combine(subDir, "x"), rootDir)) continue;
 
                     var relativePath = subDir.Length > rootDir.Length
                         ? subDir.Substring(rootDir.Length + 1).Replace('\\', '/')

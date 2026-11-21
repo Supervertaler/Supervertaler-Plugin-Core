@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -26,6 +26,7 @@ namespace Supervertaler.Core.Tests
                     case "--keys-forever": return KeysForever(a[1]);
                     case "--keys-loop": return KeysLoop(a[1], a[2], a[3], int.Parse(a[4]));
                     case "--sync-loop": return SyncLoop(a[1], a[2], int.Parse(a[3]));
+                    case "--copy-library": return CopyLibrary(a[1], a[2], a[3]);
                     default:
                         Console.WriteLine("unknown mode " + a[0]);
                         return 2;
@@ -36,6 +37,16 @@ namespace Supervertaler.Core.Tests
                 Console.WriteLine("EXCEPTION " + ex.GetType().Name + ": " + ex.Message);
                 return 3;
             }
+        }
+
+        /// <summary>Copies the shared prompt library into the Trados folder, as a
+        /// second Studio starting at the same moment would. Prints "copied N failed M".</summary>
+        private static int CopyLibrary(string shared, string product, string goFile)
+        {
+            WaitFor(goFile);
+            var r = ProductPromptLibrary.CopyFromShared(shared, product, "Trados");
+            Console.WriteLine("copied " + r.Copied + " failed " + r.Failed.Count);
+            return 0;
         }
 
         private static void WaitFor(string goFile)
