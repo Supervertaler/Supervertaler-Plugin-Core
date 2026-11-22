@@ -528,6 +528,124 @@ namespace Supervertaler.Core.SuperVault.Tests
             finally { File.Move(moved, lib.StorePath); }
         }
 
+        // ---- the other translations of a match (VaultLibrary.Translations: the pane's "Older translations") ----
+
+        static List<string> Others(VaultLibrary lib, VaultMatch m, int page = 0, string culture = null, string sl = "nl", string tl = "en") =>
+            lib.Translations(m, sl, tl, page, culture).Items.Select(c => VaultMarkup.Plain(c.TargetRaw)).ToList();
+
+        public static void TheOtherTranslationsAreListedBestFirstWithoutTheMatchItself()
+        {
+            var lib = Lib();
+            Import(lib, TmxFile(T("Druk op de knop.", "Press the button.", " creationdate=\"20200101T000000Z\"", "<prop type=\"Project\">PROJ-001</prop>") +
+                                T("Druk op de knop.", "Push the button.", " changedate=\"20230101T000000Z\"") +
+                                T("Druk op de knop.", "Hit the button.") +
+                                T("Druk op de knop.", "Press the <bpt i=\"1\">&lt;b&gt;</bpt>button<ept i=\"1\">&lt;/b&gt;</ept>.", " creationdate=\"20190101T000000Z\"")));
+            var m = Top(lib, "Druk op de knop.");
+            A.Eq("Push the button.", Target(m), "the newest is the match");
+            var t = lib.Translations(m, "nl", "en", 0);
+            A.Eq(m.Candidate.Older, t.Total, "as many as the match says are hidden");
+            A.Eq("Press the button.|Hit the button.", string.Join("|", Others(lib, m)), "newest first, undated last, the match left out, a formatting variant counted once");
+            A.Eq("PROJ-001", string.Join("|", t.Items[0].Fields.Where(x => x.Field == "Project").Select(x => x.Value)), "with its own fields");
+            A.Eq(D(2020), t.Items[0].Created, "and dates: the best unit of that translation (2020, not the 2019 one with tags)");
+            A.Eq("Druk op de knop.", Target(Top(lib, "Press the button.", "en", "nl")), "the reverse direction is untouched");
+            A.Eq(0, lib.Translations(Top(lib, "Press the button.", "en", "nl"), "en", "nl", 0).Total, "and has no other translation");
+        }
+
+        public static void TheOtherTranslationsOfAFuzzyMatchAreThoseOfItsStoredSource()
+        {
+            var lib = Lib();
+            Import(lib, TmxFile(T("De pomp wordt gestart als de druk daalt.", "The pump is started when the pressure drops.", " creationdate=\"20240101T000000Z\"") +
+                                T("De pomp wordt gestart als de druk daalt.", "The pump starts when the pressure falls.", " creationdate=\"20190101T000000Z\"")));
+            var m = Find(lib, "De pomp wordt gestart als de druk stijgt.").First();
+            A.True(m.Score < 100, "a fuzzy match: " + m.Score);
+            A.Eq("The pump starts when the pressure falls.", string.Join("|", Others(lib, m)), "the stored source's other translation");
+        }
+
+        public static void TheProjectsVariantComesFirstAmongTheOthersToo()
+        {
+            var lib = Lib();
+            Import(lib, TmxFile(T("De kleur van het scherm.", "The colour of the screen.", " creationdate=\"20200101T000000Z\"", "", "en-GB") +
+                                T("De kleur van het scherm.", "The color of the display.", " creationdate=\"20240101T000000Z\"", "", "en-US") +
+                                T("De kleur van het scherm.", "The colour of the display.", " creationdate=\"20210101T000000Z\"", "", "en-GB")));
+            var m = Top(lib, "De kleur van het scherm.", culture: "en-GB");
+            A.Eq("The colour of the display.", Target(m), "en-GB project: the newest en-GB one");
+            A.Eq("The colour of the screen.|The color of the display.", string.Join("|", Others(lib, m, culture: "en-GB")), "the other en-GB one before the newer en-US one");
+        }
+
+        public static void NoOtherTranslationsAndNoEverTmGiveAnEmptyPage()
+        {
+            var lib = Lib();
+            A.Eq(0, lib.Translations(null, "nl", "en", 0).Total, "no match");
+            A.Eq(0, lib.Translations(new VaultMatch { Candidate = new VaultCandidate { SourceRaw = "Iets." } }, "nl", "en", 0).Total, "an empty EverTM");
+            Import(lib, TmxFile(T("Alleen.", "Alone.")));
+            var m = Top(lib, "Alleen.");
+            A.Eq(0, lib.Translations(m, "nl", "en", 0).Items.Count, "one translation: no others");
+            A.Eq(0, lib.Translations(m, "nl", "en", 7).Items.Count, "a page past the end: empty");
+        }
+
+        public static void AnOtherTranslationIsOfferedWithItsTagsPlacedAndNumbersPutRight()
+        {
+            var lib = Lib();
+            Import(lib, TmxFile(T("Druk op Start.", "Press Start.", " creationdate=\"20250101T000000Z\"") +
+                                T("Druk op <bpt i=\"1\">&lt;b&gt;</bpt>Start<ept i=\"1\">&lt;/b&gt;</ept>.", "Click <bpt i=\"1\">&lt;b&gt;</bpt>Start<ept i=\"1\">&lt;/b&gt;</ept>.", " creationdate=\"20210101T000000Z\"") +
+                                T("Stap 2 is klaar.", "Step 2 is done.", " creationdate=\"20250101T000000Z\"") +
+                                T("Stap 2 is klaar.", "Step 2 is finished.", " creationdate=\"20200101T000000Z\"")));
+            var doc = new List<VaultPiece>
+            {
+                new VaultPiece { Text = "Druk op " }, new VaultPiece { Kind = VaultTagKind.Open, Name = "doc", Key = "d1" },
+                new VaultPiece { Text = "Start" }, new VaultPiece { Kind = VaultTagKind.Close, Name = "doc", Key = "d1" }, new VaultPiece { Text = "." },
+            };
+            lib.Refresh();
+            var m = lib.Lookup(doc, "nl", "en", 50, 10, "en-GB")[0];
+            var other = lib.Translations(m, "nl", "en", 0).Items.Single();
+            var o = VaultLookup.Offer(doc, m, other);
+            A.Eq("Click Start.", Target(o), "the other translation");
+            A.True(o.Tags != VaultTagOutcome.Unmapped, "its bold placed on the document's: " + o.Tags);
+            A.Eq(2, o.TargetDocTag.Count(i => i >= 0), "both tags");
+            A.Eq(m.Score, o.Score, "the match's score");
+
+            var fuzzyDoc = LibraryTests.Doc("Stap 5 is klaar.");
+            var f = lib.Lookup(fuzzyDoc, "nl", "en", 50, 10)[0];
+            A.Eq("Step 5 is done.", Target(f), "the match has its number put right");
+            var fo = VaultLookup.Offer(fuzzyDoc, f, lib.Translations(f, "nl", "en", 0).Items.Single());
+            A.Eq("Step 5 is finished.", Target(fo), "and so does the other translation");
+            A.Eq(1, fo.NumbersReplaced, "one number");
+            A.Eq(null, VaultLookup.Offer(null, f, other), "no document: nothing");
+        }
+
+        /// <summary>"Figure 1" with 5,000 translations: paged, 50 at a time, each page quick.</summary>
+        public static void ALargeGroupsOtherTranslationsComeAPageAtATime()
+        {
+            var lib = Lib();
+            const int n = 5000;
+            lib.Import((store, p, c) =>
+            {
+                using (var w = new VaultStore.Writer(store))
+                {
+                    for (int i = 0; i < n; i++)
+                        w.Add("nl-NL", "Figuur 1", "en-GB", "Figure 1 (version " + i + ")", "x", null, new VaultUnitInfo { Created = D(2000).AddDays(i) });
+                    w.Commit();
+                    return w.Result;
+                }
+            }, null, CancellationToken.None);
+            var m = Top(lib, "Figuur 1");
+            A.Eq("Figure 1 (version 4999)", Target(m), "the newest is the match");
+            var first = lib.Translations(m, "nl", "en", 0);
+            A.Eq(n - 1, first.Total, "all the others");
+            A.Eq(VaultLibrary.TranslationsPageSize, first.Items.Count, "one page");
+            A.Eq("Figure 1 (version 4998)", VaultMarkup.Plain(first.Items[0].TargetRaw), "newest first");
+            A.Eq("Figure 1 (version 4949)", VaultMarkup.Plain(first.Items[49].TargetRaw), "to the 50th");
+            A.Eq("Figure 1 (version 4948)", Others(lib, m, 1)[0], "page 2 goes on from there");
+            var last = lib.Translations(m, "nl", "en", (n - 1) / VaultLibrary.TranslationsPageSize);
+            A.Eq((n - 1) % VaultLibrary.TranslationsPageSize, last.Items.Count, "the last page holds the rest");
+            A.Eq("Figure 1 (version 0)", VaultMarkup.Plain(last.Items[last.Items.Count - 1].TargetRaw), "ending with the oldest");
+            var sw = Stopwatch.StartNew();
+            for (int i = 0; i < 20; i++) lib.Translations(m, "nl", "en", i);
+            double ms = sw.Elapsed.TotalMilliseconds / 20;
+            Console.WriteLine($"      (a page of {VaultLibrary.TranslationsPageSize} from a group of {n:N0}: {ms:N1} ms)");
+            A.True(ms < 100, "under 100 ms a page: " + ms);
+        }
+
         /// <summary>A sentence with thousands of translations ("Figure 1" at 10M units): the exact lookup reads the group from doc values only.</summary>
         public static void ALargeGroupIsDecidedQuickly()
         {

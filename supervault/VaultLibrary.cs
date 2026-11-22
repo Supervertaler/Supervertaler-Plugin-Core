@@ -1055,6 +1055,24 @@ namespace Supervertaler.Core.SuperVault
             return VaultLookup.Search(Current, document, sourceLang, targetLang, minScore, maxResults, recent, targetCulture);
         }
 
+        /// <summary>A page of <see cref="Translations"/>: small enough that a page never reads much from disk (about 18 ms).</summary>
+        public const int TranslationsPageSize = 50;
+
+        /// <summary>
+        /// The other translations of a match's stored source ("Older translations" in a CAT tool's pane): every distinct
+        /// translation in this direction except the match's own, best first, <see cref="TranslationsPageSize"/> at a
+        /// time (<paramref name="page"/> 0 is the first). For a match a user selected, on a background thread; never
+        /// for every segment. Units confirmed in the last minute and not yet indexed aren't listed. Never throws for an
+        /// empty or missing EverTM: an empty page.
+        /// </summary>
+        public VaultTranslations Translations(VaultMatch match, string sourceLang, string targetLang, int page, string targetCulture = null)
+        {
+            var index = Current;
+            var c = match?.Candidate;
+            if (index == null || c == null || string.IsNullOrEmpty(c.SourceRaw)) return new VaultTranslations();
+            return index.Translations(c.SourceRaw, sourceLang, targetLang, targetCulture, c.TargetRaw, Math.Max(0, page) * TranslationsPageSize, TranslationsPageSize);
+        }
+
         /// <summary>
         /// Stores confirmed segments in SuperVault. Returns at once and never throws: the work happens on a background
         /// thread, so a CAT tool's confirm action can never fail or hang because of SuperVault.

@@ -175,6 +175,35 @@ namespace Supervertaler.Core.SuperVault
             return matches.OrderByDescending(m => m.Score).Take(maxResults).ToList();
         }
 
+        /// <summary>
+        /// Another translation of a match's stored source (<see cref="VaultLibrary.Translations"/>) made ready to insert
+        /// like the match: its tags placed on the document's, a different number put right where the match had one.
+        /// Its source text is the match's, so the score and the differences are the match's own: no new alignment, so a
+        /// page of 50 costs only their tag maps.
+        /// </summary>
+        public static VaultMatch Offer(IList<VaultPiece> document, VaultMatch match, VaultCandidate other)
+        {
+            if (document == null || match == null || other == null) return null;
+            var src = VaultMarkup.Parse(other.SourceRaw);
+            var trg = VaultMarkup.Parse(other.TargetRaw);
+            var map = VaultTagMap.Build(document, src, trg);
+            var m = new VaultMatch
+            {
+                Candidate = other, Score = match.Score, Diff = match.Diff, Tags = map.Outcome, TagReason = map.Reason,
+                DocumentTokens = match.DocumentTokens,
+            };
+            Place(document, src, map.Source, out m.Source, out m.SourceDocTag);
+            Place(document, trg, map.Target, out m.Target, out m.TargetDocTag);
+            m.SourceTokens = VaultDiff.Tokenize(m.Source);
+            var plan = match.Candidate != null && match.Candidate.Exact ? null : VaultNumbers.Make(document, m.Source, m.Target);
+            if (plan != null)
+            {
+                m.Target = VaultNumbers.Apply(plan, m.Target);
+                m.NumbersReplaced = plan.Swaps.Count;
+            }
+            return m;
+        }
+
         /// <summary>Plain, normalised text of a list of pieces.</summary>
         public static string PlainOf(IList<VaultPiece> pieces)
         {

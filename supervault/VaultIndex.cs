@@ -35,6 +35,15 @@ namespace Supervertaler.Core.SuperVault
         internal bool VariantMatch;
     }
 
+    /// <summary>One page of a source's other translations (<see cref="VaultLibrary.Translations"/>).</summary>
+    public sealed class VaultTranslations
+    {
+        /// <summary>How many other translations there are in all (not just on this page).</summary>
+        public int Total;
+        /// <summary>This page's, best first. Each is its translation's best unit, with that unit's fields and dates.</summary>
+        public List<VaultCandidate> Items = new List<VaultCandidate>();
+    }
+
     /// <summary>A unit's metadata as the store gives it to the index (<see cref="VaultStore.IndexColumns"/>).</summary>
     internal sealed class VaultIndexMeta
     {
@@ -220,6 +229,45 @@ namespace Supervertaler.Core.SuperVault
                     loaded++;
                 }
                 result.AddRange(dv == null ? fuzzy : NewestPerSource(fuzzy));
+                return result;
+            }
+            finally { Release(); }
+        }
+
+        /// <summary>
+        /// Every distinct translation of a stored source text in this direction, best first (the same order newest-wins
+        /// uses: the exact target variant, then the newest date, then the one imported last), leaving out the one whose
+        /// text is <paramref name="shownTargetRaw"/>. One unit per translation: its best one. Only the units of the page
+        /// asked for are read from disk; the group is ordered from doc values (a group of 5,000: about 15 ms).
+        /// </summary>
+        /// <param name="sourceRaw">The stored source of the match (tag codes are ignored).</param>
+        /// <param name="shownTargetRaw">The translation already shown (the match itself); null leaves none out.</param>
+        public VaultTranslations Translations(string sourceRaw, string sourceLang, string targetLang, string targetCulture, string shownTargetRaw, int skip, int take)
+        {
+            var result = new VaultTranslations();
+            var plain = VaultMarkup.Plain(sourceRaw);
+            if (plain.Length == 0 || take <= 0 || !TryAcquire()) return result;
+            try
+            {
+                var dv = Values.For(this, sourceLang, targetLang, targetCulture);
+                if (dv == null) return result;   // a format-2 index has no newest-wins, so nothing was hidden
+                var exact = new BooleanQuery
+                {
+                    { new TermQuery(new Term("h_" + sourceLang, VaultMarkup.Hash(plain))), Occur.MUST },
+                    { new TermQuery(new Term("lp", PairKey(sourceLang, targetLang))), Occur.MUST },
+                };
+                var docs = new AllDocs(MaxGroup);
+                _searcher.Search(exact, docs);
+                long? shown = shownTargetRaw == null ? (long?)null : Hash64(VaultMarkup.Hash(VaultMarkup.Plain(shownTargetRaw)));
+                var best = new Dictionary<long, (int doc, VaultCandidate c)>();
+                foreach (var g in docs.Docs.Select(dv.Read))
+                {
+                    if (g.c.TargetHash == shown) continue;
+                    if (!best.TryGetValue(g.c.TargetHash, out var b) || Ranking.Compare(g.c, b.c) > 0) best[g.c.TargetHash] = g;
+                }
+                result.Total = best.Count;
+                foreach (var g in best.Values.OrderByDescending(g => g.c, Ranking).Skip(Math.Max(0, skip)).Take(take))
+                    result.Items.Add(Load(g.doc, sourceLang, targetLang, true, g.c));
                 return result;
             }
             finally { Release(); }
