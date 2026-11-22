@@ -245,7 +245,19 @@ namespace Supervertaler.Core
                     result.LeftBehind++;
                     continue;
                 }
-                CopyOne(f, Path.Combine(productDir, f.Substring(sharedDir.Length).TrimStart('\\', '/')), result);
+                var rel = f.Substring(sharedDir.Length).TrimStart('\\', '/');
+                if (rel.EndsWith(".svprompt", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Copied under its .md name, the format it would be renamed to
+                    // anyway. Released Workbench (1.9.364 to 1.10.381) renames or
+                    // DELETES every .svprompt anywhere under prompt_library, the
+                    // product folders included; with none there, it touches nothing
+                    // (checked by running those releases' code against a copied
+                    // library). Beside an .md of the same name, the .md is the prompt.
+                    if (File.Exists(Path.ChangeExtension(f, ".md"))) { result.LeftBehind++; continue; }
+                    rel = Path.ChangeExtension(rel, ".md");
+                }
+                CopyOne(f, Path.Combine(productDir, rel), result);
             }
         }
 

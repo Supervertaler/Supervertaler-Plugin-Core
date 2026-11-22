@@ -241,6 +241,29 @@ namespace Supervertaler.Core.Tests
             }
         }
 
+        /// <summary>No .svprompt ever lands in a product folder: released Workbench
+        /// (1.9.364 on) renames every .svprompt under prompt_library, and deletes one
+        /// that has an .md beside it. A legacy file is copied under its .md name; one
+        /// beside an .md of the same name is left, as the .md is the prompt.</summary>
+        public static void Copy_LegacySvprompt_ArrivesAsMd_NoneLeftForOldWorkbench()
+        {
+            using (var s = new Scene())
+            {
+                s.Write(@"Translate\Legacy one.svprompt", null, "old format");
+                s.Write(@"Translate\Both.svprompt", null, "old");
+                s.Write(@"Translate\Both.md", null, "new");
+
+                var r = ProductPromptLibrary.CopyFromShared(s.Shared, s.Trados, "Trados");
+
+                Assert.Equal(@"Translate\Both.md, Translate\Legacy one.md", Join(s.Prompts()), "what arrives");
+                Assert.True(File.ReadAllText(Path.Combine(s.Trados, @"Translate\Legacy one.md")).Contains("old format"), "the legacy prompt's text");
+                Assert.True(File.ReadAllText(Path.Combine(s.Trados, @"Translate\Both.md")).Contains("new"), "the .md wins");
+                Assert.Equal(0, s.ProductFiles().Count(f => f.EndsWith(".svprompt", StringComparison.OrdinalIgnoreCase)), ".svprompt files in the product folder");
+                Assert.True(File.Exists(Path.Combine(s.Shared, @"Translate\Legacy one.svprompt")), "the shared original stays as it was");
+                Assert.True(r.MarkerWritten, "done");
+            }
+        }
+
         /// <summary>Once done, a prompt the user deletes from their own library stays deleted.</summary>
         public static void Resolve_AfterTheMarker_DoesNotCopyAgain()
         {
