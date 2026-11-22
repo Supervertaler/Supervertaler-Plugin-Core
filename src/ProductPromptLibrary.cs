@@ -12,9 +12,21 @@ namespace Supervertaler.Core
     /// <c>prompt_library</c>. The sharing cost more than it gave: twins
     /// ("Define.md" from Workbench beside "Define [Trados].md"), hidden
     /// <c>app:</c> tags, one product renaming files another had stored paths to.
-    /// Michael decided each product gets its own folder inside it:
-    /// <c>prompt_library\Trados</c>, <c>prompt_library\memoQ</c>,
-    /// <c>prompt_library\Workbench</c> (plan: separate-prompt-libraries-plan.md).
+    /// Michael decided each product gets its own folder beside it:
+    /// <c>prompt_library_Trados</c>, <c>prompt_library_memoQ</c>,
+    /// <c>prompt_library_Workbench</c> (plan: separate-prompt-libraries-plan.md).
+    /// Beside, not inside (22 Nov 2026): every released Workbench, memoQ and
+    /// Trados reads <c>prompt_library</c> with all its subfolders, so a folder
+    /// inside it showed them each product's copies as duplicates, ready to be
+    /// "tidied away". No released version reads a sibling folder.
+    ///
+    /// <para>The pre-release builds of 21 Nov put the libraries inside, as
+    /// <c>prompt_library\Trados</c> and <c>prompt_library\memoQ</c>. Such a folder
+    /// (recognised by its marker, never by its name alone) is carried over
+    /// first: every file copied to the new folder, the result checked file by
+    /// file, and only then the old files removed, so nothing is left for an
+    /// old Workbench to show. Until the new folder is complete, the old one
+    /// stays in use. See <see cref="CarryOver"/>.</para>
     ///
     /// <para>The first time a product that has said which it is
     /// (<see cref="SupervertalerPaths.SetProduct"/>) asks for its library, the
@@ -51,9 +63,22 @@ namespace Supervertaler.Core
     /// </summary>
     public static class ProductPromptLibrary
     {
-        /// <summary>The product folders inside <c>prompt_library</c>. The shared
-        /// folder's scan skips them, and the copy never copies one into another.</summary>
+        /// <summary>The products with a library of their own.</summary>
         public static readonly string[] ProductFolders = { "Trados", "memoQ", "Workbench" };
+
+        /// <summary>A product's library is this plus its name, beside <c>prompt_library</c>.</summary>
+        public const string FolderPrefix = "prompt_library_";
+
+        /// <summary>Where <paramref name="product"/>'s library is, for a shared folder:
+        /// <c>...\prompt_library</c> gives <c>...\prompt_library_Trados</c>.</summary>
+        public static string ProductDirFor(string sharedDir, string product) =>
+            Path.Combine(Path.GetDirectoryName(sharedDir.TrimEnd('\\', '/')) ?? "", FolderPrefix + product);
+
+        /// <summary>A pre-release library inside the shared folder: a product's
+        /// name AND our marker. A user's own folder that happens to be called
+        /// "Trados" has no marker, and is an ordinary category.</summary>
+        internal static bool IsLegacyProductFolder(string dir) =>
+            IsProductFolder(Path.GetFileName(dir.TrimEnd('\\', '/'))) && File.Exists(Path.Combine(dir, MarkerFileName));
 
         /// <summary>Written in a product's folder when the copy has finished
         /// without a failure. Its presence is the only state on disk.</summary>
@@ -85,9 +110,14 @@ namespace Supervertaler.Core
             public int LeftBehind;
             public readonly List<string> Failed = new List<string>();
             public bool MarkerWritten;
+            /// <summary>Files carried over from a pre-release library inside prompt_library.</summary>
+            public int CarriedOver;
+            /// <summary>What happened to that old folder, or null when there was none.</summary>
+            public string CarryOverNote;
             public override string ToString() =>
+                (CarryOverNote != null ? $"carried over {CarriedOver} ({CarryOverNote}); " : "") +
                 $"copied {Copied}, already there {AlreadyThere}, left behind {LeftBehind}, failed {Failed.Count}" +
-                (MarkerWritten ? ", done" : ", not done (tried again next session)");
+                (MarkerWritten ? ", done" : (CarryOverNote != null && Copied == 0 && AlreadyThere == 0 ? "" : ", not done (tried again next session)"));
         }
 
         /// <summary>True for a name in <see cref="ProductFolders"/>, ignoring case.</summary>
@@ -99,11 +129,13 @@ namespace Supervertaler.Core
         }
 
         /// <summary>
-        /// The folder <paramref name="product"/> keeps its prompts in, inside
-        /// <paramref name="sharedDir"/>, copying the shared prompts into it the
-        /// first time. When the product's folder cannot be created at all (a
-        /// read-only share), the shared folder is returned, so the user still has
-        /// their prompts rather than none.
+        /// The folder <paramref name="product"/> keeps its prompts in, beside
+        /// <paramref name="sharedDir"/>: first carrying over a pre-release library
+        /// from inside it, then copying the shared prompts in the first time.
+        /// While a carry-over is incomplete, the old folder is returned, so the
+        /// user works on the complete set. When the product's folder cannot be
+        /// created at all (a read-only share), the shared folder is returned, so
+        /// the user still has their prompts rather than none.
         /// </summary>
         internal static string Resolve(string sharedDir, string product)
         {
@@ -112,25 +144,178 @@ namespace Supervertaler.Core
             {
                 if (_settled.TryGetValue(key, out var known)) return known;
 
-                var productDir = Path.Combine(sharedDir, product);
+                var productDir = ProductDirFor(sharedDir, product);
+                var legacy = Path.Combine(sharedDir, product);
+                string use = null;
+                var r = new CopyResult();
                 try
                 {
-                    if (!File.Exists(Path.Combine(productDir, MarkerFileName)))
-                        LastResult = CopyFromShared(sharedDir, productDir, product);
+                    if (IsLegacyProductFolder(legacy) && !CarryOver(legacy, productDir, r))
+                        use = legacy;   // not complete yet: keep working on the old folder
+                    else if (!File.Exists(Path.Combine(productDir, MarkerFileName)))
+                        CopyFromShared(sharedDir, productDir, product, r);
                 }
                 catch (Exception ex)
                 {
-                    // Belt and braces: CopyFromShared catches per file. Whatever
-                    // got through, the library must still open.
-                    var r = new CopyResult();
+                    // Belt and braces: both steps catch per file. Whatever got
+                    // through, the library must still open.
                     r.Failed.Add(ex.GetType().Name + ": " + ex.Message);
-                    LastResult = r;
                 }
+                LastResult = r;
 
-                var use = Directory.Exists(productDir) ? productDir : sharedDir;
+                if (use == null)
+                    use = Directory.Exists(productDir) ? productDir
+                        : IsLegacyProductFolder(legacy) ? legacy : sharedDir;
                 _settled[key] = use;
                 return use;
             }
+        }
+
+        /// <summary>
+        /// Moves a pre-release library (<paramref name="legacy"/>, inside
+        /// prompt_library) to <paramref name="productDir"/>, safely: every file is
+        /// copied (temporary name, then renamed; never over an existing file),
+        /// then every file still in the old folder is checked against the new
+        /// one, byte for byte. Only when every file is there are the old ones
+        /// removed, and only those identical to their new copy. Returns true when
+        /// the new folder is complete. A file that differs (changed in the new
+        /// folder since an earlier, interrupted carry-over) stays in the old
+        /// folder rather than being lost; so does one that cannot be deleted. Both
+        /// are tried again next session. Two programs doing this at once is
+        /// harmless: neither overwrites, and a file the other has already removed
+        /// counts as carried over when its copy is there.
+        /// </summary>
+        internal static bool CarryOver(string legacy, string productDir, CopyResult result)
+        {
+            Directory.CreateDirectory(productDir);
+            ClearStaleTemps(productDir);
+
+            List<string> files;
+            try { files = LegacyFiles(legacy); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                result.Failed.Add(legacy + ": " + ex.Message);
+                result.CarryOverNote = "old folder could not be read; still in use";
+                return false;
+            }
+
+            // Copy. Counted apart from the shared copy's numbers.
+            var scratch = new CopyResult();
+            foreach (var f in files)
+                CopyOne(f, Path.Combine(productDir, f.Substring(legacy.Length).TrimStart('\\', '/')), scratch);
+            result.CarriedOver += scratch.Copied;
+
+            // Check, file by file, what is still in the old folder.
+            var removable = new List<string>();
+            int missing = 0, differ = 0;
+            foreach (var f in files)
+            {
+                if (!File.Exists(f)) continue;   // another program has already moved it
+                var dest = Path.Combine(productDir, f.Substring(legacy.Length).TrimStart('\\', '/'));
+                try
+                {
+                    if (!File.Exists(dest)) missing++;
+                    else if (SameBytes(f, dest)) removable.Add(f);
+                    else differ++;
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    missing++;
+                    scratch.Failed.Add(f + ": " + ex.Message);
+                }
+            }
+            if (missing > 0)
+            {
+                result.Failed.AddRange(scratch.Failed);
+                result.CarryOverNote = missing + " file(s) not copied yet; the old folder stays in use";
+                return false;
+            }
+
+            // The marker goes last, and only when nothing else is left: it is what
+            // marks the folder as ours, so a file that cannot be removed now is
+            // still recognised, and removed, next session.
+            var marker = Path.Combine(legacy, MarkerFileName);
+            int kept = differ;
+            foreach (var f in removable)
+            {
+                if (string.Equals(f, marker, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!TryRemove(f)) kept++;
+            }
+            if (kept == 0 && removable.Exists(f => string.Equals(f, marker, StringComparison.OrdinalIgnoreCase)) && !TryRemove(marker))
+                kept++;
+            foreach (var t in SafeTemps(legacy)) TryDelete(t);
+            RemoveEmptyFolders(legacy);
+
+            result.CarryOverNote = Directory.Exists(legacy)
+                ? "complete; " + kept + " file(s) left in the old folder (" + differ +
+                  " changed since and kept rather than lost), tried again next session"
+                : "complete; old folder removed";
+            return true;
+        }
+
+        private static bool TryRemove(string f)
+        {
+            try
+            {
+                var attrs = File.GetAttributes(f);
+                if ((attrs & FileAttributes.ReadOnly) != 0) File.SetAttributes(f, attrs & ~FileAttributes.ReadOnly);
+                File.Delete(f);
+                return true;
+            }
+            catch (Exception ex) when (ex is FileNotFoundException || ex is DirectoryNotFoundException)
+            {
+                return true;   // another program carrying over at the same moment removed it
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { return false; }
+        }
+
+        private static List<string> LegacyFiles(string legacy)
+        {
+            var list = new List<string>();
+            foreach (var f in Directory.GetFiles(legacy, "*", SearchOption.AllDirectories))
+                if (!f.EndsWith(TempSuffix, StringComparison.OrdinalIgnoreCase)) list.Add(f);
+            return list;
+        }
+
+        private static IEnumerable<string> SafeTemps(string dir)
+        {
+            try { return Directory.GetFiles(dir, "*" + TempSuffix, SearchOption.AllDirectories); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { return new string[0]; }
+        }
+
+        private static bool SameBytes(string a, string b)
+        {
+            if (new FileInfo(a).Length != new FileInfo(b).Length) return false;
+            using (var sa = new FileStream(a, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var sb = new FileStream(b, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                var ba = new byte[65536];
+                var bb = new byte[65536];
+                int na;
+                while ((na = sa.Read(ba, 0, ba.Length)) > 0)
+                {
+                    int nb = 0;
+                    while (nb < na)
+                    {
+                        int n = sb.Read(bb, nb, na - nb);
+                        if (n == 0) return false;
+                        nb += n;
+                    }
+                    for (int i = 0; i < na; i++) if (ba[i] != bb[i]) return false;
+                }
+                return sb.Read(bb, 0, 1) == 0;
+            }
+        }
+
+        /// <summary>Removes empty folders under and including <paramref name="dir"/>, deepest first.</summary>
+        private static void RemoveEmptyFolders(string dir)
+        {
+            try
+            {
+                foreach (var sub in Directory.GetDirectories(dir)) RemoveEmptyFolders(sub);
+                if (Directory.GetFileSystemEntries(dir).Length == 0) Directory.Delete(dir);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
         }
 
         /// <summary>Forgets what was settled this session. Called when the data folder changes.</summary>
@@ -143,9 +328,11 @@ namespace Supervertaler.Core
         /// The copy itself, on explicit folders so it can be tested without
         /// touching the real data folder. See the class summary for the rules.
         /// </summary>
-        public static CopyResult CopyFromShared(string sharedDir, string productDir, string product)
+        public static CopyResult CopyFromShared(string sharedDir, string productDir, string product) =>
+            CopyFromShared(sharedDir, productDir, product, new CopyResult());
+
+        internal static CopyResult CopyFromShared(string sharedDir, string productDir, string product, CopyResult result)
         {
-            var result = new CopyResult();
             Directory.CreateDirectory(productDir);
             ClearStaleTemps(productDir);
 
@@ -198,7 +385,7 @@ namespace Supervertaler.Core
                     var name = Path.GetFileName(sub);
                     if (name.StartsWith(".") || name.StartsWith("_old shared library", StringComparison.OrdinalIgnoreCase))
                         continue;
-                    if (dir == sharedDir && IsProductFolder(name)) continue;
+                    if (dir == sharedDir && IsLegacyProductFolder(sub)) continue;   // a pre-release product library
                     pending.Push(sub);
                 }
             }
@@ -286,6 +473,12 @@ namespace Supervertaler.Core
                     TryDelete(tmp);
                     result.AlreadyThere++;
                 }
+            }
+            catch (Exception ex) when ((ex is FileNotFoundException || ex is DirectoryNotFoundException) && File.Exists(dest))
+            {
+                // Moved by another program carrying over at the same moment.
+                TryDelete(tmp);
+                result.AlreadyThere++;
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
             {

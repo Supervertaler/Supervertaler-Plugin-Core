@@ -12,7 +12,7 @@ namespace Supervertaler.Core
     /// <summary>
     /// Manages the prompt template library: loading, saving, and built-in prompt seeding.
     /// Prompts are stored as .md files (Markdown with YAML frontmatter) in SupervertalerPaths.PromptLibraryDir:
-    /// the product's own folder (prompt_library\Trados) once the host has called SetProduct,
+    /// the product's own folder (prompt_library_Trados, beside the shared one) once the host has called SetProduct,
     /// otherwise the shared prompt_library folder. See ProductPromptLibrary.
     /// </summary>
     public class PromptLibrary
@@ -25,17 +25,19 @@ namespace Supervertaler.Core
         public static string PromptsFolderPath => SupervertalerPaths.PromptLibraryDir;
 
         /// <summary>
-        /// True for a path inside a product's own folder (<c>prompt_library\Trados\...</c>)
-        /// while this process reads the shared folder, i.e. has not called
-        /// <see cref="SupervertalerPaths.SetProduct"/>. Such a process skips them:
-        /// they are another product's prompts, not categories of its own.
+        /// True for a path inside a pre-release product library left inside the
+        /// shared folder (<c>prompt_library\Trados\...</c> with its marker; carried
+        /// over and removed by the product's next start) while this process reads
+        /// the shared folder, i.e. has not called <see cref="SupervertalerPaths.SetProduct"/>.
+        /// Such a process skips it: another product's prompts, not a category. A
+        /// user's own folder of that name, without the marker, is a category.
         /// </summary>
         private static bool InProductFolder(string path, string rootDir)
         {
             if (SupervertalerPaths.Product != null || path.Length <= rootDir.Length) return false;
             var rel = path.Substring(rootDir.Length).TrimStart('\\', '/');
             var cut = rel.IndexOfAny(new[] { '\\', '/' });
-            return cut > 0 && ProductPromptLibrary.IsProductFolder(rel.Substring(0, cut));
+            return cut > 0 && ProductPromptLibrary.IsLegacyProductFolder(Path.Combine(rootDir, rel.Substring(0, cut)));
         }
 
         private List<PromptTemplate> _cache;

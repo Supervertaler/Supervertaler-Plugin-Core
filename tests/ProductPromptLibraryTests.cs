@@ -22,7 +22,7 @@ namespace Supervertaler.Core.Tests
         {
             public readonly string Root = Path.Combine(Path.GetTempPath(), "sv-prompts-" + Guid.NewGuid().ToString("N"));
             public string Shared => Path.Combine(Root, "prompt_library");
-            public string Trados => Path.Combine(Shared, "Trados");
+            public string Trados => Path.Combine(Root, "prompt_library_Trados");
             public string GoFile => Path.Combine(Root, "go");
 
             public Scene() { Directory.CreateDirectory(Shared); }
@@ -263,6 +263,202 @@ namespace Supervertaler.Core.Tests
                 Assert.Equal(0, s.ProductFiles().Count(f => f.EndsWith(".svprompt", StringComparison.OrdinalIgnoreCase)), ".svprompt files in the product folder");
                 Assert.True(File.Exists(Path.Combine(s.Shared, @"Translate\Legacy one.svprompt")), "the shared original stays as it was");
                 Assert.True(r.MarkerWritten, "done");
+            }
+        }
+
+        // ---- Carry-over of a pre-release library inside prompt_library (22 Nov 2026) ----
+
+        /// <summary>A pre-release library as the 21 Nov builds left it: inside
+        /// prompt_library, complete, with its marker and a prompt made in Trados
+        /// since (so not in the shared folder).</summary>
+        private static string Legacy(Scene s, string product = "Trados")
+        {
+            // Built outside and moved in: copying the shared folder into a folder
+            // inside itself would copy the copy.
+            var staging = Path.Combine(s.Root, "staging-" + product);
+            ProductPromptLibrary.CopyFromShared(s.Shared, staging, product);
+            var legacy = Path.Combine(s.Shared, product);
+            Directory.Move(staging, legacy);
+            var made = Path.Combine(legacy, @"Translate\Made in Trados since.md");
+            File.WriteAllText(made, "---\ntype: prompt\n---\n\nmine\n");
+            return legacy;
+        }
+
+        private static string[] FilesUnder(string dir) => Directory.Exists(dir)
+            ? Directory.GetFiles(dir, "*", SearchOption.AllDirectories).Select(f => f.Substring(dir.Length + 1))
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray()
+            : new string[0];
+
+        public static void CarryOver_MovesTheOldFolder_ChecksIt_ThenRemovesIt()
+        {
+            using (var s = new Scene())
+            {
+                Library(s);
+                var legacy = Legacy(s);
+                var oldFiles = FilesUnder(legacy);
+                ProductPromptLibrary.Forget();
+
+                var used = ProductPromptLibrary.Resolve(s.Shared, "Trados");
+                var r = ProductPromptLibrary.LastResult;
+
+                Assert.Equal(s.Trados, used, "the new folder is used");
+                Assert.Equal(Join(oldFiles), Join(FilesUnder(s.Trados)), "every file, marker included, is in the new folder");
+                Assert.True(File.ReadAllText(Path.Combine(s.Trados, @"Translate\Made in Trados since.md")).Contains("mine"), "a prompt made since arrives");
+                Assert.True(!Directory.Exists(legacy), "the old folder is gone, so an old Workbench has nothing to show");
+                Assert.Equal(0, r.Copied, "no second copy from the shared folder: the old folder's marker came along");
+                Assert.True(r.CarryOverNote.Contains("old folder removed"), r.ToString());
+                ProductPromptLibrary.Forget();
+            }
+        }
+
+        /// <summary>Stopped halfway: some files already in the new folder, a stale
+        /// temporary file. The next start finishes and removes the old folder.</summary>
+        public static void CarryOver_InterruptedHalfway_IsFinishedNextTime()
+        {
+            using (var s = new Scene())
+            {
+                Library(s);
+                var legacy = Legacy(s);
+                var half = FilesUnder(legacy).Take(3).ToList();
+                foreach (var f in half)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(s.Trados, f)));
+                    File.Copy(Path.Combine(legacy, f), Path.Combine(s.Trados, f));
+                }
+                var stale = Path.Combine(s.Trados, @"Translate\Client A.md.0badf00d.svcopy.tmp");
+                Directory.CreateDirectory(Path.GetDirectoryName(stale));
+                File.WriteAllText(stale, "half");
+                File.SetCreationTimeUtc(stale, DateTime.UtcNow.AddHours(-1));
+                var all = FilesUnder(legacy);
+                ProductPromptLibrary.Forget();
+
+                Assert.Equal(s.Trados, ProductPromptLibrary.Resolve(s.Shared, "Trados"), "the new folder is used");
+                Assert.Equal(Join(all), Join(FilesUnder(s.Trados)), "complete, without the temporary file");
+                Assert.True(!Directory.Exists(legacy), "old folder removed");
+                ProductPromptLibrary.Forget();
+            }
+        }
+
+        /// <summary>A file in the new folder differs from the old one (changed in
+        /// the new folder after an earlier, interrupted carry-over): the new one is
+        /// kept, the old one is not deleted, everything else is removed.</summary>
+        public static void CarryOver_TargetPartlyThereAndChanged_KeepsBoth_LosesNothing()
+        {
+            using (var s = new Scene())
+            {
+                Library(s);
+                var legacy = Legacy(s);
+                var changed = Path.Combine(s.Trados, @"Translate\Client A.md");
+                Directory.CreateDirectory(Path.GetDirectoryName(changed));
+                File.WriteAllText(changed, "edited in the new folder");
+                ProductPromptLibrary.Forget();
+
+                Assert.Equal(s.Trados, ProductPromptLibrary.Resolve(s.Shared, "Trados"), "the new folder is used");
+                Assert.Equal("edited in the new folder", File.ReadAllText(changed), "the newer edit is kept");
+                Assert.Equal(@".copied-from-shared-library, Translate\Client A.md", Join(FilesUnder(legacy)),
+                             "only the differing old file is left, not deleted, with the marker that keeps the folder recognised");
+                Assert.True(ProductPromptLibrary.LastResult.CarryOverNote.Contains("changed since"), ProductPromptLibrary.LastResult.ToString());
+                ProductPromptLibrary.Forget();
+            }
+        }
+
+        /// <summary>A file Windows will not let us read: nothing is removed, and the
+        /// old folder stays in use, so the user works on the complete set. Next
+        /// time, unlocked, it finishes.</summary>
+        public static void CarryOver_LockedFile_OldFolderStaysInUse_ThenFinishes()
+        {
+            using (var s = new Scene())
+            {
+                Library(s);
+                var legacy = Legacy(s);
+                var before = FilesUnder(legacy);
+                var locked = Path.Combine(legacy, @"Translate\Made in Trados since.md");
+                ProductPromptLibrary.Forget();
+                using (new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    Assert.Equal(legacy, ProductPromptLibrary.Resolve(s.Shared, "Trados"), "the old folder stays in use");
+                    Assert.Equal(Join(before), Join(FilesUnder(legacy)), "nothing removed from it");
+                }
+                ProductPromptLibrary.Forget();
+                Assert.Equal(s.Trados, ProductPromptLibrary.Resolve(s.Shared, "Trados"), "next session: the new folder");
+                Assert.True(!Directory.Exists(legacy), "and the old one removed");
+                Assert.Equal(Join(before), Join(FilesUnder(s.Trados)), "complete");
+                ProductPromptLibrary.Forget();
+            }
+        }
+
+        /// <summary>A file that can be read but not deleted (open elsewhere): the new
+        /// folder is complete and used; that one old file stays until next time.</summary>
+        public static void CarryOver_FileThatCannotBeDeleted_StaysUntilNextTime()
+        {
+            using (var s = new Scene())
+            {
+                Library(s);
+                var legacy = Legacy(s);
+                var open = Path.Combine(legacy, @"Translate\Client A.md");
+                ProductPromptLibrary.Forget();
+                using (new FileStream(open, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    Assert.Equal(s.Trados, ProductPromptLibrary.Resolve(s.Shared, "Trados"), "the new folder is complete and used");
+                    Assert.True(File.Exists(open), "the open file is left");
+                }
+                ProductPromptLibrary.Forget();
+                ProductPromptLibrary.Resolve(s.Shared, "Trados");
+                Assert.True(!Directory.Exists(legacy), "removed next time");
+                ProductPromptLibrary.Forget();
+            }
+        }
+
+        /// <summary>A user's own top-level folder called "Trados", without our marker,
+        /// is an ordinary category: copied as one, never moved or removed.</summary>
+        public static void CarryOver_AUsersOwnTradosFolder_IsLeftAlone()
+        {
+            using (var s = new Scene())
+            {
+                Library(s);
+                s.Write(@"Trados\My notes.md", null);
+                ProductPromptLibrary.Forget();
+
+                ProductPromptLibrary.Resolve(s.Shared, "Trados");
+
+                Assert.True(File.Exists(Path.Combine(s.Shared, @"Trados\My notes.md")), "the user's folder is untouched");
+                Assert.True(File.Exists(Path.Combine(s.Trados, @"Trados\My notes.md")), "and copied as a category");
+                ProductPromptLibrary.Forget();
+            }
+        }
+
+        /// <summary>Trados and memoQ start at the same moment, each twice (two
+        /// Studios, two memoQs): both new folders complete, both old ones gone,
+        /// nothing lost, no temporary files.</summary>
+        public static void CarryOver_TradosAndMemoQAtOnce_EachTwice_LosesNothing()
+        {
+            using (var s = new Scene())
+            {
+                for (int i = 0; i < 120; i++) s.Write($@"Translate\Client {i % 6}\Prompt {i}.md", null, new string('z', 1500 + i));
+                var tLegacy = Legacy(s, "Trados");
+                var mLegacy = Legacy(s, "memoQ");
+                var tFiles = FilesUnder(tLegacy);
+                var mFiles = FilesUnder(mLegacy);
+                var memoQ = Path.Combine(s.Root, "prompt_library_memoQ");
+
+                var results = Program.RunChildren(4,
+                    i => $"--resolve-library \"{s.Shared}\" {(i % 2 == 0 ? "Trados" : "memoQ")} \"{s.GoFile}\"", s.GoFile);
+
+                Assert.Equal(Join(tFiles), Join(FilesUnder(s.Trados)), "Trados complete [" + Join(results) + "]");
+                Assert.Equal(Join(mFiles), Join(FilesUnder(memoQ)), "memoQ complete");
+                // A file one process is still copying cannot be deleted by the other
+                // at that instant (Windows refuses); it stays, with the marker, for
+                // the next start. One more start of each clears both old folders.
+                ProductPromptLibrary.Forget();
+                ProductPromptLibrary.Resolve(s.Shared, "Trados");
+                ProductPromptLibrary.Resolve(s.Shared, "memoQ");
+                ProductPromptLibrary.Forget();
+                Assert.True(!Directory.Exists(tLegacy) && !Directory.Exists(mLegacy), "both old folders gone after the next start [" + Join(results) + "]");
+                Assert.Equal(Join(tFiles), Join(FilesUnder(s.Trados)), "and still complete");
+                foreach (var f in tFiles.Where(f => f.EndsWith(".md")))
+                    Assert.Equal(new FileInfo(Path.Combine(s.Shared, f)).Exists ? new FileInfo(Path.Combine(s.Shared, f)).Length : new FileInfo(Path.Combine(s.Trados, f)).Length,
+                                 new FileInfo(Path.Combine(s.Trados, f)).Length, "whole: " + f);
+                Assert.True(results.All(r => r.StartsWith("used prompt_library_")), "every process ends on a new folder [" + Join(results) + "]");
             }
         }
 

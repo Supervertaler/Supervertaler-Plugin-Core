@@ -61,7 +61,7 @@ namespace Supervertaler.Core
         /// under the shared root - or in the team folder when one is set.
         ///
         /// Shared by every product until 21 Nov 2026; now each product that has
-        /// called <see cref="SetProduct"/> gets its own folder inside it, filled
+        /// called <see cref="SetProduct"/> gets its own folder beside it (prompt_library_Trados), filled
         /// once from the shared one (see <see cref="ProductPromptLibrary"/>).
         /// A plain folder of Markdown is also why a prompt picker can be
         /// written in something other than C# without agreeing a format first.
@@ -79,7 +79,7 @@ namespace Supervertaler.Core
         /// <summary>The shared <c>prompt_library</c> folder itself: what every
         /// product used until each got its own, and what a product that has not
         /// called <see cref="SetProduct"/> still uses. The product folders sit
-        /// inside it.</summary>
+        /// beside it, where no released product looks.</summary>
         public static string SharedPromptLibraryDir => Path.Combine(ContentRoot, "prompt_library");
 
         private static string _product;
@@ -92,7 +92,7 @@ namespace Supervertaler.Core
 
         /// <summary>
         /// Says which product this process is, so <see cref="PromptLibraryDir"/>
-        /// is that product's own folder (<c>prompt_library\Trados</c>) rather than
+        /// is that product's own folder (<c>prompt_library_Trados</c>) rather than
         /// the shared one. Call it once, at startup, before anything reads a
         /// prompt. The name must be one of <see cref="ProductPromptLibrary.ProductFolders"/>.
         /// </summary>

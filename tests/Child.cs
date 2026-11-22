@@ -27,6 +27,7 @@ namespace Supervertaler.Core.Tests
                     case "--keys-loop": return KeysLoop(a[1], a[2], a[3], int.Parse(a[4]));
                     case "--sync-loop": return SyncLoop(a[1], a[2], int.Parse(a[3]));
                     case "--copy-library": return CopyLibrary(a[1], a[2], a[3]);
+                    case "--resolve-library": return ResolveLibrary(a[1], a[2], a[3]);
                     default:
                         Console.WriteLine("unknown mode " + a[0]);
                         return 2;
@@ -46,6 +47,16 @@ namespace Supervertaler.Core.Tests
             WaitFor(goFile);
             var r = ProductPromptLibrary.CopyFromShared(shared, product, "Trados");
             Console.WriteLine("copied " + r.Copied + " failed " + r.Failed.Count);
+            return 0;
+        }
+
+        /// <summary>Resolves a product's library (carry-over, then copy), as a
+        /// Studio or memoQ starting at the same moment would. Prints the folder used.</summary>
+        private static int ResolveLibrary(string shared, string product, string goFile)
+        {
+            WaitFor(goFile);
+            var used = ProductPromptLibrary.Resolve(shared, product);
+            Console.WriteLine("used " + Path.GetFileName(used) + " | " + ProductPromptLibrary.LastResult);
             return 0;
         }
 
