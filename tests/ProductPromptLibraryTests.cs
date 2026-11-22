@@ -106,6 +106,8 @@ namespace Supervertaler.Core.Tests
                 Assert.Equal(4, r.LeftBehind, "left behind: memoQ, Workbench, and two untagged twins");
                 Assert.Equal(0, r.Failed.Count, "failed");
                 Assert.True(r.MarkerWritten && File.Exists(Path.Combine(s.Trados, ProductPromptLibrary.MarkerFileName)), "marker written");
+                var note = File.ReadAllText(Path.Combine(s.Trados, ProductPromptLibrary.MarkerFileName));
+                Assert.True(note.Contains("copied 7,") && !note.Contains("not done"), "the marker's note gives the counts, not a stale status: " + note);
                 Assert.Equal(File.ReadAllText(Path.Combine(s.Shared, @"Translate\Client A.md")),
                              File.ReadAllText(Path.Combine(s.Trados, @"Translate\Client A.md")), "content copied as it was");
             }

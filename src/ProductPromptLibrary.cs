@@ -159,7 +159,10 @@ namespace Supervertaler.Core
             {
                 var marker = Path.Combine(productDir, MarkerFileName);
                 var text = "Prompts copied from the shared library on " + DateTime.UtcNow.ToString("u") +
-                           ": " + result + Environment.NewLine +
+                           // The counts only: the result's own wording ends "not done"
+                           // until the marker exists, which is what is being written.
+                           $": copied {result.Copied}, already there {result.AlreadyThere}, left behind {result.LeftBehind}." +
+                           Environment.NewLine +
                            "Delete this file to copy again; nothing already here is overwritten." + Environment.NewLine;
                 try
                 {
