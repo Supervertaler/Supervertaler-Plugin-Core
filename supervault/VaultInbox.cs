@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Microsoft.Data.Sqlite;
 
 namespace Supervertaler.Core.SuperVault
@@ -44,6 +45,15 @@ namespace Supervertaler.Core.SuperVault
                 // Removing and restoring a translation (schema 4): queued like confirmations, applied after them.
                 VaultStore.Exec(c, "CREATE TABLE IF NOT EXISTS removals (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, pair TEXT NOT NULL, " +
                                    "hash_a TEXT NOT NULL, hash_b TEXT NOT NULL, at INTEGER, by_user TEXT)");
+                // Edits (kinds "edit" and "undo-edit"): the texts and fields, added to an inbox made before them.
+                var removalCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using (var cmd = c.CreateCommand())
+                {
+                    cmd.CommandText = "PRAGMA table_info(removals)";
+                    using (var r = cmd.ExecuteReader()) while (r.Read()) removalCols.Add(r.GetString(1));
+                }
+                foreach (var col in EditColumns)
+                    if (!removalCols.Contains(col)) VaultStore.Exec(c, "ALTER TABLE removals ADD COLUMN " + col + (col == "old_changed" ? " INTEGER" : " TEXT"));
                 return c;
             }
             catch { c.Dispose(); throw; }
@@ -133,7 +143,16 @@ namespace Supervertaler.Core.SuperVault
             public VaultRemovalKey Key;
             public DateTime At;
             public string By;
+            /// <summary>"edit" or "undo-edit" (with <see cref="Edit"/>); null: a removal or restore.</summary>
+            public string EditKind;
+            public VaultTranslationEdit Edit;
         }
+
+        /// <summary>Packed fields; "-" for null (unchanged), "" for none.</summary>
+        static string PackOrNull(List<(string Field, string Value)> fields) => fields == null ? "-" : VaultFields.Pack(fields);
+        static List<(string Field, string Value)> UnpackOrNull(string s) => s == null || s == "-" ? null : VaultFields.Unpack(s);
+
+        static readonly string[] EditColumns = { "e_sl", "e_tl", "e_shown_src", "e_shown_trg", "e_new_src", "e_new_trg", "e_fields", "e_old_fields", "old_changed", "e_old_changed_by" };
 
         public static void AppendRemovals(string path, IList<Removal> removals, int busySeconds)
         {
@@ -144,14 +163,24 @@ namespace Supervertaler.Core.SuperVault
             using (var cmd = c.CreateCommand())
             {
                 cmd.Transaction = tx;
-                cmd.CommandText = "INSERT INTO removals (kind, pair, hash_a, hash_b, at, by_user) VALUES ($k, $p, $a, $b, $t, $u)";
+                cmd.CommandText = "INSERT INTO removals (kind, pair, hash_a, hash_b, at, by_user, " + string.Join(", ", EditColumns) + ") VALUES ($k, $p, $a, $b, $t, $u, " +
+                                  string.Join(", ", EditColumns.Select(x => "$" + x)) + ")";
                 var k = cmd.Parameters.Add("$k", SqliteType.Text); var p = cmd.Parameters.Add("$p", SqliteType.Text);
                 var a = cmd.Parameters.Add("$a", SqliteType.Text); var b = cmd.Parameters.Add("$b", SqliteType.Text);
                 var t = cmd.Parameters.Add("$t", SqliteType.Integer); var u = cmd.Parameters.Add("$u", SqliteType.Text);
+                var ep = EditColumns.ToDictionary(x => x, x => cmd.Parameters.Add("$" + x, x == "old_changed" ? SqliteType.Integer : SqliteType.Text));
                 foreach (var r in removals)
                 {
-                    k.Value = r.Restore ? "restore" : "remove"; p.Value = r.Key.Pair; a.Value = r.Key.HashA; b.Value = r.Key.HashB;
+                    k.Value = r.EditKind ?? (r.Restore ? "restore" : "remove"); p.Value = r.Key.Pair; a.Value = r.Key.HashA; b.Value = r.Key.HashB;
                     t.Value = VaultFields.ToSeconds(r.At); u.Value = (object)r.By ?? DBNull.Value;
+                    var e = r.Edit;
+                    ep["e_sl"].Value = (object)e?.SourceLang ?? DBNull.Value; ep["e_tl"].Value = (object)e?.TargetLang ?? DBNull.Value;
+                    ep["e_shown_src"].Value = (object)e?.ShownSource ?? DBNull.Value; ep["e_shown_trg"].Value = (object)e?.ShownTarget ?? DBNull.Value;
+                    ep["e_new_src"].Value = (object)e?.NewSource ?? DBNull.Value; ep["e_new_trg"].Value = (object)e?.NewTarget ?? DBNull.Value;
+                    ep["e_fields"].Value = e == null ? (object)DBNull.Value : PackOrNull(e.Fields);
+                    ep["e_old_fields"].Value = e == null ? (object)DBNull.Value : PackOrNull(e.OldFields);
+                    ep["old_changed"].Value = e?.OldChanged == null ? (object)DBNull.Value : VaultFields.ToSeconds(e.OldChanged.Value);
+                    ep["e_old_changed_by"].Value = (object)e?.OldChangedBy ?? DBNull.Value;
                     cmd.ExecuteNonQuery();
                 }
                 tx.Commit();
@@ -166,7 +195,7 @@ namespace Supervertaler.Core.SuperVault
             using (var c = Open(path, busySeconds))
             using (var cmd = c.CreateCommand())
             {
-                cmd.CommandText = "SELECT id, kind, pair, hash_a, hash_b, at, by_user FROM removals ORDER BY id LIMIT 1000";
+                cmd.CommandText = "SELECT id, kind, pair, hash_a, hash_b, at, by_user, " + string.Join(", ", EditColumns) + " FROM removals ORDER BY id LIMIT 1000";
                 using (var r = cmd.ExecuteReader())
                     while (r.Read())
                     {
@@ -177,6 +206,14 @@ namespace Supervertaler.Core.SuperVault
                             Key = new VaultRemovalKey(pair[0], r.GetString(3), pair.Length > 1 ? pair[1] : "", r.GetString(4)),
                             At = r.IsDBNull(5) ? DateTime.UtcNow : VaultFields.FromSeconds(r.GetInt64(5)),
                             By = Text(r, 6),
+                            EditKind = r.GetString(1) == "edit" || r.GetString(1) == "undo-edit" ? r.GetString(1) : null,
+                            Edit = r.GetString(1) == "edit" || r.GetString(1) == "undo-edit" ? new VaultTranslationEdit
+                            {
+                                SourceLang = Text(r, 7), TargetLang = Text(r, 8), ShownSource = Text(r, 9), ShownTarget = Text(r, 10),
+                                NewSource = Text(r, 11), NewTarget = Text(r, 12), Fields = UnpackOrNull(Text(r, 13)),
+                                OldFields = UnpackOrNull(Text(r, 14)) ?? new List<(string, string)>(),
+                                OldChanged = r.IsDBNull(15) ? (DateTime?)null : VaultFields.FromSeconds(r.GetInt64(15)), OldChangedBy = Text(r, 16),
+                            } : null,
                         });
                     }
             }

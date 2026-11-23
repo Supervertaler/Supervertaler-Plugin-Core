@@ -1139,6 +1139,51 @@ namespace Supervertaler.Core.SuperVault
             _wake.Set();
         }
 
+        /// <summary>
+        /// Edits a translation (the EverTM Matches pane's "Edit in EverTM..."): <paramref name="edit"/> gives the shown
+        /// texts, the new ones and the fields. A text edit replaces every stored unit of the old translation with one unit
+        /// of the new text and marks the old text removed ("edited"); a fields-only edit changes the fields only. Applied
+        /// in the background in one transaction (all or nothing), like a removal; this process stops offering the old
+        /// text at once. Returns the edit, for Undo (<see cref="UndoEdit"/>); null when there is nothing to do. Never
+        /// throws.
+        /// </summary>
+        public VaultTranslationEdit Edit(VaultTranslationEdit edit, string user)
+        {
+            try
+            {
+                if (edit == null || string.IsNullOrEmpty(edit.SourceLang) || string.IsNullOrEmpty(edit.TargetLang) || edit.SourceLang == edit.TargetLang) return null;
+                if (VaultMarkup.Plain(edit.NewSource ?? "").Length == 0 || VaultMarkup.Plain(edit.NewTarget ?? "").Length == 0) return null;
+                if (!edit.TextChanged && edit.Fields == null) return null;
+                lock (_learnGate)
+                {
+                    if (edit.TextChanged) { if (_hidden.Count < 10000) _hidden.Add(edit.OldKey); _hidden.Remove(edit.NewKey); }
+                    _removing.Add(new VaultInbox.Removal { Key = edit.OldKey, At = DateTime.UtcNow, By = user, EditKind = "edit", Edit = edit });
+                    EnsureLearnerLocked();
+                }
+                _wake.Set();
+                return edit;
+            }
+            catch (Exception ex) { TryLog("Could not queue an edit: " + ex); return null; }
+        }
+
+        /// <summary>Undoes <see cref="Edit"/>: the old translation comes back exactly, and a unit the edit added goes.
+        /// Returns at once and never throws.</summary>
+        public void UndoEdit(VaultTranslationEdit edit, string user)
+        {
+            try
+            {
+                if (edit == null) return;
+                lock (_learnGate)
+                {
+                    _hidden.Remove(edit.OldKey);
+                    _removing.Add(new VaultInbox.Removal { Key = edit.OldKey, At = DateTime.UtcNow, By = user, EditKind = "undo-edit", Edit = edit });
+                    EnsureLearnerLocked();
+                }
+                _wake.Set();
+            }
+            catch (Exception ex) { TryLog("Could not queue an undo: " + ex); }
+        }
+
         /// <summary>The translations the user removed, newest first, a page (0 is the first) of <see cref="TranslationsPageSize"/>.
         /// Opens the store: for the EverTM window, off the UI thread.</summary>
         public List<VaultRemoved> Removed(int page, out int total) =>
@@ -1364,21 +1409,28 @@ namespace Supervertaler.Core.SuperVault
                 foreach (var r in VaultInbox.ReadRemovals(InboxPath, InboxBusySeconds))
                 {
                     List<long> ids = null;
-                    if (!r.Restore)
+                    // A removal, an edit and a fields-only undo find their units in the index; a restore and a text
+                    // undo find theirs in the store (the copies kept with the mark).
+                    bool needsIndex = r.EditKind == "edit" || (r.EditKind == null && !r.Restore) || (r.EditKind == "undo-edit" && !r.Edit.TextChanged);
+                    if (needsIndex)
                     {
                         var index = UpToDateIndex();
-                        if (index == null) throw new InvalidOperationException("a removal waits until EverTM's index is up to date (Rebuild index, if it is damaged)");
+                        if (index == null) throw new InvalidOperationException("a removal or edit waits until EverTM's index is up to date (Rebuild index, if it is damaged)");
                         ids = index.UnitsOf(r.Key);
                     }
                     int n;
+                    string what;
                     using (var w = new VaultStore.Writer(StorePath, StoreBusySeconds))
                     {
-                        n = r.Restore ? w.Restore(r.Key) : w.Remove(r.Key, ids, r.At, r.By);
+                        if (r.EditKind == "edit") { n = w.Edit(r.Edit, ids, r.At, r.By).Units; what = r.Edit.TextChanged ? "Edited a translation (old text removed)" : "Edited a translation's fields"; }
+                        else if (r.EditKind == "undo-edit") { n = w.UndoEdit(r.Edit, ids); what = "Undid an edit"; }
+                        else if (r.Restore) { n = w.Restore(r.Key); what = "Restored a removed translation"; }
+                        else { n = w.Remove(r.Key, ids, r.At, r.By); what = "Removed a translation"; }
                         FailPoint?.Invoke("removal-commit");
                         w.Commit();
                     }
                     VaultInbox.DeleteRemoval(InboxPath, r.Id, InboxBusySeconds);
-                    TryLog((r.Restore ? "Restored a removed translation: " : "Removed a translation: ") + Units(n, CultureInfo.InvariantCulture) + ".");
+                    TryLog(what + ": " + Units(n, CultureInfo.InvariantCulture) + ".");
                     SyncIndexLocked(null, CancellationToken.None, rebuildIfLarge: false);
                     applied = true;
                 }

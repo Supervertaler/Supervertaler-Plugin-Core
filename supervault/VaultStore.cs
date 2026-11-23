@@ -192,10 +192,13 @@ namespace Supervertaler.Core.SuperVault
     ///                  so a re-import never brings it back, and nothing that reads units has to know about marks.
     ///   removed_units  the units that were deleted for a mark, exactly as they were (texts, variant, origin, dates,
     ///                  users, fields), so a removal can be undone or restored.
+    ///
+    /// Schema 5 (editing a translation) adds two columns to <c>removed</c>: <c>reason</c> ("edited" when the text was
+    /// replaced by an edit, else NULL) and <c>replaced_by</c> (the unit the edit added, for Undo).
     /// </summary>
     public static class VaultStore
     {
-        public const int Schema = 4;
+        public const int Schema = 5;
 
         /// <summary>
         /// Set by <see cref="VaultLibrary.Import"/> for the length of one import, on its thread: the most units the store
@@ -251,6 +254,10 @@ namespace Supervertaler.Core.SuperVault
                 Exec(c, "CREATE TABLE IF NOT EXISTS removed_units (removal_id INTEGER NOT NULL, lang_a TEXT, text_a TEXT, lang_b TEXT, text_b TEXT, " +
                         "variant TEXT, origin TEXT, added TEXT, created INTEGER, changed INTEGER, created_by TEXT, changed_by TEXT, date_from TEXT, fields TEXT)");
                 Exec(c, "CREATE INDEX IF NOT EXISTS removed_units_removal ON removed_units (removal_id)");
+                // Schema 5: why a translation was removed, and what an edit put in its place.
+                var removedCols = Columns(c, "removed");
+                if (!removedCols.Contains("reason")) Exec(c, "ALTER TABLE removed ADD COLUMN reason TEXT");
+                if (!removedCols.Contains("replaced_by")) Exec(c, "ALTER TABLE removed ADD COLUMN replaced_by INTEGER");
                 Exec(c, "UPDATE meta SET value = '" + Schema + "' WHERE name = 'schema' AND CAST(value AS INTEGER) < " + Schema);
             }
         }
@@ -415,7 +422,8 @@ namespace Supervertaler.Core.SuperVault
                                   "(SELECT count(*) FROM removed_units WHERE removal_id = m.id), " +
                                   "(SELECT text_a FROM removed_units WHERE removal_id = m.id ORDER BY rowid LIMIT 1), " +
                                   "(SELECT text_b FROM removed_units WHERE removal_id = m.id ORDER BY rowid LIMIT 1), " +
-                                  "(SELECT variant FROM removed_units WHERE removal_id = m.id ORDER BY rowid LIMIT 1) " +
+                                  "(SELECT variant FROM removed_units WHERE removal_id = m.id ORDER BY rowid LIMIT 1), " +
+                                  (HasColumn(c, "removed", "reason") ? "m.reason " : "NULL ") +
                                   "FROM removed m ORDER BY m.removed_at DESC, m.id DESC LIMIT $take OFFSET $skip";
                 cmd.Parameters.AddWithValue("$take", Math.Max(0, take));
                 cmd.Parameters.AddWithValue("$skip", Math.Max(0, skip));
@@ -432,11 +440,14 @@ namespace Supervertaler.Core.SuperVault
                             TextA = r.IsDBNull(6) ? "" : r.GetString(6),
                             TextB = r.IsDBNull(7) ? "" : r.GetString(7),
                             Variant = r.IsDBNull(8) ? "" : r.GetString(8),
+                            Edited = !r.IsDBNull(9) && r.GetString(9) == "edited",
                         });
                     }
             }
             return list;
         }
+
+        static bool HasColumn(SqliteConnection c, string table, string column) => Columns(c, table).Contains(column);
 
         /// <summary>Goes up by one with every import that added something; the index records the version it was built from.</summary>
         public static long Version(string path)
@@ -806,14 +817,16 @@ namespace Supervertaler.Core.SuperVault
             /// confirmation loses its learned row too, so a later correction of its source is learned afresh. Ids no
             /// longer in the store are ignored. Returns the number of units removed. Part of this writer's transaction.
             /// </summary>
-            public int Remove(VaultRemovalKey key, IEnumerable<long> unitIds, DateTime removedAt, string removedBy)
+            /// <param name="reason">"edited" when an edit replaces the translation (shown in the Removed translations list); null for a removal.</param>
+            public int Remove(VaultRemovalKey key, IEnumerable<long> unitIds, DateTime removedAt, string removedBy, string reason = null)
             {
                 if (key == null) return 0;
                 using (var cmd = _c.CreateCommand())
                 {
                     cmd.Transaction = _tx;
-                    cmd.CommandText = "INSERT INTO removed (pair, hash_a, hash_b, removed_at, removed_by) VALUES ($p, $a, $b, $t, $u) " +
-                                      "ON CONFLICT (pair, hash_a, hash_b) DO UPDATE SET removed_at = excluded.removed_at, removed_by = excluded.removed_by";
+                    cmd.CommandText = "INSERT INTO removed (pair, hash_a, hash_b, removed_at, removed_by, reason, replaced_by) VALUES ($p, $a, $b, $t, $u, $r, NULL) " +
+                                      "ON CONFLICT (pair, hash_a, hash_b) DO UPDATE SET removed_at = excluded.removed_at, removed_by = excluded.removed_by, reason = excluded.reason, replaced_by = NULL";
+                    cmd.Parameters.AddWithValue("$r", (object)reason ?? DBNull.Value);
                     cmd.Parameters.AddWithValue("$p", key.Pair); cmd.Parameters.AddWithValue("$a", key.HashA); cmd.Parameters.AddWithValue("$b", key.HashB);
                     cmd.Parameters.AddWithValue("$t", VaultFields.ToSeconds(removedAt));
                     cmd.Parameters.AddWithValue("$u", string.IsNullOrWhiteSpace(removedBy) ? (object)DBNull.Value : VaultFields.Clean(removedBy));
@@ -849,6 +862,230 @@ namespace Supervertaler.Core.SuperVault
                 }
                 _changed = true;
                 return n;
+            }
+
+            // ---- editing a translation ----
+
+            /// <summary>The fields an edit may change. Source (where a unit came from) and the dates and users are EverTM's own record.</summary>
+            public static readonly string[] EditableFields = { VaultFields.Project, VaultFields.Client, VaultFields.EndClient, VaultFields.Subject, VaultFields.Document, VaultFields.Note };
+
+            /// <summary>
+            /// Applies an edit (docs: evertm-edit-plan.md), in this writer's one transaction, so it either happens whole or
+            /// not at all: a failure before Commit leaves the old translation exactly as it was.
+            ///
+            /// Text unchanged (as plain text): only the fields of <paramref name="oldUnitIds"/> are replaced, and they are
+            /// "changed now, by" the editor. No mark.
+            ///
+            /// Text changed: the old units are removed with a mark (reason "edited"; restorable, and re-imports skip the old
+            /// text), a mark on the new text is cleared (an edit is deliberate), and ONE unit is added with the new text: in
+            /// the variant of the unit that was shown, created as the old one was, changed now by the editor (so it is the
+            /// newest translation of its sentence), with the edited fields and the old Source values. A unit learned from a
+            /// confirmation hands its learned row to the new unit when the source is the same, so a later correction in the
+            /// editor still updates it. If the new text is already a unit, the edit merges into it (no second copy).
+            /// </summary>
+            public VaultEditOutcome Edit(VaultTranslationEdit e, IList<long> oldUnitIds, DateTime at, string by)
+            {
+                var outcome = new VaultEditOutcome();
+                if (e == null || oldUnitIds == null) return outcome;
+                if (!e.TextChanged)
+                {
+                    outcome.Units = EditFields(oldUnitIds, e.Fields, at, by);
+                    return outcome;
+                }
+                // The shown unit's record: the first old unit with exactly the shown texts, else the first.
+                var shown = ReadUnit(oldUnitIds, e.ShownSource, e.ShownTarget);
+                var learnedKeys = new List<string>();
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "SELECT src_key FROM learned WHERE unit_id = $id";
+                    var p = cmd.Parameters.Add("$id", SqliteType.Integer);
+                    foreach (var id in oldUnitIds) { p.Value = id; using (var r = cmd.ExecuteReader()) while (r.Read()) learnedKeys.Add(r.GetString(0)); }
+                }
+                outcome.Units = Remove(e.OldKey, oldUnitIds, at, by, "edited");
+                if (Marked(e.SourceLang, e.NewSource, e.TargetLang, e.NewTarget)) ForgetMark(e.NewKey);
+
+                var info = new VaultUnitInfo { Created = shown?.Created ?? at, CreatedBy = shown?.CreatedBy, Changed = at, ChangedBy = string.IsNullOrWhiteSpace(by) ? null : by };
+                foreach (var f in (shown?.Fields ?? new List<(string, string)>()).Where(f => f.Item1 == VaultFields.Source)) info.Add(f.Item1, f.Item2);
+                foreach (var f in e.Fields ?? (shown?.Fields ?? new List<(string, string)>()).Where(x => x.Item1 != VaultFields.Source).ToList()) info.Add(f.Item1, f.Item2);
+                var (sc, tc) = Cultures(shown?.Variant, e.SourceLang, e.TargetLang);
+                var added = Add(sc, e.NewSource, tc, e.NewTarget, shown?.Origin, shown?.Added, info);
+                long? newId = added == VaultAddOutcome.Added ? LastId() : UnitIdOf(e.SourceLang, e.NewSource, e.TargetLang, e.NewTarget);
+                if (newId != null)
+                {
+                    if (added == VaultAddOutcome.Duplicate && e.Fields != null) ReplaceFields(newId.Value, e.Fields);
+                    // The learned row moves to the new unit when it is for the same source (in its direction).
+                    var sameSource = new HashSet<string>(StringComparer.Ordinal)
+                    {
+                        VaultMarkup.Hash(e.SourceLang + ">" + e.TargetLang + "|" + Shape(e.NewSource)),
+                        VaultMarkup.Hash(e.TargetLang + ">" + e.SourceLang + "|" + Shape(e.NewTarget)),
+                    };
+                    foreach (var k in learnedKeys.Where(sameSource.Contains))
+                        using (var cmd = _c.CreateCommand())
+                        {
+                            cmd.Transaction = _tx;
+                            cmd.CommandText = "INSERT OR REPLACE INTO learned (src_key, unit_id) VALUES ($k, $id)";
+                            cmd.Parameters.AddWithValue("$k", k); cmd.Parameters.AddWithValue("$id", newId.Value);
+                            cmd.ExecuteNonQuery();
+                        }
+                }
+                // Undo takes out only a unit this edit added, never one that was there already.
+                if (added == VaultAddOutcome.Added)
+                    using (var cmd = _c.CreateCommand())
+                    {
+                        cmd.Transaction = _tx;
+                        cmd.CommandText = "UPDATE removed SET replaced_by = $id WHERE id = $m";
+                        cmd.Parameters.AddWithValue("$id", newId.Value); cmd.Parameters.AddWithValue("$m", MarkOf(e.OldKey).Value);
+                        cmd.ExecuteNonQuery();
+                    }
+                outcome.NewUnit = newId;
+                _changed = true;
+                return outcome;
+            }
+
+            /// <summary>
+            /// Undoes an edit: for a text edit, the unit it added goes (no mark) and the old translation comes back exactly
+            /// (<see cref="Restore"/>); for a fields-only edit, the old fields and "changed" date and user come back.
+            /// </summary>
+            public int UndoEdit(VaultTranslationEdit e, IList<long> unitIds)
+            {
+                if (e == null) return 0;
+                if (!e.TextChanged) return EditFields(unitIds ?? new List<long>(), e.OldFields, e.OldChanged, e.OldChangedBy, restoring: true);
+                var mark = MarkOf(e.OldKey);
+                if (mark == null) return 0;   // restored or undone already
+                long? replacedBy = null;
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "SELECT replaced_by FROM removed WHERE id = $m";
+                    cmd.Parameters.AddWithValue("$m", mark.Value);
+                    var v = cmd.ExecuteScalar();
+                    if (v != null && !(v is DBNull)) replacedBy = Convert.ToInt64(v, CultureInfo.InvariantCulture);
+                }
+                if (replacedBy != null)
+                    using (var cmd = _c.CreateCommand())
+                    {
+                        cmd.Transaction = _tx;
+                        cmd.CommandText = "DELETE FROM learned WHERE unit_id = $id; DELETE FROM units WHERE id = $id";
+                        cmd.Parameters.AddWithValue("$id", replacedBy.Value);
+                        cmd.ExecuteNonQuery();
+                    }
+                return Restore(e.OldKey);
+            }
+
+            /// <summary>Replaces the editable fields of these units and stamps them changed. Returns the units changed.</summary>
+            int EditFields(IList<long> ids, IList<(string Field, string Value)> fields, DateTime? changed, string changedBy, bool restoring = false)
+            {
+                int n = 0;
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "UPDATE units SET changed = $c, changed_by = $b, date_from = CASE WHEN $c IS NULL THEN date_from ELSE 'unit' END WHERE id = $id";
+                    var pc = cmd.Parameters.Add("$c", SqliteType.Integer); var pb = cmd.Parameters.Add("$b", SqliteType.Integer); var pid = cmd.Parameters.Add("$id", SqliteType.Integer);
+                    foreach (var id in ids.Distinct())
+                    {
+                        if (fields != null) ReplaceFields(id, fields);
+                        if (changed == null && !restoring) continue;
+                        pc.Value = changed == null ? (object)DBNull.Value : VaultFields.ToSeconds(changed.Value);
+                        pb.Value = string.IsNullOrWhiteSpace(changedBy) ? (object)DBNull.Value : ValId("@user", VaultFields.Clean(changedBy));
+                        pid.Value = id;
+                        n += cmd.ExecuteNonQuery();
+                    }
+                }
+                _changed = true;
+                return n;
+            }
+
+            int EditFields(IList<long> ids, IList<(string Field, string Value)> fields, DateTime at, string by) => EditFields(ids, fields, (DateTime?)at, by);
+
+            /// <summary>The unit's editable fields become exactly <paramref name="fields"/> (each cleaned; at most the usual 20 per field). Source stays.</summary>
+            void ReplaceFields(long id, IList<(string Field, string Value)> fields)
+            {
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "DELETE FROM unit_vals WHERE unit_id = $id AND val_id IN (SELECT id FROM vals WHERE field IN (" +
+                                      string.Join(", ", EditableFields.Select((f, i) => "$f" + i)) + "))";
+                    cmd.Parameters.AddWithValue("$id", id);
+                    for (int i = 0; i < EditableFields.Length; i++) cmd.Parameters.AddWithValue("$f" + i, EditableFields[i]);
+                    cmd.ExecuteNonQuery();
+                }
+                var info = new VaultUnitInfo();
+                foreach (var (f, v) in fields) if (EditableFields.Contains(f)) info.Add(f, v);
+                if (info.Fields.Count > 0) AddValues(id, info);
+            }
+
+            void ForgetMark(VaultRemovalKey key)
+            {
+                var m = MarkOf(key);
+                if (m == null) return;
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "DELETE FROM removed_units WHERE removal_id = $m; DELETE FROM removed WHERE id = $m";
+                    cmd.Parameters.AddWithValue("$m", m.Value);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+
+            long? UnitIdOf(string langX, string rawX, string langY, string rawY)
+            {
+                string a = langX, ta = rawX?.Trim() ?? "", b = langY, tb = rawY?.Trim() ?? "";
+                if (string.CompareOrdinal(a, b) > 0) { (a, b) = (b, a); (ta, tb) = (tb, ta); }
+                return Scalar(ref _findKey, "SELECT id FROM units WHERE key = $p", Key(a, ta, b, tb));
+            }
+
+            sealed class UnitRecord
+            {
+                public DateTime? Created; public string CreatedBy, Origin, Added, Variant;
+                public List<(string, string)> Fields = new List<(string, string)>();
+            }
+
+            /// <summary>One of these units' record: the one whose texts are exactly the shown ones, else the first that exists.</summary>
+            UnitRecord ReadUnit(IList<long> ids, string shownSource, string shownTarget)
+            {
+                UnitRecord first = null;
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "SELECT u.text_a, u.text_b, u.created, (SELECT value FROM vals WHERE id = u.created_by), u.origin, u.added, u.variant, " +
+                                      "(SELECT group_concat(v.field || char(9) || v.value, char(10)) FROM unit_vals uv JOIN vals v ON v.id = uv.val_id WHERE uv.unit_id = u.id) " +
+                                      "FROM units u WHERE u.id = $id";
+                    var p = cmd.Parameters.Add("$id", SqliteType.Integer);
+                    foreach (var id in ids)
+                    {
+                        p.Value = id;
+                        using (var r = cmd.ExecuteReader())
+                        {
+                            if (!r.Read()) continue;
+                            var u = new UnitRecord
+                            {
+                                Created = r.IsDBNull(2) ? (DateTime?)null : VaultFields.FromSeconds(r.GetInt64(2)),
+                                CreatedBy = r.IsDBNull(3) ? null : r.GetString(3), Origin = r.IsDBNull(4) ? null : r.GetString(4),
+                                Added = r.IsDBNull(5) ? null : r.GetString(5), Variant = r.IsDBNull(6) ? "" : r.GetString(6),
+                            };
+                            if (!r.IsDBNull(7)) u.Fields = VaultFields.Unpack(r.GetString(7));
+                            string ta = r.GetString(0), tb = r.GetString(1);
+                            bool exact = (ta == shownSource?.Trim() && tb == shownTarget?.Trim()) || (tb == shownSource?.Trim() && ta == shownTarget?.Trim());
+                            if (exact) return u;
+                            if (first == null) first = u;
+                        }
+                    }
+                }
+                return first;
+            }
+
+            /// <summary>The source and target cultures of a stored variant pair ("nl-BE>en-GB", either way round), by base language; the bare languages when unknown.</summary>
+            static (string source, string target) Cultures(string variant, string sourceLang, string targetLang)
+            {
+                string sc = sourceLang, tc = targetLang;
+                foreach (var part in (variant ?? "").Split('>'))
+                {
+                    if (part.Length == 0) continue;
+                    var b = VaultMarkup.BaseLanguage(part);
+                    if (b == sourceLang) sc = part; else if (b == targetLang) tc = part;
+                }
+                return (sc, tc);
             }
 
             /// <summary>
@@ -1127,5 +1364,37 @@ namespace Supervertaler.Core.SuperVault
         public int Units;
         /// <summary>One removed unit's texts (tag codes included), in <see cref="VaultRemovalKey.LangA"/> and LangB.</summary>
         public string TextA, TextB, Variant;
+        /// <summary>Replaced by an edit, rather than removed.</summary>
+        public bool Edited;
+    }
+
+    /// <summary>
+    /// An edit of a translation, oriented to the lookup that showed it (<see cref="VaultLibrary.Edit"/>): the shown
+    /// texts, the new ones, and the fields. Carries what Undo needs (the old fields, changed date and user).
+    /// </summary>
+    public sealed class VaultTranslationEdit
+    {
+        public string SourceLang, TargetLang;            // base languages, in the lookup's direction
+        public string ShownSource, ShownTarget;          // the unit that was shown, tag codes included
+        public string NewSource, NewTarget;              // edited, tag codes included
+        /// <summary>The editable fields as they should be; null: unchanged.</summary>
+        public List<(string Field, string Value)> Fields;
+        public List<(string Field, string Value)> OldFields = new List<(string, string)>();
+        public DateTime? OldChanged;
+        public string OldChangedBy;
+
+        public VaultRemovalKey OldKey => VaultRemovalKey.For(SourceLang, ShownSource ?? "", TargetLang, ShownTarget ?? "");
+        public VaultRemovalKey NewKey => VaultRemovalKey.For(SourceLang, NewSource ?? "", TargetLang, NewTarget ?? "");
+        /// <summary>The text changed as plain text (a change of spaces at the ends only is no change).</summary>
+        public bool TextChanged => !OldKey.Equals(NewKey);
+    }
+
+    /// <summary>What an edit did.</summary>
+    public sealed class VaultEditOutcome
+    {
+        /// <summary>Old units removed (a text edit) or changed (a fields-only edit).</summary>
+        public int Units;
+        /// <summary>The unit holding the new text, for a text edit.</summary>
+        public long? NewUnit;
     }
 }
