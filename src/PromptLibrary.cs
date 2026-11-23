@@ -491,6 +491,11 @@ namespace Supervertaler.Core
         {
             foreach (var def in GetDefaultPromptDefinitions())
             {
+                // In memoQ's library an untagged "Define.md" (copied from the
+                // shared folder) is memoQ's own prompt: tagging it Trados would
+                // grey it out.
+                if (!BelongsInThisLibrary(def)) continue;
+
                 var folder = string.IsNullOrEmpty(def.Category)
                     ? PromptsDir
                     : Path.Combine(PromptsDir, def.Category.Replace('/', Path.DirectorySeparatorChar));
@@ -664,8 +669,14 @@ namespace Supervertaler.Core
         /// Creates any that are missing (idempotent – safe to call on every startup).
         /// Also removes domain-specific translate prompts shipped in v4.12.x
         /// and replaced by the single Default Translation Prompt in v4.13.0.
+        ///
+        /// <para>In a product's own library (prompt_library_memoQ), built-ins
+        /// tagged for another product are neither written nor kept: see
+        /// <see cref="BelongsInThisLibrary"/> and <see cref="RemoveOtherProductsDefaults"/>.
+        /// Returns the library-relative paths of the files it removed, for the
+        /// host to log; empty almost always.</para>
         /// </summary>
-        public void EnsureDefaultPrompts()
+        public List<string> EnsureDefaultPrompts()
         {
             Directory.CreateDirectory(PromptsDir);
 
@@ -675,6 +686,9 @@ namespace Supervertaler.Core
             // Clean up domain-specific translate prompts removed in v4.13.0
             CleanUpRetiredPrompts();
 
+            // Trados-only built-ins that memoQ 0.1.32 wrote into its own library.
+            var removed = RemoveOtherProductsDefaults();
+
             // Refresh outdated default prompt content (only when still flagged default,
             // never user-cloned/edited copies – those keep their default: false flag).
             RefreshOutdatedDefaultProofreadingPrompt();
@@ -682,6 +696,8 @@ namespace Supervertaler.Core
 
             foreach (var def in GetDefaultPromptDefinitions())
             {
+                if (!BelongsInThisLibrary(def)) continue;
+
                 // def.Category is now e.g. "QuickLauncher/Default"
                 var folder = string.IsNullOrEmpty(def.Category)
                     ? PromptsDir
@@ -836,7 +852,88 @@ namespace Supervertaler.Core
 
             // Invalidate cache so next GetAllPrompts() reloads
             _cache = null;
+            return removed;
         }
+
+        /// <summary>
+        /// True when built-in <paramref name="def"/> belongs in the library this
+        /// process writes. The shared <c>prompt_library</c> (no product set, as in
+        /// a host that has not moved to its own folder) takes every built-in, as
+        /// it always has. A product's own library takes the untagged ones and
+        /// those tagged for that product: memoQ's gets no Trados-only QuickLauncher
+        /// prompts, which memoQ can only show greyed out.
+        /// </summary>
+        private static bool BelongsInThisLibrary(PromptTemplate def)
+        {
+            var product = SupervertalerPaths.Product;
+            if (product == null || string.IsNullOrEmpty(AppTag(def.App))) return true;
+            return string.Equals(def.App.Trim(), product, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// In a product's own library, removes the built-ins tagged for another
+        /// product that an earlier version wrote there (memoQ 0.1.32 wrote ten
+        /// Trados-only QuickLauncher prompts into prompt_library_memoQ).
+        ///
+        /// <para>Only a file still exactly as shipped goes: flagged
+        /// <c>default: true</c>, tagged for that other product, and with the
+        /// built-in's own text, line endings and surrounding blank lines aside.
+        /// Anything a user changed (text, flag, tag) stays. Other frontmatter
+        /// keys (read_only, the QuickLauncher flags) are not compared: products
+        /// add those to built-ins themselves.</para>
+        ///
+        /// <para>No marker: it looks at the known paths of the other products'
+        /// built-ins (ten today), never the whole library, so running it on every
+        /// start costs ten File.Exists, whatever the library's size, and needs no
+        /// state. A file that cannot be read or deleted is left and tried again
+        /// next start.</para>
+        /// </summary>
+        private List<string> RemoveOtherProductsDefaults()
+        {
+            var removed = new List<string>();
+            if (SupervertalerPaths.Product == null) return removed;   // the shared folder keeps everything
+
+            foreach (var def in GetDefaultPromptDefinitions())
+            {
+                if (BelongsInThisLibrary(def)) continue;
+
+                var folder = string.IsNullOrEmpty(def.Category)
+                    ? PromptsDir
+                    : Path.Combine(PromptsDir, def.Category.Replace('/', Path.DirectorySeparatorChar));
+                var path = Path.Combine(folder, SanitizeFileName(def.Name) + AppTag(def.App) + ".md");
+                if (!File.Exists(path)) continue;
+
+                try
+                {
+                    if (!IsUnchangedDefault(ParsePromptFile(path, PromptsDir), def)) continue;
+                    var attrs = File.GetAttributes(path);
+                    if ((attrs & FileAttributes.ReadOnly) != 0) File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+                    File.Delete(path);
+                    removed.Add(GetRelativePath(path, PromptsDir));
+                }
+                catch (Exception)
+                {
+                    // Locked, a read-only share, or unparseable: left, tried again
+                    // next start. Never worth failing the library over.
+                }
+            }
+
+            if (removed.Count > 0) _cache = null;
+            return removed;
+        }
+
+        /// <summary>True when <paramref name="file"/> is built-in <paramref name="def"/>
+        /// as shipped: see <see cref="RemoveOtherProductsDefaults"/>.</summary>
+        internal static bool IsUnchangedDefault(PromptTemplate file, PromptTemplate def)
+        {
+            return file != null
+                && file.IsDefault
+                && string.Equals((file.App ?? "").Trim(), (def.App ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
+                && string.Equals(NormaliseBody(file.Content), NormaliseBody(def.Content), StringComparison.Ordinal);
+        }
+
+        private static string NormaliseBody(string s) =>
+            (s ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Trim();
 
         /// <summary>
         /// Removes domain-specific translate prompts that were shipped in v4.12.x.
@@ -1070,6 +1167,8 @@ namespace Supervertaler.Core
         {
             foreach (var def in GetDefaultPromptDefinitions())
             {
+                if (!BelongsInThisLibrary(def)) continue;
+
                 var folder = string.IsNullOrEmpty(def.Category)
                     ? PromptsDir
                     : Path.Combine(PromptsDir, def.Category.Replace('/', Path.DirectorySeparatorChar));
