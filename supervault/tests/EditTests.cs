@@ -200,6 +200,50 @@ namespace Supervertaler.Core.SuperVault.Tests
             A.Eq("The valve is opening.", Target(Find(lib, "De klep opent.").First()), "the correction is the match");
         }
 
+        /// <summary>
+        /// A confirmation that brings a field value EverTM hasn't seen yet (a new document's first segment) must still
+        /// remember the right unit as learned: "the last inserted row" is then the new value's, not the unit's. Before
+        /// the fix, the learned row pointed at a vals id, and a later correction overwrote whichever unit had that id.
+        /// </summary>
+        public static void ACorrectionAfterANewFieldValueUpdatesTheRightUnit()
+        {
+            var lib = WithTypo();
+            var before = Find(lib, "De klep sluit.").First();
+            lib.Learn(new[] { new VaultLearnUnit { SourceCulture = "nl-NL", Source = "De klep opent.", TargetCulture = "en-GB", Target = "The valve opnes.", Origin = "studio", Document = "brand-new-document.docx", Project = "PROJ-NEW" } });
+            Settle(lib);
+            long learnedId = N(lib, "SELECT unit_id FROM learned");
+            A.Eq(1L, N(lib, "SELECT count(*) FROM units WHERE id = " + learnedId + " AND (text_b = 'The valve opnes.' OR text_a = 'The valve opnes.')"), "the learned row points at the learned unit");
+            lib.Learn(new[] { new VaultLearnUnit { SourceCulture = "nl-NL", Source = "De klep opent.", TargetCulture = "en-GB", Target = "The valve opens.", Origin = "studio", Document = "brand-new-document.docx" } });
+            Settle(lib);
+            A.Eq("The valve opens.", Target(Find(lib, "De klep opent.").First()), "the correction replaced the learned translation");
+            A.Eq("The valve closes.", Target(Find(lib, "De klep sluit.").First()), "and no other unit was touched");
+            A.Eq(before.Candidate.TargetRaw, Find(lib, "De klep sluit.").First().Candidate.TargetRaw, "exactly");
+        }
+
+        /// <summary>Schema 6 drops learned rows that point at the wrong unit (left by the bug above), and keeps the right ones.</summary>
+        public static void TheUpgradeDropsWrongLearnedRows()
+        {
+            var lib = WithTypo();
+            lib.Learn(new[] { new VaultLearnUnit { SourceCulture = "nl-NL", Source = "De klep opent.", TargetCulture = "en-GB", Target = "The valve opens.", Origin = "studio" } });
+            Settle(lib);
+            long good = N(lib, "SELECT unit_id FROM learned");
+            long other = N(lib, "SELECT min(id) FROM units");
+            using (var c = new SqliteConnection("Data Source=" + lib.StorePath + ";Pooling=False"))
+            {
+                c.Open();
+                using (var cmd = c.CreateCommand())
+                {
+                    cmd.CommandText = "INSERT INTO learned (src_key, unit_id) VALUES ('wrong-key', " + other + "), ('gone-key', 999999); UPDATE meta SET value = '5' WHERE name = 'schema'";
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            VaultStore.Create(lib.StorePath);
+            A.Eq(1L, N(lib, "SELECT count(*) FROM learned"), "the wrong and the dangling rows are gone");
+            A.Eq(good, N(lib, "SELECT unit_id FROM learned"), "the right one is kept");
+            A.Eq(VaultStore.Schema.ToString(), N(lib, "SELECT value FROM meta WHERE name = 'schema'").ToString(), "and the store is at the current schema");
+            A.Eq(2, VaultStore.RepairedLearned, "and it says how many it dropped");
+        }
+
         // ---- failure paths ----
 
         public static void AnEditThatFailsHalfwayChangesNothing()

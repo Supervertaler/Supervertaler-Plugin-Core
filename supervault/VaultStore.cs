@@ -195,10 +195,14 @@ namespace Supervertaler.Core.SuperVault
     ///
     /// Schema 5 (editing a translation) adds two columns to <c>removed</c>: <c>reason</c> ("edited" when the text was
     /// replaced by an edit, else NULL) and <c>replaced_by</c> (the unit the edit added, for Undo).
+    ///
+    /// Schema 6 changes no table: it drops <c>learned</c> rows that don't point at the unit they were learned for. Until
+    /// 23 Nov 2026 a confirmation that brought a field value EverTM hadn't seen (a new document's first segment) was
+    /// recorded against the id of that value's row, not the unit's (<see cref="RepairLearned"/>).
     /// </summary>
     public static class VaultStore
     {
-        public const int Schema = 5;
+        public const int Schema = 6;
 
         /// <summary>
         /// Set by <see cref="VaultLibrary.Import"/> for the length of one import, on its thread: the most units the store
@@ -258,9 +262,51 @@ namespace Supervertaler.Core.SuperVault
                 var removedCols = Columns(c, "removed");
                 if (!removedCols.Contains("reason")) Exec(c, "ALTER TABLE removed ADD COLUMN reason TEXT");
                 if (!removedCols.Contains("replaced_by")) Exec(c, "ALTER TABLE removed ADD COLUMN replaced_by INTEGER");
+                // Schema 6: learned rows that point at the wrong unit go (before the schema number says it's done).
+                if (CurrentSchema(c) < 6) RepairLearned(c);
                 Exec(c, "UPDATE meta SET value = '" + Schema + "' WHERE name = 'schema' AND CAST(value AS INTEGER) < " + Schema);
             }
         }
+
+        /// <summary>
+        /// Deletes the <c>learned</c> rows whose unit isn't the one they were learned for: the unit is missing, or neither
+        /// of its sides, read as the source, gives the row's key. Forgetting a learned row is harmless (the next
+        /// correction of that source adds a unit instead of updating one); keeping a wrong one is not (a correction would
+        /// overwrite an unrelated unit). One primary-key read per learned row (one per confirmed segment); returns the
+        /// number deleted, and logs it.
+        /// </summary>
+        internal static int RepairLearned(SqliteConnection c)
+        {
+            var wrong = new List<string>();
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = "SELECT l.src_key, u.lang_a, u.text_a, u.lang_b, u.text_b FROM learned l LEFT JOIN units u ON u.id = l.unit_id";
+                using (var r = cmd.ExecuteReader())
+                    while (r.Read())
+                    {
+                        string key = r.GetString(0);
+                        if (r.IsDBNull(1)) { wrong.Add(key); continue; }
+                        string a = r.GetString(1), ta = r.GetString(2), b = r.GetString(3), tb = r.GetString(4);
+                        if (VaultMarkup.Hash(a + ">" + b + "|" + Shape(ta)) != key && VaultMarkup.Hash(b + ">" + a + "|" + Shape(tb)) != key) wrong.Add(key);
+                    }
+            }
+            if (wrong.Count == 0) return 0;
+            using (var tx = c.BeginTransaction())
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "DELETE FROM learned WHERE src_key = $k";
+                var p = cmd.Parameters.Add("$k", SqliteType.Text);
+                foreach (var k in wrong) { p.Value = k; cmd.ExecuteNonQuery(); }
+                tx.Commit();
+            }
+            RepairedLearned = wrong.Count;
+            try { VaultLibrary.Log?.Invoke("EverTM store upgrade: forgot " + wrong.Count + " learned-unit links that pointed at the wrong unit (harmless: a later correction of those segments adds a unit instead of updating one)."); } catch { }
+            return wrong.Count;
+        }
+
+        /// <summary>How many wrong learned rows the last upgrade in this process deleted (for the log).</summary>
+        public static int RepairedLearned { get; private set; }
 
         static HashSet<string> Columns(SqliteConnection c, string table)
         {
@@ -589,7 +635,10 @@ namespace Supervertaler.Core.SuperVault
                     Result.Added++; _changed = true;
                     if (_limit > 0 && _start + Result.Added > _limit)
                         throw new VaultTooLargeException(VaultLibrary.TooLargeFor32Bit(_start + Result.Added, importing: true) ?? "EverTM would be too large.");
-                    if (info != null && info.Fields.Count > 0) AddValues(LastId(), info);
+                    // Its id now, before its field values are written: a new value is an insert too, and would become
+                    // "the last inserted row" (which once sent learned rows to a vals id; fixed 23 Nov 2026).
+                    LastAddedId = LastId();
+                    if (info != null && info.Fields.Count > 0) AddValues(LastAddedId, info);
                     return VaultAddOutcome.Added;
                 }
                 Result.Duplicates++;
@@ -602,6 +651,9 @@ namespace Supervertaler.Core.SuperVault
             }
 
             static long Seconds(DateTime? t) => VaultFields.ToSeconds(t.Value);
+
+            /// <summary>The id of the unit the last <see cref="Add"/> that returned Added inserted.</summary>
+            long LastAddedId;
 
             long LastId()
             {
@@ -746,7 +798,7 @@ namespace Supervertaler.Core.SuperVault
                 {
                     var added = Add(sourceCulture, src, targetCulture, trg, origin, null, info);   // a duplicate gets the info merged: it is now the newest
                     if (added != VaultAddOutcome.Added) return added == VaultAddOutcome.Skipped ? VaultLearnOutcome.Skipped : VaultLearnOutcome.Duplicate;
-                    Exec2(ref _remember, "INSERT OR REPLACE INTO learned (src_key, unit_id) VALUES ($p, last_insert_rowid())", srcKey);
+                    RememberLearned(srcKey, LastAddedId);
                     return VaultLearnOutcome.Added;
                 }
 
@@ -807,6 +859,19 @@ namespace Supervertaler.Core.SuperVault
             }
 
             SqliteCommand _readChanged;
+
+            void RememberLearned(string srcKey, long unitId)
+            {
+                if (_remember == null)
+                {
+                    _remember = _c.CreateCommand(); _remember.Transaction = _tx;
+                    _remember.CommandText = "INSERT OR REPLACE INTO learned (src_key, unit_id) VALUES ($k, $id)";
+                    _remember.Parameters.Add(new SqliteParameter { ParameterName = "$k" });
+                    _remember.Parameters.Add(new SqliteParameter { ParameterName = "$id" });
+                }
+                _remember.Parameters[0].Value = srcKey; _remember.Parameters[1].Value = unitId;
+                _remember.ExecuteNonQuery();
+            }
 
             // ---- removing a translation, and bringing it back ----
 
@@ -910,7 +975,7 @@ namespace Supervertaler.Core.SuperVault
                 foreach (var f in e.Fields ?? (shown?.Fields ?? new List<(string, string)>()).Where(x => x.Item1 != VaultFields.Source).ToList()) info.Add(f.Item1, f.Item2);
                 var (sc, tc) = Cultures(shown?.Variant, e.SourceLang, e.TargetLang);
                 var added = Add(sc, e.NewSource, tc, e.NewTarget, shown?.Origin, shown?.Added, info);
-                long? newId = added == VaultAddOutcome.Added ? LastId() : UnitIdOf(e.SourceLang, e.NewSource, e.TargetLang, e.NewTarget);
+                long? newId = added == VaultAddOutcome.Added ? LastAddedId : UnitIdOf(e.SourceLang, e.NewSource, e.TargetLang, e.NewTarget);
                 if (newId != null)
                 {
                     if (added == VaultAddOutcome.Duplicate && e.Fields != null) ReplaceFields(newId.Value, e.Fields);
