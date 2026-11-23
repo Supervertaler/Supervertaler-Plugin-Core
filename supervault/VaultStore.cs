@@ -9,7 +9,12 @@ using Microsoft.Data.Sqlite;
 
 namespace Supervertaler.Core.SuperVault
 {
-    public enum VaultAddOutcome { Added, Duplicate, Skipped }
+    public enum VaultAddOutcome
+    {
+        Added, Duplicate, Skipped,
+        /// <summary>Not added: the user removed this translation from EverTM (<see cref="VaultLibrary.Remove"/>).</summary>
+        Removed,
+    }
 
     /// <summary>What learning one confirmed segment did to the store.</summary>
     public enum VaultLearnOutcome
@@ -24,6 +29,9 @@ namespace Supervertaler.Core.SuperVault
         Duplicate,
         /// <summary>No text, one language, or junk.</summary>
         Skipped,
+        /// <summary>The user removed this translation from EverTM, and this was not a confirmation of it in the editor
+        /// (Studio's batch task "Update Main Translation Memories"): not stored.</summary>
+        Removed,
     }
 
     /// <summary>A segment confirmed in a CAT tool, waiting to be learned.</summary>
@@ -46,6 +54,15 @@ namespace Supervertaler.Core.SuperVault
         /// choice made when it was confirmed.
         /// </summary>
         public string Omit;
+
+        /// <summary>
+        /// It came from a batch over a whole document (Studio's "Update Main Translation Memories", which sets
+        /// ImportSettings.IsDocumentImport), not from confirming the segment in the editor. Such a unit never brings back
+        /// a translation the user removed from EverTM; a confirmation in the editor does (Michael, 9 Nov 2026). False
+        /// (the default) for anything else, so a caller that can't tell brings it back: a removed translation that comes
+        /// back can be removed again; one that silently never comes back can't be seen.
+        /// </summary>
+        public bool FromBatch;
 
         /// <summary>The user who confirmed it, as a field name for <see cref="Omit"/>.</summary>
         public const string UserField = "User";
@@ -114,6 +131,8 @@ namespace Supervertaler.Core.SuperVault
     public sealed class VaultImportResult
     {
         public long Read, Added, Duplicates, Skipped;
+        /// <summary>Units not added because the user removed that translation from EverTM.</summary>
+        public long Removed;
         /// <summary>
         /// Of the duplicates: how many brought metadata or dates the unit in EverTM didn't have yet. Counted per unit read,
         /// like <see cref="Duplicates"/>: a unit found in two of the file's TMs counts twice. (Counting distinct units
@@ -136,6 +155,7 @@ namespace Supervertaler.Core.SuperVault
             s += Added == 0 && Skipped == 0 && Duplicates > 0 ? "all others already in EverTM" : Duplicates.ToString("N0", f) + " already in EverTM";
             if (Enriched > 0) s += " (" + Enriched.ToString("N0", f) + " of them brought metadata or dates)";
             if (Skipped > 0) s += "; " + Skipped.ToString("N0", f) + " skipped (no text, one language, or junk)";
+            if (Removed > 0) s += "; " + Removed.ToString("N0", f) + " skipped: you removed " + (Removed == 1 ? "it" : "them") + " from EverTM";
             if (NamesSplit > 0) s += "; " + NamesSplit.ToString("N0", f) + " TM " + (NamesSplit == 1 ? "name" : "names") + " split into Client and End client";
             return s;
         }
@@ -164,10 +184,18 @@ namespace Supervertaler.Core.SuperVault
     ///             the direction it was confirmed). A changed translation of the same source updates that unit
     ///             instead of adding a near-duplicate. Imported units are never in it, so a confirmation never
     ///             changes or removes an imported unit.
+    ///
+    /// Schema 4 (removing a wrong translation, docs/design/evertm-pane.md section 8) adds:
+    ///   removed        one mark per translation the user removed: the base pair and a hash of each side's plain,
+    ///                  normalised text (so every formatting and every variant of it), when and by whom. Adding a
+    ///                  unit that matches a mark is refused here, in the one place units are added (<see cref="Writer"/>):
+    ///                  so a re-import never brings it back, and nothing that reads units has to know about marks.
+    ///   removed_units  the units that were deleted for a mark, exactly as they were (texts, variant, origin, dates,
+    ///                  users, fields), so a removal can be undone or restored.
     /// </summary>
     public static class VaultStore
     {
-        public const int Schema = 3;
+        public const int Schema = 4;
 
         /// <summary>
         /// Set by <see cref="VaultLibrary.Import"/> for the length of one import, on its thread: the most units the store
@@ -217,6 +245,12 @@ namespace Supervertaler.Core.SuperVault
                 Exec(c, "CREATE TRIGGER IF NOT EXISTS unit_vals_ad AFTER DELETE ON unit_vals BEGIN INSERT INTO changes (unit_id) VALUES (old.unit_id); END");
                 // A removed unit takes its values with it (a corrected confirmation replaced by an existing unit).
                 Exec(c, "CREATE TRIGGER IF NOT EXISTS units_ad_vals AFTER DELETE ON units BEGIN DELETE FROM unit_vals WHERE unit_id = old.id; END");
+                // Schema 4: removed translations. Two new, empty tables: nothing reads the existing units.
+                Exec(c, "CREATE TABLE IF NOT EXISTS removed (id INTEGER PRIMARY KEY, pair TEXT NOT NULL, hash_a TEXT NOT NULL, hash_b TEXT NOT NULL, " +
+                        "removed_at INTEGER NOT NULL, removed_by TEXT, UNIQUE (pair, hash_a, hash_b))");
+                Exec(c, "CREATE TABLE IF NOT EXISTS removed_units (removal_id INTEGER NOT NULL, lang_a TEXT, text_a TEXT, lang_b TEXT, text_b TEXT, " +
+                        "variant TEXT, origin TEXT, added TEXT, created INTEGER, changed INTEGER, created_by TEXT, changed_by TEXT, date_from TEXT, fields TEXT)");
+                Exec(c, "CREATE INDEX IF NOT EXISTS removed_units_removal ON removed_units (removal_id)");
                 Exec(c, "UPDATE meta SET value = '" + Schema + "' WHERE name = 'schema' AND CAST(value AS INTEGER) < " + Schema);
             }
         }
@@ -360,6 +394,50 @@ namespace Supervertaler.Core.SuperVault
             return d;
         }
 
+        /// <summary>
+        /// The translations the user removed, newest first, <paramref name="take"/> from <paramref name="skip"/>: for the
+        /// EverTM window's "Removed translations". Each with one stored copy's texts (the first), how many units were
+        /// removed, when and by whom. One indexed query; empty without a store or before schema 4.
+        /// </summary>
+        public static List<VaultRemoved> Removed(string path, int skip, int take, out int total)
+        {
+            total = 0;
+            var list = new List<VaultRemoved>();
+            if (!File.Exists(path)) return list;
+            using (var c = Open(path, readOnly: true))
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'removed'";
+                if (Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return list;
+                cmd.CommandText = "SELECT count(*) FROM removed";
+                total = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+                cmd.CommandText = "SELECT m.pair, m.hash_a, m.hash_b, m.removed_at, m.removed_by, " +
+                                  "(SELECT count(*) FROM removed_units WHERE removal_id = m.id), " +
+                                  "(SELECT text_a FROM removed_units WHERE removal_id = m.id ORDER BY rowid LIMIT 1), " +
+                                  "(SELECT text_b FROM removed_units WHERE removal_id = m.id ORDER BY rowid LIMIT 1), " +
+                                  "(SELECT variant FROM removed_units WHERE removal_id = m.id ORDER BY rowid LIMIT 1) " +
+                                  "FROM removed m ORDER BY m.removed_at DESC, m.id DESC LIMIT $take OFFSET $skip";
+                cmd.Parameters.AddWithValue("$take", Math.Max(0, take));
+                cmd.Parameters.AddWithValue("$skip", Math.Max(0, skip));
+                using (var r = cmd.ExecuteReader())
+                    while (r.Read())
+                    {
+                        var pair = r.GetString(0).Split('|');
+                        list.Add(new VaultRemoved
+                        {
+                            Key = new VaultRemovalKey(pair[0], r.GetString(1), pair.Length > 1 ? pair[1] : "", r.GetString(2)),
+                            RemovedAt = VaultFields.FromSeconds(r.GetInt64(3)),
+                            RemovedBy = r.IsDBNull(4) ? null : r.GetString(4),
+                            Units = r.GetInt32(5),
+                            TextA = r.IsDBNull(6) ? "" : r.GetString(6),
+                            TextB = r.IsDBNull(7) ? "" : r.GetString(7),
+                            Variant = r.IsDBNull(8) ? "" : r.GetString(8),
+                        });
+                    }
+            }
+            return list;
+        }
+
         /// <summary>Goes up by one with every import that added something; the index records the version it was built from.</summary>
         public static long Version(string path)
         {
@@ -431,6 +509,14 @@ namespace Supervertaler.Core.SuperVault
                 _pDateFrom = _insert.Parameters.Add("$df", SqliteType.Text);
                 _added.Value = _now;
                 _insert.Prepare();
+                // Marks are checked per added unit only when there are any (one indexed lookup each); an EverTM nobody
+                // removed anything from pays nothing.
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "SELECT EXISTS (SELECT 1 FROM removed)";
+                    _anyMarks = Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) != 0;
+                }
                 _limit = ImportLimit;
                 if (_limit > 0)
                     using (var cmd = _c.CreateCommand())
@@ -442,6 +528,26 @@ namespace Supervertaler.Core.SuperVault
             }
 
             readonly long _limit, _start;
+            bool _anyMarks;
+            SqliteCommand _findMark;
+
+            /// <summary>Whether this pair of texts (in either order) was removed. One indexed lookup, and none while no
+            /// translation is removed.</summary>
+            bool Marked(string langX, string rawX, string langY, string rawY) =>
+                _anyMarks && MarkOf(VaultRemovalKey.For(langX, rawX, langY, rawY)) != null;
+
+            long? MarkOf(VaultRemovalKey k)
+            {
+                if (_findMark == null)
+                {
+                    _findMark = _c.CreateCommand(); _findMark.Transaction = _tx;
+                    _findMark.CommandText = "SELECT id FROM removed WHERE pair = $p AND hash_a = $a AND hash_b = $b";
+                    foreach (var n in new[] { "$p", "$a", "$b" }) _findMark.Parameters.Add(new SqliteParameter { ParameterName = n });
+                }
+                _findMark.Parameters[0].Value = k.Pair; _findMark.Parameters[1].Value = k.HashA; _findMark.Parameters[2].Value = k.HashB;
+                var v = _findMark.ExecuteScalar();
+                return v == null || v is DBNull ? (long?)null : Convert.ToInt64(v, CultureInfo.InvariantCulture);
+            }
 
             /// <summary>Adds one unit, given in whatever direction and variants it came in.</summary>
             /// <param name="added">When the unit was first added (ISO 8601, UTC), for a unit coming back from EverTM's own export; null for now.</param>
@@ -454,6 +560,7 @@ namespace Supervertaler.Core.SuperVault
                 if (a.Length == 0 || b.Length == 0 || a == b || VaultMarkup.IsJunk(VaultMarkup.Plain(sourceRaw), VaultMarkup.Plain(targetRaw)))
                 { Result.Skipped++; return VaultAddOutcome.Skipped; }
                 if (string.CompareOrdinal(a, b) > 0) { (a, b) = (b, a); (sourceRaw, targetRaw) = (targetRaw, sourceRaw); }
+                if (Marked(a, sourceRaw, b, targetRaw)) { Result.Removed++; return VaultAddOutcome.Removed; }
                 var key = Key(a, sourceRaw, b, targetRaw);
                 _la.Value = a; _ta.Value = sourceRaw; _lb.Value = b; _tb.Value = targetRaw;
                 _key.Value = key;
@@ -596,7 +703,7 @@ namespace Supervertaler.Core.SuperVault
 
             /// <summary>Learns one confirmed segment, with what came with it (<see cref="VaultLearnUnit.Info"/>).</summary>
             public VaultLearnOutcome Learn(VaultLearnUnit u) =>
-                Learn(u.SourceCulture, u.Source, u.TargetCulture, u.Target, u.Origin, u.Info(_nowTime));
+                Learn(u.SourceCulture, u.Source, u.TargetCulture, u.Target, u.Origin, u.Info(_nowTime), u.FromBatch);
 
             /// <summary>
             /// Learns one confirmed segment. "The same source" is: the same base languages in the same direction
@@ -609,12 +716,19 @@ namespace Supervertaler.Core.SuperVault
             /// already there (imported, or learned) moves its changed date to the time of confirming. A confirmation
             /// that arrives after a newer one for the same source (two Studios, stored out of order) changes nothing.
             /// </summary>
-            public VaultLearnOutcome Learn(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin, VaultUnitInfo info = null)
+            /// <param name="fromBatch">See <see cref="VaultLearnUnit.FromBatch"/>: a removed translation stays removed;
+            /// otherwise confirming it brings it back, its old metadata with it.</param>
+            public VaultLearnOutcome Learn(string sourceCulture, string sourceRaw, string targetCulture, string targetRaw, string origin, VaultUnitInfo info = null, bool fromBatch = false)
             {
                 string a = VaultMarkup.BaseLanguage(sourceCulture), b = VaultMarkup.BaseLanguage(targetCulture);
                 string src = sourceRaw?.Trim() ?? "", trg = targetRaw?.Trim() ?? "";
                 if (a.Length == 0 || b.Length == 0 || a == b || VaultMarkup.IsJunk(VaultMarkup.Plain(src), VaultMarkup.Plain(trg)))
                 { Result.Read++; Result.Skipped++; return VaultLearnOutcome.Skipped; }
+                if (Marked(a, src, b, trg))
+                {
+                    if (fromBatch) { Result.Read++; Result.Removed++; return VaultLearnOutcome.Removed; }
+                    Restore(VaultRemovalKey.For(a, src, b, trg));   // confirmed in the editor: a deliberate act, so it comes back, old metadata and all
+                }
                 var srcKey = VaultMarkup.Hash(a + ">" + b + "|" + Shape(src));
                 long? learnedId = Scalar(ref _findLearned, "SELECT unit_id FROM learned WHERE src_key = $p", srcKey);
                 if (learnedId == null)
@@ -683,6 +797,122 @@ namespace Supervertaler.Core.SuperVault
 
             SqliteCommand _readChanged;
 
+            // ---- removing a translation, and bringing it back ----
+
+            /// <summary>
+            /// Removes units <paramref name="unitIds"/> (every stored unit of the translation <paramref name="key"/>, found
+            /// by the caller in the index), keeping an exact copy of each, and marks the translation removed, so it is
+            /// never added again (<see cref="Add"/>, <see cref="Learn(VaultLearnUnit)"/>). A unit learned from a
+            /// confirmation loses its learned row too, so a later correction of its source is learned afresh. Ids no
+            /// longer in the store are ignored. Returns the number of units removed. Part of this writer's transaction.
+            /// </summary>
+            public int Remove(VaultRemovalKey key, IEnumerable<long> unitIds, DateTime removedAt, string removedBy)
+            {
+                if (key == null) return 0;
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "INSERT INTO removed (pair, hash_a, hash_b, removed_at, removed_by) VALUES ($p, $a, $b, $t, $u) " +
+                                      "ON CONFLICT (pair, hash_a, hash_b) DO UPDATE SET removed_at = excluded.removed_at, removed_by = excluded.removed_by";
+                    cmd.Parameters.AddWithValue("$p", key.Pair); cmd.Parameters.AddWithValue("$a", key.HashA); cmd.Parameters.AddWithValue("$b", key.HashB);
+                    cmd.Parameters.AddWithValue("$t", VaultFields.ToSeconds(removedAt));
+                    cmd.Parameters.AddWithValue("$u", string.IsNullOrWhiteSpace(removedBy) ? (object)DBNull.Value : VaultFields.Clean(removedBy));
+                    cmd.ExecuteNonQuery();
+                }
+                long markId = MarkOf(key).Value;
+                _anyMarks = true;
+                int n = 0;
+                using (var copy = _c.CreateCommand())
+                using (var forget = _c.CreateCommand())
+                using (var delete = _c.CreateCommand())
+                {
+                    copy.Transaction = forget.Transaction = delete.Transaction = _tx;
+                    copy.CommandText = "INSERT INTO removed_units (removal_id, lang_a, text_a, lang_b, text_b, variant, origin, added, created, changed, created_by, changed_by, date_from, fields) " +
+                                       "SELECT $m, u.lang_a, u.text_a, u.lang_b, u.text_b, u.variant, u.origin, u.added, u.created, u.changed, " +
+                                       "(SELECT value FROM vals WHERE id = u.created_by), (SELECT value FROM vals WHERE id = u.changed_by), u.date_from, " +
+                                       "(SELECT group_concat(v.field || char(9) || v.value, char(10)) FROM unit_vals uv JOIN vals v ON v.id = uv.val_id WHERE uv.unit_id = u.id) " +
+                                       "FROM units u WHERE u.id = $id";
+                    copy.Parameters.AddWithValue("$m", markId);
+                    var cid = copy.Parameters.Add("$id", SqliteType.Integer);
+                    forget.CommandText = "DELETE FROM learned WHERE unit_id = $id";
+                    var fid = forget.Parameters.Add("$id", SqliteType.Integer);
+                    delete.CommandText = "DELETE FROM units WHERE id = $id";   // the triggers log it and take its field values with it
+                    var did = delete.Parameters.Add("$id", SqliteType.Integer);
+                    foreach (var id in unitIds.Distinct())
+                    {
+                        cid.Value = id;
+                        if (copy.ExecuteNonQuery() == 0) continue;   // gone already
+                        fid.Value = id; forget.ExecuteNonQuery();
+                        did.Value = id; delete.ExecuteNonQuery();
+                        n++;
+                    }
+                }
+                _changed = true;
+                return n;
+            }
+
+            /// <summary>
+            /// Brings back a removed translation: its mark goes, and the units kept with it are added again exactly as
+            /// they were (texts, variant, origin, when added, dates and users, fields). Units that are back already are
+            /// merged, as on any import. Returns the number of units restored; 0 when nothing was removed under that key.
+            /// Part of this writer's transaction.
+            /// </summary>
+            public int Restore(VaultRemovalKey key)
+            {
+                var markId = key == null ? null : MarkOf(key);
+                if (markId == null) return 0;
+                var copies = new List<(string la, string ta, string lb, string tb, string variant, string origin, string added, VaultUnitInfo info)>();
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "SELECT lang_a, text_a, lang_b, text_b, variant, origin, added, created, changed, created_by, changed_by, date_from, fields FROM removed_units WHERE removal_id = $m ORDER BY rowid";
+                    cmd.Parameters.AddWithValue("$m", markId.Value);
+                    using (var r = cmd.ExecuteReader())
+                        while (r.Read())
+                        {
+                            var info = new VaultUnitInfo
+                            {
+                                Created = r.IsDBNull(7) ? (DateTime?)null : VaultFields.FromSeconds(r.GetInt64(7)),
+                                Changed = r.IsDBNull(8) ? (DateTime?)null : VaultFields.FromSeconds(r.GetInt64(8)),
+                                CreatedBy = r.IsDBNull(9) ? null : r.GetString(9),
+                                ChangedBy = r.IsDBNull(10) ? null : r.GetString(10),
+                                FileDate = !r.IsDBNull(11) && r.GetString(11) == "file",
+                            };
+                            if (!r.IsDBNull(12)) foreach (var (f, v) in VaultFields.Unpack(r.GetString(12))) info.Fields.Add((f, v));
+                            copies.Add((r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.IsDBNull(4) ? "" : r.GetString(4),
+                                        r.IsDBNull(5) ? null : r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6), info));
+                        }
+                }
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "DELETE FROM removed_units WHERE removal_id = $m; DELETE FROM removed WHERE id = $m";
+                    cmd.Parameters.AddWithValue("$m", markId.Value);
+                    cmd.ExecuteNonQuery();
+                }
+                using (var cmd = _c.CreateCommand())
+                {
+                    cmd.Transaction = _tx;
+                    cmd.CommandText = "SELECT EXISTS (SELECT 1 FROM removed)";
+                    _anyMarks = Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) != 0;
+                }
+                _changed = true;
+                int n = 0;
+                foreach (var c in copies)
+                {
+                    // In the direction and variants it was stored with ("nl-BE>en-GB"), so its variant comes back as it was.
+                    var parts = c.variant.Split('>');
+                    string first = parts[0], second = parts.Length > 1 ? parts[1] : "";
+                    VaultAddOutcome outcome;
+                    if (first.Length > 0 && VaultMarkup.BaseLanguage(first) == c.la) outcome = Add(first, c.ta, second.Length > 0 ? second : c.lb, c.tb, c.origin, c.added, c.info);
+                    else if (first.Length > 0 && VaultMarkup.BaseLanguage(first) == c.lb) outcome = Add(first, c.tb, second.Length > 0 ? second : c.la, c.ta, c.origin, c.added, c.info);
+                    else outcome = Add(c.la, c.ta, c.lb, c.tb, c.origin, c.added, c.info);
+                    if (outcome == VaultAddOutcome.Added) n++;
+                }
+                return n;
+            }
+
+
             long? Scalar(ref SqliteCommand cmd, string sql, object p)
             {
                 Prepare(ref cmd, sql);
@@ -724,7 +954,7 @@ namespace Supervertaler.Core.SuperVault
             {
                 try { if (!_done) _tx.Rollback(); } catch { }
                 _insert.Dispose();
-                foreach (var cmd in new[] { _findLearned, _findKey, _update, _delete, _forget, _remember, _readDates, _writeDates, _findVal, _addVal, _linkVal, _lastId, _readChanged }) cmd?.Dispose();
+                foreach (var cmd in new[] { _findLearned, _findKey, _update, _delete, _forget, _remember, _readDates, _writeDates, _findVal, _addVal, _linkVal, _lastId, _readChanged, _findMark }) cmd?.Dispose();
                 _tx.Dispose();
                 _c.Dispose();
             }
@@ -858,5 +1088,44 @@ namespace Supervertaler.Core.SuperVault
                 return w.Result;
             }
         }
+    }
+
+    /// <summary>
+    /// Which translation a removal is about: a base language pair (alphabetical: "en", "nl") and a hash of each side's
+    /// plain, normalised text, the same normalisation exact matches use. So it covers every formatting of the sentence
+    /// and every variant (nl-BE and nl-NL, en-GB and en-US), in both directions.
+    /// </summary>
+    public sealed class VaultRemovalKey
+    {
+        public readonly string LangA, HashA, LangB, HashB;
+
+        public VaultRemovalKey(string langA, string hashA, string langB, string hashB)
+        {
+            LangA = langA ?? ""; HashA = hashA ?? ""; LangB = langB ?? ""; HashB = hashB ?? "";
+        }
+
+        public string Pair => LangA + "|" + LangB;
+
+        /// <summary>The key of a pair of texts, given in either order (base languages, raw texts with tag codes).</summary>
+        public static VaultRemovalKey For(string langX, string rawX, string langY, string rawY)
+        {
+            string hx = VaultMarkup.Hash(VaultMarkup.Plain(rawX)), hy = VaultMarkup.Hash(VaultMarkup.Plain(rawY));
+            return string.CompareOrdinal(langX, langY) <= 0 ? new VaultRemovalKey(langX, hx, langY, hy) : new VaultRemovalKey(langY, hy, langX, hx);
+        }
+
+        public override bool Equals(object obj) => obj is VaultRemovalKey k && k.LangA == LangA && k.HashA == HashA && k.LangB == LangB && k.HashB == HashB;
+        public override int GetHashCode() => (LangA + "|" + HashA + "|" + LangB + "|" + HashB).GetHashCode();
+        public override string ToString() => LangA + ":" + HashA + "|" + LangB + ":" + HashB;
+    }
+
+    /// <summary>A translation the user removed (<see cref="VaultStore.Removed"/>).</summary>
+    public sealed class VaultRemoved
+    {
+        public VaultRemovalKey Key;
+        public DateTime RemovedAt;   // UTC
+        public string RemovedBy;
+        public int Units;
+        /// <summary>One removed unit's texts (tag codes included), in <see cref="VaultRemovalKey.LangA"/> and LangB.</summary>
+        public string TextA, TextB, Variant;
     }
 }

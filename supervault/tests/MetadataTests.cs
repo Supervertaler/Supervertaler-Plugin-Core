@@ -442,7 +442,7 @@ namespace Supervertaler.Core.SuperVault.Tests
                 Scratch.Exec(c, "INSERT INTO units (lang_a, text_a, lang_b, text_b, key, variant, origin, added) VALUES ('en', 'The pump starts.', 'nl', 'De pomp start.', '" + VaultStore.Key("en", "The pump starts.", "nl", "De pomp start.") + "', 'nl-NL>en-GB', 'workbench', '2026-01-01T00:00:00.0000000Z')");
             }
             VaultStore.Create(lib.StorePath);
-            A.Eq("3", (string)Sql(lib, "SELECT value FROM meta WHERE name = 'schema'"), "schema 3");
+            A.Eq(VaultStore.Schema.ToString(), (string)Sql(lib, "SELECT value FROM meta WHERE name = 'schema'"), "upgraded to the current schema");
             A.Eq(1L, lib.StoreCount(), "the unit kept");
             A.True(Sql(lib, "SELECT created FROM units") is DBNull, "with no date");
             var r = Import(lib, TmxFile(T("De pomp start.", "The pump starts.", " creationdate=\"20210101T000000Z\"", "<prop type=\"Project\">PROJ-001</prop>")));

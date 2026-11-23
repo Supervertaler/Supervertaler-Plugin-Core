@@ -273,6 +273,31 @@ namespace Supervertaler.Core.SuperVault
             finally { Release(); }
         }
 
+        /// <summary>
+        /// The store ids of every unit of a translation (<see cref="VaultRemovalKey"/>: both sides' plain text, any
+        /// formatting, any variant), for removing it. Two term lookups and one stored field per unit: a few at most.
+        /// </summary>
+        internal List<long> UnitsOf(VaultRemovalKey key)
+        {
+            var ids = new List<long>();
+            if (key == null || !TryAcquire()) return ids;
+            try
+            {
+                var q = new BooleanQuery
+                {
+                    { new TermQuery(new Term("h_" + key.LangA, key.HashA)), Occur.MUST },
+                    { new TermQuery(new Term("h_" + key.LangB, key.HashB)), Occur.MUST },
+                    { new TermQuery(new Term("lp", key.Pair)), Occur.MUST },
+                };
+                var docs = new AllDocs(MaxGroup);
+                _searcher.Search(q, docs);
+                foreach (var d in docs.Docs)
+                    if (long.TryParse(_searcher.Doc(d).Get("id"), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var id)) ids.Add(id);
+                return ids;
+            }
+            finally { Release(); }
+        }
+
         /// <summary>Concordance: units whose <paramref name="searchLang"/> side contains the words of <paramref name="plain"/>.</summary>
         public List<VaultCandidate> Concordance(string plain, string searchLang, string otherLang, int max, string otherCulture = null)
         {
