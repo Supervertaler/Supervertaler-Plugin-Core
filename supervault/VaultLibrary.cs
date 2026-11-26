@@ -39,8 +39,9 @@ namespace Supervertaler.Core.SuperVault
         public long Replaced;    // a corrected translation replaced the one SuperVault learned before
         public long Already;     // the unit was already in SuperVault: nothing changed
         public long Skipped;     // not stored: no text, the same language twice, or junk
+        public long Removed;     // not stored: the user removed that translation, and this came from a batch task
 
-        public long Total => Added + Replaced + Already + Skipped;
+        public long Total => Added + Replaced + Already + Skipped + Removed;
 
         internal void Count(VaultLearnOutcome o)
         {
@@ -49,11 +50,12 @@ namespace Supervertaler.Core.SuperVault
                 case VaultLearnOutcome.Added: Added++; break;
                 case VaultLearnOutcome.Updated: case VaultLearnOutcome.Replaced: Replaced++; break;
                 case VaultLearnOutcome.Duplicate: Already++; break;
+                case VaultLearnOutcome.Removed: Removed++; break;
                 default: Skipped++; break;
             }
         }
 
-        internal void Add(VaultLearnCounts c) { Added += c.Added; Replaced += c.Replaced; Already += c.Already; Skipped += c.Skipped; }
+        internal void Add(VaultLearnCounts c) { Added += c.Added; Replaced += c.Replaced; Already += c.Already; Skipped += c.Skipped; Removed += c.Removed; }
         internal VaultLearnCounts Copy() { var c = new VaultLearnCounts(); c.Add(this); return c; }
 
         /// <summary>"1 confirmed: 0 added, 1 already in SuperVault".</summary>
@@ -64,6 +66,7 @@ namespace Supervertaler.Core.SuperVault
             if (Replaced > 0) s += ", " + Replaced.ToString("N0", f) + " replaced";
             s += ", " + Already.ToString("N0", f) + " already in EverTM";
             if (Skipped > 0) s += ", " + Skipped.ToString("N0", f) + " skipped (empty or not text)";
+            if (Removed > 0) s += ", " + Removed.ToString("N0", f) + " not stored (you removed them from EverTM)";
             return s;
         }
     }
@@ -113,15 +116,18 @@ namespace Supervertaler.Core.SuperVault
         /// <summary>Tests only: closes every open index in this process, so its scratch folders can be deleted.</summary>
         internal static void CloseAllForTests()
         {
-            lock (Libraries) foreach (var lib in Libraries.Values.Concat(TestOnly)) { lock (lib._gate) { lib.Swap(null, null); lib._checkedAt = long.MaxValue / 2; } lock (lib._learnGate) { lib._waiting.Clear(); lib._recent.Clear(); lib._recentCount = 0; lib._recentOldest = 0; } }
+            lock (Libraries) foreach (var lib in Libraries.Values.Concat(TestOnly)) { lock (lib._gate) { lib.Swap(null, null); lib._checkedAt = long.MaxValue / 2; } lock (lib._learnGate) { lib._waiting.Clear(); lib._recent.Clear(); lib._recentCount = 0; lib._recentOldest = 0; lib._removing.Clear(); lib._hidden.Clear(); } }
         }
 
         /// <summary>Tests only: forget every unit this library still has to store (its queue, its inbox, its recent units).</summary>
         internal void DropWaitingForTests()
         {
-            lock (_learnGate) { _waiting.Clear(); _recent.Clear(); _recentCount = 0; _recentOldest = 0; }
+            lock (_learnGate) { _waiting.Clear(); _recent.Clear(); _recentCount = 0; _recentOldest = 0; _removing.Clear(); _hidden.Clear(); }
             try { if (File.Exists(InboxPath)) VaultInbox.Delete(InboxPath, long.MaxValue, 5); } catch { }
         }
+
+        /// <summary>Tests only: forget what this process hid and still had to queue, as if it had closed.</summary>
+        internal void DropRemovalsHiddenForTests() { lock (_learnGate) { _removing.Clear(); _hidden.Clear(); } }
 
         /// <summary>Tests only: look at the pointer and the index's commits at the next <see cref="Current"/>.</summary>
         internal void Refresh() { lock (_gate) _checkedAt = 0; }
@@ -1052,7 +1058,158 @@ namespace Supervertaler.Core.SuperVault
         public List<VaultMatch> Lookup(IList<VaultPiece> document, string sourceLang, string targetLang, int minScore, int maxResults, string targetCulture = null)
         {
             var recent = document == null ? null : RecentCandidates(VaultLookup.PlainOf(document), sourceLang, targetLang);
-            return VaultLookup.Search(Current, document, sourceLang, targetLang, minScore, maxResults, recent, targetCulture);
+            var found = VaultLookup.Search(Current, document, sourceLang, targetLang, minScore, maxResults, recent, targetCulture);
+            HideRemoved(found, m => m.Candidate, sourceLang, targetLang);
+            return found;
+        }
+
+        /// <summary>A page of <see cref="Translations"/>: small enough that a page never reads much from disk (about 18 ms).</summary>
+        public const int TranslationsPageSize = 50;
+
+        /// <summary>
+        /// The other translations of a match's stored source ("Older translations" in a CAT tool's pane): every distinct
+        /// translation in this direction except the match's own, best first, <see cref="TranslationsPageSize"/> at a
+        /// time (<paramref name="page"/> 0 is the first). For a match a user selected, on a background thread; never
+        /// for every segment. Units confirmed in the last minute and not yet indexed aren't listed. Never throws for an
+        /// empty or missing EverTM: an empty page.
+        /// </summary>
+        public VaultTranslations Translations(VaultMatch match, string sourceLang, string targetLang, int page, string targetCulture = null)
+        {
+            var index = Current;
+            var c = match?.Candidate;
+            if (index == null || c == null || string.IsNullOrEmpty(c.SourceRaw)) return new VaultTranslations();
+            var t = index.Translations(c.SourceRaw, sourceLang, targetLang, targetCulture, c.TargetRaw, Math.Max(0, page) * TranslationsPageSize, TranslationsPageSize);
+            int hidden = HideRemoved(t.Items, x => x, sourceLang, targetLang);
+            t.Total = Math.Max(0, t.Total - hidden);
+            return t;
+        }
+
+        // ---- removing a wrong translation (docs/design/evertm-pane.md, section 8) ----
+        //
+        // Remove and Restore return at once and never throw: like a confirmation, the request is handed to the learning
+        // thread, which writes it to inbox.db and applies it under the build lock, after the confirmations waiting with it
+        // (a segment confirmed and then removed is stored, then removed). Meanwhile, and until Studio closes, this process
+        // hides the translation from its own lookups (_hidden), so it disappears at once even while another Studio holds
+        // the store for a long import, or a rebuild is running. Other Studios see it gone once it is applied (their index
+        // reopens within 2 s).
+        //
+        // State: _removing (requests not yet in inbox.db) and _hidden (keys removed in this session), both under
+        // _learnGate and both a user's few clicks. A removal that can never be written stays hidden here until Studio
+        // closes, and is applied by the next Studio from inbox.db; nothing is hidden for good without a mark in the store.
+
+        List<VaultInbox.Removal> _removing = new List<VaultInbox.Removal>();
+        readonly HashSet<VaultRemovalKey> _hidden = new HashSet<VaultRemovalKey>();
+
+        /// <summary>
+        /// Removes a translation from EverTM: every stored unit with this source and this translation as plain text (all
+        /// formattings, all variants, both directions), keeping a copy so it can be restored, and a mark so re-importing
+        /// never brings it back. Only EverTM: no Studio TM, file or document is touched. Returns the key, for Undo
+        /// (<see cref="Restore"/>); null when there is nothing to remove. Returns at once and never throws.
+        /// </summary>
+        public VaultRemovalKey Remove(VaultCandidate translation, string sourceLang, string targetLang, string user)
+        {
+            try
+            {
+                if (translation == null || string.IsNullOrEmpty(sourceLang) || string.IsNullOrEmpty(targetLang) || sourceLang == targetLang) return null;
+                if (VaultMarkup.Plain(translation.SourceRaw).Length == 0 || VaultMarkup.Plain(translation.TargetRaw).Length == 0) return null;
+                var key = VaultRemovalKey.For(sourceLang, translation.SourceRaw, targetLang, translation.TargetRaw);
+                Queue(new VaultInbox.Removal { Key = key, At = DateTime.UtcNow, By = user }, hide: true);
+                return key;
+            }
+            catch (Exception ex) { TryLog("Could not queue a removal: " + ex); return null; }
+        }
+
+        /// <summary>Undoes a removal, or restores one from the "Removed translations" list: the units come back exactly as
+        /// they were. Returns at once and never throws.</summary>
+        public void Restore(VaultRemovalKey key, string user = null)
+        {
+            try { if (key != null) Queue(new VaultInbox.Removal { Key = key, Restore = true, At = DateTime.UtcNow, By = user }, hide: false); }
+            catch (Exception ex) { TryLog("Could not queue a restore: " + ex); }
+        }
+
+        void Queue(VaultInbox.Removal r, bool hide)
+        {
+            lock (_learnGate)
+            {
+                if (hide) { if (_hidden.Count < 10000) _hidden.Add(r.Key); }
+                else _hidden.Remove(r.Key);
+                _removing.Add(r);
+                EnsureLearnerLocked();
+            }
+            _wake.Set();
+        }
+
+        /// <summary>
+        /// Edits a translation (the EverTM Matches pane's "Edit in EverTM..."): <paramref name="edit"/> gives the shown
+        /// texts, the new ones and the fields. A text edit replaces every stored unit of the old translation with one unit
+        /// of the new text and marks the old text removed ("edited"); a fields-only edit changes the fields only. Applied
+        /// in the background in one transaction (all or nothing), like a removal; this process stops offering the old
+        /// text at once. Returns the edit, for Undo (<see cref="UndoEdit"/>); null when there is nothing to do. Never
+        /// throws.
+        /// </summary>
+        public VaultTranslationEdit Edit(VaultTranslationEdit edit, string user)
+        {
+            try
+            {
+                if (edit == null || string.IsNullOrEmpty(edit.SourceLang) || string.IsNullOrEmpty(edit.TargetLang) || edit.SourceLang == edit.TargetLang) return null;
+                if (VaultMarkup.Plain(edit.NewSource ?? "").Length == 0 || VaultMarkup.Plain(edit.NewTarget ?? "").Length == 0) return null;
+                if (!edit.TextChanged && edit.Fields == null) return null;
+                lock (_learnGate)
+                {
+                    if (edit.TextChanged) { if (_hidden.Count < 10000) _hidden.Add(edit.OldKey); _hidden.Remove(edit.NewKey); }
+                    _removing.Add(new VaultInbox.Removal { Key = edit.OldKey, At = DateTime.UtcNow, By = user, EditKind = "edit", Edit = edit });
+                    EnsureLearnerLocked();
+                }
+                _wake.Set();
+                return edit;
+            }
+            catch (Exception ex) { TryLog("Could not queue an edit: " + ex); return null; }
+        }
+
+        /// <summary>Undoes <see cref="Edit"/>: the old translation comes back exactly, and a unit the edit added goes.
+        /// Returns at once and never throws.</summary>
+        public void UndoEdit(VaultTranslationEdit edit, string user)
+        {
+            try
+            {
+                if (edit == null) return;
+                lock (_learnGate)
+                {
+                    _hidden.Remove(edit.OldKey);
+                    _removing.Add(new VaultInbox.Removal { Key = edit.OldKey, At = DateTime.UtcNow, By = user, EditKind = "undo-edit", Edit = edit });
+                    EnsureLearnerLocked();
+                }
+                _wake.Set();
+            }
+            catch (Exception ex) { TryLog("Could not queue an undo: " + ex); }
+        }
+
+        /// <summary>The translations the user removed, newest first, a page (0 is the first) of <see cref="TranslationsPageSize"/>.
+        /// Opens the store: for the EverTM window, off the UI thread.</summary>
+        public List<VaultRemoved> Removed(int page, out int total) =>
+            VaultStore.Removed(StorePath, Math.Max(0, page) * TranslationsPageSize, TranslationsPageSize, out total);
+
+        /// <summary>Removals and restores not yet applied: this process's queue plus inbox.db (every process's). Opens a file: for a dialog or a status line, off the UI thread.</summary>
+        public long RemovalsWaiting()
+        {
+            long n;
+            lock (_learnGate) n = _removing.Count;
+            try { n += VaultInbox.CountRemovals(InboxPath, 2); } catch { }
+            return n;
+        }
+
+        /// <summary>Takes out of <paramref name="list"/> what this session removed. Returns how many. Nothing to do (no
+        /// hashing) when nothing was removed this session.</summary>
+        int HideRemoved<T>(List<T> list, Func<T, VaultCandidate> candidate, string sourceLang, string targetLang)
+        {
+            if (list == null || list.Count == 0) return 0;
+            HashSet<VaultRemovalKey> hidden;
+            lock (_learnGate) { if (_hidden.Count == 0) return 0; hidden = new HashSet<VaultRemovalKey>(_hidden); }
+            return list.RemoveAll(x =>
+            {
+                var c = candidate(x);
+                return c != null && hidden.Contains(VaultRemovalKey.For(sourceLang, c.SourceRaw ?? "", targetLang, c.TargetRaw ?? ""));
+            });
         }
 
         /// <summary>
@@ -1071,6 +1228,10 @@ namespace Supervertaler.Core.SuperVault
                 var recent = list.Count <= MaxRecentPerCall ? PrepareRecent(list) : null;
                 lock (_learnGate)
                 {
+                    // Confirming a removed translation in the editor brings it back (Writer.Learn), so stop hiding it here.
+                    if (_hidden.Count > 0)
+                        foreach (var u in list)
+                            if (!u.FromBatch) _hidden.Remove(VaultRemovalKey.For(VaultMarkup.BaseLanguage(u.SourceCulture), u.Source ?? "", VaultMarkup.BaseLanguage(u.TargetCulture), u.Target ?? ""));
                     _waiting.AddRange(list);
                     if (recent != null) AddRecentLocked(recent);
                     if (_waiting.Count > MaxWaiting)
@@ -1079,16 +1240,20 @@ namespace Supervertaler.Core.SuperVault
                         _waiting.RemoveRange(0, drop);
                         TryLog(drop + " confirmed segments were not stored: EverTM could not save them (" + _learnError + ").");
                     }
-                    if (_learner == null)
-                    {
-                        _learner = new Thread(LearnLoop) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "EverTM learning" };
-                        _learner.Start();
-                        AppDomain.CurrentDomain.ProcessExit += (s, e) => SaveWaiting();
-                    }
+                    EnsureLearnerLocked();
                 }
                 _wake.Set();
             }
             catch (Exception ex) { TryLog("Could not queue confirmed segments: " + ex); }
+        }
+
+        /// <summary>Starts the learning thread the first time it has work. Caller holds _learnGate.</summary>
+        void EnsureLearnerLocked()
+        {
+            if (_learner != null) return;
+            _learner = new Thread(LearnLoop) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "EverTM learning" };
+            _learner.Start();
+            AppDomain.CurrentDomain.ProcessExit += (s, e) => SaveWaiting();
         }
 
         /// <summary>Confirmed segments not yet in the store: this process's queue plus inbox.db (every process's). Opens a file: for a dialog.</summary>
@@ -1110,8 +1275,10 @@ namespace Supervertaler.Core.SuperVault
         void SaveWaiting()
         {
             List<VaultLearnUnit> batch;
-            lock (_learnGate) { batch = _waiting; _waiting = new List<VaultLearnUnit>(); }
+            List<VaultInbox.Removal> removals;
+            lock (_learnGate) { batch = _waiting; _waiting = new List<VaultLearnUnit>(); removals = _removing; _removing = new List<VaultInbox.Removal>(); }
             try { VaultInbox.Append(InboxPath, batch, 1); } catch { }
+            try { VaultInbox.AppendRemovals(InboxPath, removals, 1); } catch { }
         }
 
         void LearnLoop()
@@ -1158,14 +1325,24 @@ namespace Supervertaler.Core.SuperVault
         internal bool LearnOnce()
         {
             List<VaultLearnUnit> batch;
-            lock (_learnGate) { batch = _waiting; _waiting = new List<VaultLearnUnit>(); }
+            List<VaultInbox.Removal> removals;
+            lock (_learnGate) { batch = _waiting; _waiting = new List<VaultLearnUnit>(); removals = _removing; _removing = new List<VaultInbox.Removal>(); }
             DescribeProjects(batch);
             try { VaultInbox.Append(InboxPath, batch, InboxBusySeconds); }
             catch (Exception ex)
             {
-                lock (_learnGate) _waiting.InsertRange(0, batch);
+                lock (_learnGate) { _waiting.InsertRange(0, batch); _removing.InsertRange(0, removals); }
                 _learnError = "the confirmed segments could not be saved: " + ex.Message;
                 TryLog("Learning: " + _learnError);
+                return false;
+            }
+            // After the confirmations: a segment confirmed and then removed is stored, then removed.
+            try { VaultInbox.AppendRemovals(InboxPath, removals, InboxBusySeconds); }
+            catch (Exception ex)
+            {
+                lock (_learnGate) _removing.InsertRange(0, removals);
+                _learnError = "a removal could not be saved: " + ex.Message;
+                TryLog("Removing: " + _learnError);
                 return false;
             }
             try
@@ -1183,7 +1360,7 @@ namespace Supervertaler.Core.SuperVault
                 TryLog("Learning: " + ex);
                 return false;
             }
-            lock (_learnGate) return _waiting.Count == 0;
+            lock (_learnGate) return _waiting.Count == 0 && _removing.Count == 0;
         }
 
         /// <summary>Moves every unit waiting in inbox.db into the store, then brings the index up to date. Caller holds the build lock.</summary>
@@ -1215,6 +1392,70 @@ namespace Supervertaler.Core.SuperVault
                 TryLog("Stored confirmed segments: " + counts + (units.Count > seen.Count ? " (" + units.Count + " received; identical ones counted once)" : "") + ".");
             }
             SyncIndexLocked(null, CancellationToken.None, rebuildIfLarge: false);
+            ApplyRemovalsLocked();
+        }
+
+        /// <summary>
+        /// Applies the removals and restores waiting in inbox.db, oldest first, each in a transaction of its own followed
+        /// by an index update, so the next one sees its effect (remove, undo, remove again). A removal finds its units in
+        /// the index, so it waits (stays in inbox.db, and this throws to be retried) while the index isn't up to date with
+        /// the store: damaged, being replaced, or missing. Caller holds the build lock.
+        /// </summary>
+        void ApplyRemovalsLocked()
+        {
+            bool applied = false;
+            try
+            {
+                foreach (var r in VaultInbox.ReadRemovals(InboxPath, InboxBusySeconds))
+                {
+                    List<long> ids = null;
+                    // A removal, an edit and a fields-only undo find their units in the index; a restore and a text
+                    // undo find theirs in the store (the copies kept with the mark).
+                    bool needsIndex = r.EditKind == "edit" || (r.EditKind == null && !r.Restore) || (r.EditKind == "undo-edit" && !r.Edit.TextChanged);
+                    if (needsIndex)
+                    {
+                        var index = UpToDateIndex();
+                        if (index == null) throw new InvalidOperationException("a removal or edit waits until EverTM's index is up to date (Rebuild index, if it is damaged)");
+                        ids = index.UnitsOf(r.Key);
+                    }
+                    int n;
+                    string what;
+                    using (var w = new VaultStore.Writer(StorePath, StoreBusySeconds))
+                    {
+                        if (r.EditKind == "edit") { n = w.Edit(r.Edit, ids, r.At, r.By).Units; what = r.Edit.TextChanged ? "Edited a translation (old text removed)" : "Edited a translation's fields"; }
+                        else if (r.EditKind == "undo-edit") { n = w.UndoEdit(r.Edit, ids); what = "Undid an edit"; }
+                        else if (r.Restore) { n = w.Restore(r.Key); what = "Restored a removed translation"; }
+                        else { n = w.Remove(r.Key, ids, r.At, r.By); what = "Removed a translation"; }
+                        FailPoint?.Invoke("removal-commit");
+                        w.Commit();
+                    }
+                    VaultInbox.DeleteRemoval(InboxPath, r.Id, InboxBusySeconds);
+                    TryLog(what + ": " + Units(n, CultureInfo.InvariantCulture) + ".");
+                    SyncIndexLocked(null, CancellationToken.None, rebuildIfLarge: false);
+                    applied = true;
+                }
+            }
+            finally
+            {
+                // Also when a later one failed: those before it are applied.
+                if (applied) try { RemovalsApplied?.Invoke(); } catch (Exception ex) { TryLog("After a removal: " + ex.Message); }
+            }
+        }
+
+        /// <summary>
+        /// A removal or restore has been applied to the store and the index (on EverTM's learning thread). Until then this
+        /// process only hides a removed translation, and the translation it had hidden (newest wins) isn't offered yet; a
+        /// pane looks its segment up again now, so that one takes the removed one's place. Usually well under a second.
+        /// </summary>
+        public event Action RemovalsApplied;
+
+        /// <summary>The index in use, if it has every change in the store; null otherwise. Caller holds the build lock.</summary>
+        VaultIndex UpToDateIndex()
+        {
+            lock (_gate) _checkedAt = 0;   // pick up the commit just made
+            var index = Current;
+            if (index == null || !index.HasStoreSeq) return null;
+            return VaultStore.ChangesAfter(StorePath, index.StoreSeq) > 0 ? null : index;
         }
     }
 }
