@@ -141,6 +141,17 @@ namespace Supervertaler.Core.Models
         public bool IsMultiTerm { get; set; }
 
         /// <summary>
+        /// The entry's own number inside a MultiTerm termbase (.sdltb / .ttb):
+        /// its concept id, the number Trados shows as the entry number. Null
+        /// for Supervertaler entries, whose <see cref="Id"/> already is the
+        /// entry id. <see cref="Id"/> cannot carry it for MultiTerm entries:
+        /// it has to stay unique across every loaded termbase, while concept
+        /// ids restart at 1 in each file. Lets an assistant tell two entries
+        /// with the same terms apart (a duplicated concept).
+        /// </summary>
+        public long? ConceptId { get; set; }
+
+        /// <summary>
         /// Simple list of non-forbidden target synonym texts, used for display/matching.
         /// Populated by BulkLoadTargetSynonyms() during LoadAllTerms().
         /// </summary>
